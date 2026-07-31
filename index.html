@@ -6403,7 +6403,7 @@ function exportOrders(){
   if(!filtered.length){ showToast('当前筛选无订单可导出','error'); return; }
 
   const typeLabel = { normal:'普通', warehouse:'留仓', door:'上门' };
-  const statusLabel = { pending:'待下单', confirmed:'已下单', feedback:'待反馈', feedback_done:'已完成', completed:'已完成', canceled:'已取消', shipped:'运输中' };
+  const statusLabel = { pending:'待下单', confirmed:'已下单', feedback:'待反馈', feedback_done:'已完成', completed:'已完成', received:'已签收', canceled:'已取消', shipped:'运输中' };
   const escapeCell = (cell) => {
     const s = String(cell == null ? '' : cell).replace(/"/g,'""');
     return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
