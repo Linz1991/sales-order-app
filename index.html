@@ -2748,7 +2748,7 @@ function renderOrders(){
     // 当前类型下的订单与计数
     const statusOrders = orders.filter(o => o.type === adminType);
     const tabCount = {
-      pending: statusOrders.filter(o=>o.status==='pending').length,
+      pending: statusOrders.filter(o=>o.status==='pending').reduce((sum,o)=>sum+((o.items||[]).filter(it=>it.ordered!==true).length),0),
       confirmed: statusOrders.filter(o=>['confirmed','shipped','received'].includes(o.status)).length,
       feedback: statusOrders.filter(o=>o.status==='feedback').length,
       completed: statusOrders.filter(o=>['completed','feedback_done'].includes(o.status)).length,
