@@ -2330,6 +2330,7 @@ const routeTitles = {
   commissions: ['销售提成','管理销售提成'],
   unshipped: ['未发货','留仓和上门订单管理'],
   aftersales: ['售后工单','处理售后申请'],
+  'collect-balance': ['代收尾款','代收客户未结清尾款'],
   'aftersale-new': ['新建售后','提交售后申请'],
   'aftersale-detail': ['售后详情','查看售后详情'],
   'profit-report': ['多维度利润报表','多维度利润分析'],
@@ -2385,6 +2386,7 @@ function navigate(route){
     commissions: renderCommissions,
     unshipped: renderUnshipped,
     aftersales: renderAftersales,
+    'collect-balance': renderCollectBalance,
     'aftersale-new': renderAftersaleNew,
     'aftersale-detail': renderAftersales,
     dashboard2: renderDashboard2,
@@ -2572,6 +2574,9 @@ function renderDashboard(){
     const shippedItemCount = myOrders.filter(o=>o.status==='shipped').reduce((s,o)=>s+((o.items||[]).filter(it=>it.trackingNo).length),0);
     // 售后工单
     const myAftersalesCount = aftersales.filter(a => a.salesId === currentUser.id).length;
+    // 代收尾款：本人（管理员为全部）名下有未结清尾款的订单数
+    const balanceOrders = myOrders.filter(o => o.status !== 'canceled' && getOrderRemaining(o) > 0);
+    const myBalanceCount = balanceOrders.length;
 
     html += `
       <div class="dashboard-greeting">欢迎回来，<span class="name">${currentUser.name}</span>！</div>
@@ -2615,6 +2620,13 @@ function renderDashboard(){
           <div class="stat-info">
             <div class="stat-label">运输中</div>
             <div class="stat-value">${shippedItemCount}</div>
+          </div>
+        </div>
+        <div class="stat-card" onclick="navigate('collect-balance')">
+          <div class="stat-icon cyan">💵</div>
+          <div class="stat-info">
+            <div class="stat-label">代收尾款</div>
+            <div class="stat-value">${myBalanceCount}</div>
           </div>
         </div>
         <div class="stat-card" onclick="navigate('aftersales')">
@@ -6743,15 +6755,21 @@ function confirmPayment(paymentId){
   }
 }
 
-function openAddPayment(orderId){
+// 计算订单剩余尾款（订单总额 - 已到账收款合计）
+function getOrderRemaining(order){
+  if(!order) return 0;
+  const paidRecords = (DB.get('payments') || []).filter(p => p.orderId === order.id && p.status === 'paid');
+  const paidSum = paidRecords.reduce((s, p) => s + (parseInt(p.amount) || 0), 0);
+  return Math.max(0, (parseInt(order.total) || 0) - paidSum);
+}
+
+function openAddPayment(orderId, forceBalance){
   const order = DB.get('orders').find(o => o.id === orderId);
   if(!order) return;
   // 已收（已到账）合计，用于推算尾款余额
-  const paidRecords = (DB.get('payments') || []).filter(p => p.orderId === orderId && p.status === 'paid');
-  const paidSum = paidRecords.reduce((s, p) => s + (parseInt(p.amount) || 0), 0);
+  const remaining = getOrderRemaining(order);
   const total = parseInt(order.total) || 0;
-  const remaining = Math.max(0, total - paidSum);
-  const hasBalance = (parseInt(order.deposit) || 0) > 0; // 定金单=有尾款
+  const hasBalance = (parseInt(order.deposit) || 0) > 0 || !!forceBalance; // 定金单或代收尾款=有尾款
   const defaultStage = hasBalance ? '尾款' : '定金';
   const defaultAmount = hasBalance ? remaining : (parseInt(order.deposit) || total);
   const defaultMethod = order.paymentMethod === 'scan' ? '扫码支付' : '微信支付';
@@ -8025,6 +8043,55 @@ function renderWarehouse(){
     html += '<div class="empty-state"><div class="empty-icon">📦</div><div class="empty-text">暂无留仓订单</div></div>';
   }
 
+  html += '</div>';
+  document.getElementById('mainContent').innerHTML = html;
+}
+
+/* ============ 代收尾款（首页入口） ============ */
+function renderCollectBalance(){
+  var isAdmin = currentUser.role === 'admin';
+  var keyword = window._balanceKeyword || '';
+  var orders = DB.get('orders');
+  if(!isAdmin) orders = orders.filter(function(o){ return o.salesId === currentUser.id; });
+  var list = orders.filter(function(o){
+    if(o.status === 'canceled') return false;
+    return getOrderRemaining(o) > 0;
+  });
+  if(keyword){
+    var kw = keyword.toLowerCase();
+    list = list.filter(function(o){
+      return (o.id||'').toLowerCase().indexOf(kw) >= 0 ||
+        (o.customerName||'').indexOf(keyword) >= 0 ||
+        (o.phone||'').indexOf(keyword) >= 0;
+    });
+  }
+  list = list.slice().sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
+  var totalBalance = list.reduce(function(s,o){ return s + getOrderRemaining(o); }, 0);
+
+  var html = '<div class="card"><div class="card-title"><span class="title-text">💵 代收尾款</span>';
+  html += '<span style="margin-left:auto;font-size:13px;color:var(--text-muted)">待收尾款合计 <b style="color:var(--warning);font-size:15px">'+money(totalBalance)+'</b></span></div>';
+  html += '<div class="filter-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="搜索订单号/客户/电话" value="'+keyword+'" oninput="window._balanceKeyword=this.value;renderCollectBalance()"></div></div>';
+
+  if(list.length){
+    html += '<div class="table-wrap"><table><thead><tr><th>订单号</th><th>客户</th><th>订单金额</th><th>已收</th><th>尾款余额</th><th>操作</th></tr></thead><tbody>';
+    list.forEach(function(o){
+      var total = parseInt(o.total) || 0;
+      var remaining = getOrderRemaining(o);
+      var paid = total - remaining;
+      html += '<tr>' +
+        '<td><a class="btn-link" onclick="viewOrder(\''+o.id+'\')">'+o.id+'</a></td>' +
+        '<td>'+ (o.customerName||'-') +'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td>' +
+        '<td style="font-weight:600">'+money(total)+'</td>' +
+        '<td>'+money(paid)+'</td>' +
+        '<td style="font-weight:600;color:var(--warning)">'+money(remaining)+'</td>' +
+        '<td><button class="btn btn-primary btn-sm" onclick="openAddPayment(\''+o.id+'\', true)">代收尾款</button> ' +
+        '<button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button></td>' +
+        '</tr>';
+    });
+    html += '</tbody></table></div>';
+  } else {
+    html += '<div class="empty-state"><div class="empty-icon">💵</div><div class="empty-text">暂无待收尾款订单</div></div>';
+  }
   html += '</div>';
   document.getElementById('mainContent').innerHTML = html;
 }
