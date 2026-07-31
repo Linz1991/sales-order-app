@@ -1,0 +1,6 @@
+.workbuddy/
+*.xlsx
+build_excel.py
+deploy.mjs
+login-options.html
+.deploy.lock
