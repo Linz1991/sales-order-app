@@ -3180,14 +3180,14 @@ function renderOrderNew(defaultType){
       ${(newOrderType==='warehouse'||newOrderType==='door') ? `
         <div class="form-group">
           <label class="form-label">${newOrderType==='door'?'备货日期':'发货日期（到期自动流转为待下单）'}</label>
-          <input type="date" class="form-control" id="newOrderDate" style="max-width:200px">
+          <input type="date" class="form-control" id="newOrderDate" style="max-width:200px" onchange="var c=document.getElementById('newCompletionDate');if(c)c.min=this.value;">
           ${newOrderType==='warehouse' ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">设置后，到达该日期时订单将自动变为待下单状态</div>` : ''}
         </div>
       ` : ''}
       ${newOrderType==='door' ? `
         <div class="form-group">
           <label class="form-label">订单上门日期</label>
-          <input type="date" class="form-control" id="newCompletionDate" style="max-width:200px">
+          <input type="date" class="form-control" id="newCompletionDate" style="max-width:200px" onchange="var c=document.getElementById('newOrderDate');if(c)c.max=this.value;">
         </div>
       ` : ''}
       ${isAdmin ? `
@@ -3950,7 +3950,7 @@ function submitOrder(){
     if(_orderType === 'door'){
       const _doorDate = document.getElementById('newCompletionDate') ? document.getElementById('newCompletionDate').value.trim() : '';
       if(!_doorDate){ showToast('请填写上门日期','error'); return; }
-      if(_doorDate > _stockDate){ showToast('上门日期不能晚于备货日期','error'); return; }
+      if(_stockDate > _doorDate){ showToast('备货日期不能晚于订单上门日期','error'); return; }
     }
   }
 
@@ -4191,13 +4191,13 @@ function renderOrderDetail(){
         ${(order.type==='warehouse'||order.type==='door') ? `
         <div class="form-group">
           <label class="form-label">${dateLabel1}${order.type==='warehouse'?'（到期自动流转为待下单）':''}</label>
-          <input type="date" class="form-control" id="editOrderDate" value="${order.orderDate||''}" style="max-width:200px">
+          <input type="date" class="form-control" id="editOrderDate" value="${order.orderDate||''}" style="max-width:200px" onchange="var c=document.getElementById('editCompletionDate');if(c)c.min=this.value;">
           ${order.type==='warehouse' ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">设置后，到达该日期时订单将自动变为待下单状态</div>` : ''}
         </div>
         ${isDoor ? `
         <div class="form-group">
           <label class="form-label">订单上门日期</label>
-          <input type="date" class="form-control" id="editCompletionDate" value="${order.completionDate||''}" style="max-width:200px">
+          <input type="date" class="form-control" id="editCompletionDate" value="${order.completionDate||''}" style="max-width:200px" onchange="var c=document.getElementById('editOrderDate');if(c)c.max=this.value;">
         </div>
         ` : ''}
         ` : ``}
@@ -4214,8 +4214,8 @@ function renderOrderDetail(){
           ${isAdmin ? `<div class="info-item"><div class="info-label">订单金额</div><div class="info-value" style="color:var(--primary);font-size:18px">${money(order.total)}</div></div>` : ''}
           <div class="info-item"><div class="info-label">创建时间</div><div class="info-value">${order.createdAt||'-'}</div></div>
           ${(order.type==='warehouse'||order.type==='door') ? `
-          <div class="info-item"><div class="info-label">${dateLabel1}</div><div class="info-value"><input type="date" class="form-control" id="detailOrderDate" value="${order.orderDate||''}" style="max-width:200px">${order.orderDate && todayStr()>order.orderDate ? '<div style="font-size:11px;color:var(--danger);margin-top:2px">已到期</div>' : ''}</div></div>
-          ${isDoor ? `<div class="info-item"><div class="info-label">订单上门日期</div><div class="info-value"><input type="date" class="form-control" id="detailCompletionDate" value="${order.completionDate||''}" style="max-width:200px"></div></div>` : ''}
+          <div class="info-item"><div class="info-label">${dateLabel1}</div><div class="info-value"><input type="date" class="form-control" id="detailOrderDate" value="${order.orderDate||''}" style="max-width:200px" onchange="var c=document.getElementById('detailCompletionDate');if(c)c.min=this.value;">${order.orderDate && todayStr()>order.orderDate ? '<div style="font-size:11px;color:var(--danger);margin-top:2px">已到期</div>' : ''}</div></div>
+          ${isDoor ? `<div class="info-item"><div class="info-label">订单上门日期</div><div class="info-value"><input type="date" class="form-control" id="detailCompletionDate" value="${order.completionDate||''}" style="max-width:200px" onchange="var c=document.getElementById('detailOrderDate');if(c)c.max=this.value;"></div></div>` : ''}
           ` : ''}
         </div>
         ${isAdminOrderView ? `
@@ -5207,6 +5207,10 @@ function saveEditOrder(orderId){
   if(_editFulfillmentDateEl) order.fulfillmentDate = _editFulfillmentDateEl.value;
   const _editCompletionDateEl = document.getElementById('editCompletionDate');
   if(_editCompletionDateEl) order.completionDate = _editCompletionDateEl.value;
+  // 上门订单：备货日期不能晚于订单上门日期
+  if(order.type === 'door' && order.orderDate && order.completionDate && order.orderDate > order.completionDate){
+    showToast('备货日期不能晚于订单上门日期','error'); return;
+  }
   orders[idx] = order;
   DB.set('orders', orders);
 
@@ -5251,6 +5255,10 @@ function saveOrderDates(orderId){
   const completionDateEl = document.getElementById('detailCompletionDate');
   if(orderDateEl) order.orderDate = orderDateEl.value;
   if(completionDateEl) order.completionDate = completionDateEl.value;
+  // 上门订单：备货日期不能晚于订单上门日期
+  if(order.type === 'door' && order.orderDate && order.completionDate && order.orderDate > order.completionDate){
+    showToast('备货日期不能晚于订单上门日期','error'); return;
+  }
   order.updatedAt = nowStr();
   orders[idx] = order;
   DB.set('orders', orders);
@@ -5679,6 +5687,10 @@ function saveAdminOrder(orderId){
   if(dateEl !== null) o.orderDate = dateEl.value;
   const compEl = document.getElementById('detailCompletionDate');
   if(compEl !== null) o.completionDate = compEl.value;
+  // 上门订单：备货日期不能晚于订单上门日期
+  if(o.type === 'door' && o.orderDate && o.completionDate && o.orderDate > o.completionDate){
+    showToast('备货日期不能晚于订单上门日期','error'); return;
+  }
   DB.set('orders', orders);
   showToast('修改完成', 'success');
   // 返回对应列表（confirmed/shipped/received 归入「已下单」Tab；completed/feedback_done 归入「已完成」Tab）
