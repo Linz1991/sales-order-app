@@ -2785,12 +2785,32 @@ function renderOrders(){
         (o.phone||'').includes(keyword)
       );
     }
+    // 时间筛选（按创建日期，影响列表与导出）
+    const expStart = window._expStart, expEnd = window._expEnd;
+    if((expStart||expEnd) && activeTab !== 'aftersale'){
+      filtered = filtered.filter(o => {
+        const d = (o.createdAt||'').slice(0,10);
+        if(!d) return false;
+        if(expStart && d < expStart) return false;
+        if(expEnd && d > expEnd) return false;
+        return true;
+      });
+    }
     if(activeTab !== 'aftersale'){
       filtered = [...filtered].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
     }
     const products = DB.get('products');
 
     let html = `<div class="card"><div class="card-title"><span class="title-text">📦 订单管理</span><button class="btn btn-secondary btn-sm" onclick="exportOrders()" style="margin-left:8px">⬇ 导出订单</button></div>`;
+    // 时间筛选（下单日期），同时作用于列表与导出
+    html += `<div class="admin-tab-bar" style="margin:10px 0 4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <span style="font-size:13px;color:var(--text-muted)">下单时间：</span>
+      <input type="date" class="form-control" style="width:150px" value="${window._expStart||''}" onchange="window._expStart=this.value;renderOrders()">
+      <span style="color:var(--text-muted)">至</span>
+      <input type="date" class="form-control" style="width:150px" value="${window._expEnd||''}" onchange="window._expEnd=this.value;renderOrders()">
+      ${(window._expStart||window._expEnd)?'<button class="btn btn-sm btn-secondary" onclick="clearExportDateFilter()">清除时间</button>':''}
+      <span style="font-size:12px;color:var(--text-muted)">（筛选后点「导出订单」即可按时间导出）</span>
+    </div>`;
     // 第一级：订单类型筛选（普通/留仓/上门）
     html += `<div class="admin-tab-bar" style="margin:6px 0;display:flex;align-items:center;flex-wrap:wrap">`;
     html += `<span style="font-size:13px;color:var(--text-muted);margin-right:8px">订单类型：</span>`;
@@ -4463,8 +4483,8 @@ function renderOrderDetail(){
         <button class="btn btn-success btn-sm" onclick="openAddPayment('${order.id}')">+ 记录收款</button>
       `;
     }
-    // 售后申请按钮（管理员与销售均可操作，待下单和已取消状态不可申请；销售查看已下单/待反馈/已完成时隐藏）
-    if(!isSalesRestrictedView && order.status !== 'canceled' && order.status !== 'pending'){
+    // 售后申请按钮（仅「已完成」状态的订单可申请售后；管理员与销售均可操作）
+    if(['completed','feedback_done'].includes(order.status)){
       html += `<button class="btn btn-warning btn-sm" onclick="window._aftersaleOrderId='${order.id}'; openNewAftersaleModal()">申请售后</button>`;
     }
   }
@@ -6344,6 +6364,17 @@ function exportOrders(){
   else if(activeTab === 'confirmed') filtered = filtered.filter(o => o.status === 'confirmed');
   else if(activeTab === 'feedback') filtered = filtered.filter(o => o.status === 'feedback');
   else if(activeTab === 'completed') filtered = filtered.filter(o => ['completed','feedback_done'].includes(o.status));
+  // 时间筛选（按创建日期）
+  const expStart = window._expStart, expEnd = window._expEnd;
+  if(expStart || expEnd){
+    filtered = filtered.filter(o => {
+      const d = (o.createdAt||'').slice(0,10);
+      if(!d) return false;
+      if(expStart && d < expStart) return false;
+      if(expEnd && d > expEnd) return false;
+      return true;
+    });
+  }
   filtered = [...filtered].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
 
   if(!filtered.length){ showToast('当前筛选无订单可导出','error'); return; }
@@ -6380,6 +6411,13 @@ function exportOrders(){
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
   showToast('订单详情已导出（含售后损耗）','success');
+}
+
+// 清除订单导出时间筛选
+function clearExportDateFilter(){
+  window._expStart = '';
+  window._expEnd = '';
+  renderOrders();
 }
 
 /* ============ 商品列表 ============ */
@@ -7496,7 +7534,7 @@ function openNewAftersaleModal(){
             <label class="form-label">检索关联订单 <span class="required">*</span></label>
             <div class="product-search-wrap">
               <input type="text" class="form-control" id="aftersaleOrderSearch"
-                placeholder="${isAdmin ? '搜索订单号/客户姓名/电话' : '搜索我的订单号/客户姓名/电话'}" autocomplete="off"
+                placeholder="${isAdmin ? '搜索订单号/客户姓名/电话（仅已完成订单）' : '搜索我的订单号/客户姓名/电话（仅已完成订单）'}" autocomplete="off"
                 oninput="searchOrdersForAftersale(this.value)">
               <div class="product-search-results" id="orderSearchResults" style="display:none"></div>
             </div>
@@ -7574,6 +7612,8 @@ function searchOrdersForAftersale(keyword){
   if(!isAdmin){
     orders = orders.filter(o => o.salesId === currentUser.id);
   }
+  // 仅「已完成」状态的订单可发起售后（已完成 / 售后完成）
+  orders = orders.filter(o => ['completed','feedback_done'].includes(o.status));
   const matched = orders.filter(o =>
     (o.id||'').toLowerCase().includes(keyword.toLowerCase()) ||
     (o.customerName||'').includes(keyword) ||
@@ -7605,6 +7645,9 @@ function selectOrderForAftersale(orderId){
   let orders = DB.get('orders');
   const order = orders.find(o => o.id === orderId);
   if(!order){ showToast('订单不存在','error'); return; }
+  if(!['completed','feedback_done'].includes(order.status)){
+    showToast('只有「已完成」状态的订单才能申请售后','error'); return;
+  }
 
   document.getElementById('aftersaleOrderSearch').value = orderId;
   document.getElementById('orderSearchResults').style.display = 'none';
@@ -7666,6 +7709,9 @@ function submitAftersale(){
   const isAdmin = currentUser.role === 'admin';
   const order = window._aftersaleSelectedOrder;
   if(!order){ showToast('请选择关联订单','error'); return; }
+  if(!['completed','feedback_done'].includes(order.status)){
+    showToast('只有「已完成」状态的订单才能申请售后','error'); return;
+  }
   const checkedCbs = Array.from(document.querySelectorAll('.aftersale-item-cb:checked'));
   if(checkedCbs.length === 0){ showToast('请选择需要售后的商品','error'); return; }
   const reason = document.getElementById('aftersaleReason').value.trim();
