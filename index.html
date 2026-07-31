@@ -4140,6 +4140,8 @@ function renderOrderDetail(){
   // 待下单状态销售可编辑（所有类型），管理员不可编辑
   // 只要有任一商品已被管理员标记“已下单”，该订单即不可再被销售编辑（订单仍处于待下单，直到全部商品下单）
   const hasOrderedItem = order.items.some(it => it.ordered === true);
+  // 已全款（已收金额 >= 订单总额）则不再需要记录收款
+  const isFullyPaid = getOrderRemaining(order) === 0;
   const viewOnly = window._orderForceViewOnly === true;
   const canEdit = !viewOnly && !isAdmin && order.status==='pending' && order.salesId === currentUser.id && !hasOrderedItem;
   // 待下单订单自动进入编辑模式（销售可编辑时，且非强制只读）
@@ -4452,8 +4454,8 @@ function renderOrderDetail(){
       html += `<button class="btn btn-danger" onclick="deleteOrder('${order.id}')">删除订单</button>`;
       html += `</div>`;
     } else {
-      // 编辑订单按钮（跳转编辑详情页）；销售查看已下单/待反馈/已完成订单时隐藏
-      if(!isSalesRestrictedView && (isAdmin || (order.status !== 'completed' && order.status !== 'canceled'))){
+      // 编辑订单按钮（跳转编辑详情页）；销售查看已下单/待反馈/已完成订单、或被管理员部分下单锁定时隐藏
+      if(!isSalesRestrictedView && (isAdmin || canEdit)){
         html += `<button class="btn btn-primary" onclick="editOrder('${order.id}')">✏️ 编辑订单</button>`;
       }
 
@@ -4471,9 +4473,9 @@ function renderOrderDetail(){
         html += `<button class="btn btn-danger" onclick="deleteOrder('${order.id}')">删除订单</button>`;
       }
     }
-    // 记录收款：管理员或本单销售（含上门订单可见成员）均可，待下单编辑态不显示
+    // 记录收款：管理员或本单销售（含上门订单可见成员）均可，待下单编辑态不显示；已全款订单不显示
     const canRecordPayment = isAdmin || order.salesId === currentUser.id || isDoor;
-    if(!isAdmin && canRecordPayment && !canEdit){
+    if(!isAdmin && canRecordPayment && !canEdit && !isFullyPaid){
       html += `<button class="btn btn-success btn-sm" onclick="openAddPayment('${order.id}')">+ 记录收款</button>`;
     }
     // 管理员：修改状态
@@ -4483,8 +4485,12 @@ function renderOrderDetail(){
         <select class="form-control" id="detailStatus" style="width:auto;padding:6px 10px" onchange="updateOrderStatus('${order.id}',this.value)">
           ${statusOptions.map(s=>`<option value="${s[0]}" ${order.status===s[0]?'selected':''}>${s[1]}</option>`).join('')}
         </select>
-        <button class="btn btn-success btn-sm" onclick="openAddPayment('${order.id}')">+ 记录收款</button>
+        ${!isFullyPaid ? `<button class="btn btn-success btn-sm" onclick="openAddPayment('${order.id}')">+ 记录收款</button>` : ''}
       `;
+    }
+    // 销售查看「待下单」订单（只读，含被管理员部分下单锁定的情况）：返回待下单列表
+    if(!isAdmin && isOwner && order.status === 'pending' && !editMode){
+      html += `<button class="btn btn-secondary" onclick="window._orderTab='pending';navigate('orders')">← 返回订单</button>`;
     }
     // 售后申请按钮（仅「已完成」状态的订单可申请售后；管理员与销售均可操作）
     if(['completed','feedback_done'].includes(order.status)){
