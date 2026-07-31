@@ -6414,21 +6414,24 @@ function exportOrders(){
   const rows = [];
   filtered.forEach(o => {
     const cost = o.items.reduce((s,it)=>{ const p = products.find(x=>x.id===it.productId); return s + (p?p.cost:0)*it.qty; }, 0);
-    const waste = o.items.reduce((s,it)=> s + (it.waste||0), 0);
     const afterSaleLoss = o.afterSaleLoss || 0;
     const profit = calcOrderProfit(o);
     const address = [o.province,o.city,o.district,o.region,o.address].filter(Boolean).join(' ');
-    const items = (o.items&&o.items.length) ? o.items : [{ name:'(无商品)', price:0, qty:0, productId:null }];
-    items.forEach(it => {
+    const items = (o.items&&o.items.length) ? o.items : [{ name:'(无商品)', price:0, qty:0, productId:null, waste:0 }];
+    items.forEach((it, idx) => {
       const p = products.find(x=>x.id===it.productId);
       const qty = it.qty||0;
       const price = it.price||0;
       const subtotal = Math.round(price*qty);
+      // 损耗跟着商品走：每个商品单独显示自己的损耗（单个商品单个计算）
+      const itemWaste = Math.round(it.waste || 0);
+      // 售后损耗跟订单走：仅在订单首行展示，避免重复计入
+      const showAfterSaleLoss = (idx === 0) ? Math.round(afterSaleLoss) : '';
       rows.push([
         o.id, typeLabel[o.type||'normal']||o.type, statusLabel[o.status]||o.status,
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), subtotal,
-        Math.round(o.total||0), Math.round(cost), Math.round(waste), Math.round(afterSaleLoss), Math.round(profit),
+        Math.round(o.total||0), Math.round(cost), itemWaste, showAfterSaleLoss, Math.round(profit),
         o.createdAt||''
       ]);
     });
@@ -6445,7 +6448,7 @@ function exportOrders(){
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
-  showToast('订单已按商品逐行导出（含地址）','success');
+  showToast('订单已按商品逐行导出：损耗随商品、售后损耗随订单','success');
 }
 
 // 清除订单导出时间筛选
