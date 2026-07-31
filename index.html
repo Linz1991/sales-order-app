@@ -2807,7 +2807,6 @@ function renderOrders(){
       <span style="color:var(--text-muted)">至</span>
       <input type="date" class="form-control" style="width:150px;border-radius:6px" value="${window._expEnd||''}" onchange="window._expEnd=this.value;renderOrders()">
       <button class="btn btn-sm" onclick="clearExportDateFilter()" style="border:1px solid var(--border);background:#fff;color:var(--text-secondary)">清除</button>
-      <span style="font-size:12px;color:var(--text-muted)">${hasDateRange ? '已按时间筛选，点击右上角「导出全部订单」导出该时间段全部订单' : '选择时间范围后可导出全部订单'}</span>
     </div>`;
     // 第一级：订单类型筛选（全部/普通/留仓/上门）
     html += `<div class="admin-tab-bar" style="margin:6px 0;display:flex;align-items:center;flex-wrap:wrap">`;
