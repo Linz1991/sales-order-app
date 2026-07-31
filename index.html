@@ -9511,19 +9511,12 @@ window.onload = async function(){
   // 初始化预置数据（仅在缓存为空时填充种子数据）
   initData();
 
-  // 如果是首次运行且写入了种子数据，推送到 Supabase
-  const users = DB.get('users', null);
-  if(users && users.length > 0){
-    try{
-      // 检查 Supabase 是否已有数据（如果刚同步过且为空，说明是首次）
-      const { data: cloudUsers, error } = await window._sbpbClient.from('users').select('id').limit(1);
-      if(!error && (!cloudUsers || cloudUsers.length === 0)){
-        // 首次运行，推送种子数据到云端
-        await DB.pushToCloud();
-      }
-    }catch(e){
-      console.warn('检测云端数据失败:', e.message);
-    }
+  // 双向同步：把本地（含新建/修改）数据推送到云端，确保多端/多销售可见。
+  // 合并策略本地优先，不会覆盖其他端的订单。RLS 需在 Supabase 关闭才能正常读写。
+  try{
+    await DB.pushToCloud();
+  }catch(e){
+    console.warn('推送到云端失败:', e.message);
   }
 
   // 恢复正常登录流程
