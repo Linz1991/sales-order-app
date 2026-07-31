@@ -4159,10 +4159,13 @@ function renderOrderDetail(){
   const isSalesConfirmedView = !isAdmin && isOwner && order.status === 'confirmed';
   // 管理员「查看」订单：统一只读视图——含客户信息/下单人/商品信息/金额/利润，可改损耗与物流，含保存修改（覆盖 待下单/已下单/待反馈/已完成）
   const isAdminOrderView = isAdmin && viewOnly && ['pending','confirmed','feedback','completed','feedback_done'].includes(order.status);
-  const totalColspan = isDoor ? (editMode?4:3) : (editMode?3:2);
+  // 管理员端上门订单明细：采用截图中的商品名称/数量/售价/成本/损耗/利润/是否备货布局
+  const isAdminDoorDetail = isAdmin && isDoor && !editMode;
+  const totalColspan = isAdminDoorDetail ? 6 : (isDoor ? (editMode?4:3) : (editMode?3:2));
 
   const payments = DB.get('payments').filter(p => p.orderId === orderId);
   const commissions = DB.get('commissions').filter(c => c.orderId === orderId);
+  const products = DB.get('products');
 
   // 物流状态模拟更新
   simulateLogisticsUpdate(orderId);
@@ -4260,31 +4263,65 @@ function renderOrderDetail(){
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th>商品名称</th>
-            <th>单价</th>
-            <th>数量</th>
-            <th>小计</th>
-            ${isSalesConfirmedView ? '<th>物流单号</th><th>操作</th>' : ''}
-            ${isDoor ? '<th>是否备货</th>' : ''}
-            ${isAdmin ? '<th>损耗</th>' : ''}
-            ${editMode ? '<th>操作</th>' : ''}
+            ${isAdminDoorDetail ? `
+              <th>商品名称</th>
+              <th>数量</th>
+              <th>售价</th>
+              <th>成本</th>
+              <th>损耗</th>
+              <th>利润</th>
+              <th>是否备货</th>
+            ` : `
+              <th>商品名称</th>
+              <th>单价</th>
+              <th>数量</th>
+              <th>小计</th>
+              ${isSalesConfirmedView ? '<th>物流单号</th><th>操作</th>' : ''}
+              ${isDoor ? '<th>是否备货</th>' : ''}
+              ${isAdmin ? '<th>损耗</th>' : ''}
+              ${editMode ? '<th>操作</th>' : ''}
+            `}
           </tr></thead>
           <tbody>
-            ${order.items.map((it,i) => `
+            ${order.items.map((it,i) => {
+              const prod = products.find(p => p.id === it.productId);
+              const cost = prod ? (prod.cost || 0) : 0;
+              const waste = it.waste || 0;
+              const itemProfit = (it.price || 0) * (it.qty || 0) - cost * (it.qty || 0) - waste;
+              return `
               <tr>
-                <td>${editMode ? `<input type="text" class="form-control" id="editItemName_${i}" value="${it.name}" style="padding:6px 10px">` : it.name}</td>
-                <td>${editMode ? `<input type="number" class="form-control" id="editItemPrice_${i}" value="${it.price}" min="0" style="padding:6px 10px;width:80px" onchange="recalcEditItem(${i})">` : money(it.price)}</td>
-                <td>${editMode ? `<input type="number" class="form-control" id="editItemQty_${i}" value="${it.qty}" min="1" style="padding:6px 10px;width:60px" onchange="recalcEditItem(${i})">` : it.qty}</td>
-                <td style="font-weight:600" id="editItemSubtotal_${i}">${money(it.subtotal)}</td>
-                ${isSalesConfirmedView ? `
-                  <td>${it.trackingNo ? `<span class="mono" style="font-size:13px">${it.trackingNo}</span>` : '<span style="color:var(--text-muted)">-</span>'}</td>
-                  <td>${it.trackingNo ? `<button class="btn btn-primary btn-sm" onclick="queryLogistics('${order.id}', ${i}, '${it.trackingNo}')">查看</button>` : '<span style="color:var(--text-muted)">-</span>'}</td>
-                ` : ''}
-                ${isDoor ? `<td>${editMode ? `<select class="form-control" id="editItemStock_${i}" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : ((isAdmin || currentUser.role==='sales') ? `<select class="form-control" onchange="saveItemStock('${order.id}',${i},this.value)" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : (it.stock==='是'?'<span class="tag tag-completed">已备货</span>':'<span class="tag tag-pending">未备货</span>'))}</td>` : ''}
-                ${isAdmin ? `<td>${ isAdminOrderView ? `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" id="wasteItem_${i}" oninput="recalcAdminProfit('${order.id}')">` : `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" onchange="saveItemWaste('${order.id}',${i},this.value)">`}</td>` : ''}
-                ${editMode ? `<td><button class="btn-link danger" onclick="removeEditItem(${i})">删除</button></td>` : ''}
+                ${isAdminDoorDetail ? `
+                  <td>${it.name}</td>
+                  <td>${it.qty}</td>
+                  <td>${money(it.price)}</td>
+                  <td>${money(cost)}</td>
+                  <td>${isAdminOrderView ? `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" id="wasteItem_${i}" oninput="recalcAdminProfit('${order.id}')">` : `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" onchange="saveItemWaste('${order.id}',${i},this.value)">`}</td>
+                  <td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}" id="adminItemProfit_${i}">${money(itemProfit)}</td>
+                  <td><select class="form-control" onchange="saveItemStock('${order.id}',${i},this.value)" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select></td>
+                ` : `
+                  <td>${editMode ? `<input type="text" class="form-control" id="editItemName_${i}" value="${it.name}" style="padding:6px 10px">` : it.name}</td>
+                  <td>${editMode ? `<input type="number" class="form-control" id="editItemPrice_${i}" value="${it.price}" min="0" style="padding:6px 10px;width:80px" onchange="recalcEditItem(${i})">` : money(it.price)}</td>
+                  <td>${editMode ? `<input type="number" class="form-control" id="editItemQty_${i}" value="${it.qty}" min="1" style="padding:6px 10px;width:60px" onchange="recalcEditItem(${i})">` : it.qty}</td>
+                  <td style="font-weight:600" id="editItemSubtotal_${i}">${money(it.subtotal)}</td>
+                  ${isSalesConfirmedView ? `
+                    <td>${it.trackingNo ? `<span class="mono" style="font-size:13px">${it.trackingNo}</span>` : '<span style="color:var(--text-muted)">-</span>'}</td>
+                    <td>${it.trackingNo ? `<button class="btn btn-primary btn-sm" onclick="queryLogistics('${order.id}', ${i}, '${it.trackingNo}')">查看</button>` : '<span style="color:var(--text-muted)">-</span>'}</td>
+                  ` : ''}
+                  ${isDoor ? `<td>${editMode ? `<select class="form-control" id="editItemStock_${i}" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : ((isAdmin || currentUser.role==='sales') ? `<select class="form-control" onchange="saveItemStock('${order.id}',${i},this.value)" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : (it.stock==='是'?'<span class="tag tag-completed">已备货</span>':'<span class="tag tag-pending">未备货</span>'))}</td>` : ''}
+                  ${isAdmin ? `<td>${ isAdminOrderView ? `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" id="wasteItem_${i}" oninput="recalcAdminProfit('${order.id}')">` : `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" onchange="saveItemWaste('${order.id}',${i},this.value)">`}</td>` : ''}
+                  ${editMode ? `<td><button class="btn-link danger" onclick="removeEditItem(${i})">删除</button></td>` : ''}
+                `}
               </tr>
-            `).join('')}
+            `;}).join('')}
+            ${isAdminDoorDetail ? `
+            <tr style="background:#f9fafb;font-weight:700">
+              <td colspan="7" style="text-align:right">商品总金额：<span style="color:var(--primary)" id="editTotalCell">${money(order.total)}</span></td>
+            </tr>
+            ${isAdminOrderView ? `
+            <tr style="background:#f9fafb;font-weight:700">
+              <td colspan="7" style="text-align:right">实时利润（商品售价-成本-损耗）：<span style="color:${calcOrderProfit(order)>=0?'var(--success)':'var(--danger)'}" id="adminProfitCell">${money(calcOrderProfit(order))}</span></td>
+            </tr>` : ''}
+            ` : `
             <tr style="background:#f9fafb;font-weight:700">
               <td colspan="${totalColspan}" style="text-align:right">${isAdminOrderView?'商品总金额':'合计'}</td>
               <td style="color:var(--primary)" id="editTotalCell">${money(order.total)}</td>
@@ -4299,6 +4336,7 @@ function renderOrderDetail(){
               ${isDoor ? '<td></td>' : ''}
               ${editMode ? '<td></td>' : ''}
             </tr>` : ''}
+            `}
           </tbody>
         </table>
       </div>
@@ -5659,7 +5697,14 @@ function recalcAdminProfit(orderId){
     const waste = wEl ? (parseInt(wEl.value) || 0) : (it.waste || 0);
     const prod = products.find(p => p.id === it.productId);
     const cost = prod ? prod.cost : 0;
-    profit += it.price * it.qty - cost * it.qty - waste;
+    const itemProfit = it.price * it.qty - cost * it.qty - waste;
+    profit += itemProfit;
+    // 同步更新逐行利润单元格（管理员端上门订单明细布局）
+    const itemProfitCell = document.getElementById('adminItemProfit_' + i);
+    if(itemProfitCell){
+      itemProfitCell.textContent = money(itemProfit);
+      itemProfitCell.style.color = itemProfit >= 0 ? 'var(--success)' : 'var(--danger)';
+    }
   });
   profit -= (o.afterSaleLoss || 0);
   const cell = document.getElementById('adminProfitCell');
