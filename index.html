@@ -5455,10 +5455,15 @@ function updateDoorWechatTotal(){
   const wrap = document.getElementById('wechatTotalDisplayEdit');
   const v = document.getElementById('wechatTotalValueEdit');
   if(!wrap || !v) return;
+  const order = DB.get('orders').find(o=>o.id===window._currentOrderId);
+  // 仅在「待下单」状态的编辑详情页展示微信总额提示
+  if(!order || order.status !== 'pending'){
+    wrap.style.display = 'none';
+    return;
+  }
   const methodEl = document.querySelector('input[name="doorPayMethod"]:checked');
   if(methodEl && methodEl.value === 'wechat'){
     wrap.style.display = 'block';
-    const order = DB.get('orders').find(o=>o.id===window._currentOrderId);
     const salesId = order ? (order.salesId||currentUser.id) : currentUser.id;
     const orderWechat = getOrderWechatTotal(order);
     const beforeTotal = getWechatTotal(salesId) - orderWechat;
