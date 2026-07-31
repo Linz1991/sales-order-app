@@ -2330,7 +2330,7 @@ const routeTitles = {
   commissions: ['销售提成','管理销售提成'],
   unshipped: ['未发货','留仓和上门订单管理'],
   aftersales: ['售后工单','处理售后申请'],
-  'collect-balance': ['代收尾款','代收客户未结清尾款'],
+  'collect-balance': ['待收尾款','待收客户未结清尾款'],
   'aftersale-new': ['新建售后','提交售后申请'],
   'aftersale-detail': ['售后详情','查看售后详情'],
   'profit-report': ['多维度利润报表','多维度利润分析'],
@@ -2570,11 +2570,9 @@ function renderDashboard(){
     const pendingItemCount = myOrders.filter(o=>o.status==='pending').reduce((s,o)=>s+((o.items&&o.items.length)||0),0);
     // 待反馈：feedback 状态的订单数（以订单为主体，需全部反馈单号才进入此状态）
     const feedbackOrderCount = myOrders.filter(o=>o.status==='feedback').length;
-    // 运输中：shipped 订单里已有快递单号的商品件数
-    const shippedItemCount = myOrders.filter(o=>o.status==='shipped').reduce((s,o)=>s+((o.items||[]).filter(it=>it.trackingNo).length),0);
     // 售后工单
     const myAftersalesCount = aftersales.filter(a => a.salesId === currentUser.id).length;
-    // 代收尾款：本人（管理员为全部）名下有未结清尾款的订单数
+    // 待收尾款：本人（管理员为全部）名下有未结清尾款的订单数
     const balanceOrders = myOrders.filter(o => o.status !== 'canceled' && getOrderRemaining(o) > 0);
     const myBalanceCount = balanceOrders.length;
 
@@ -2615,17 +2613,10 @@ function renderDashboard(){
             <div class="stat-value">${feedbackOrderCount}</div>
           </div>
         </div>
-        <div class="stat-card" onclick="dashboardJump('shipped')">
-          <div class="stat-icon green">🚚</div>
-          <div class="stat-info">
-            <div class="stat-label">运输中</div>
-            <div class="stat-value">${shippedItemCount}</div>
-          </div>
-        </div>
         <div class="stat-card" onclick="navigate('collect-balance')">
           <div class="stat-icon cyan">💵</div>
           <div class="stat-info">
-            <div class="stat-label">代收尾款</div>
+            <div class="stat-label">待收尾款</div>
             <div class="stat-value">${myBalanceCount}</div>
           </div>
         </div>
@@ -6812,7 +6803,7 @@ function openAddPayment(orderId, forceBalance){
   // 已收（已到账）合计，用于推算尾款余额
   const remaining = getOrderRemaining(order);
   const total = parseInt(order.total) || 0;
-  const hasBalance = (parseInt(order.deposit) || 0) > 0 || !!forceBalance; // 定金单或代收尾款=有尾款
+  const hasBalance = (parseInt(order.deposit) || 0) > 0 || !!forceBalance; // 定金单或待收尾款=有尾款
   const defaultStage = hasBalance ? '尾款' : '定金';
   const defaultAmount = hasBalance ? remaining : (parseInt(order.deposit) || total);
   const defaultMethod = order.paymentMethod === 'scan' ? '扫码支付' : '微信支付';
@@ -8098,7 +8089,7 @@ function renderWarehouse(){
   document.getElementById('mainContent').innerHTML = html;
 }
 
-/* ============ 代收尾款（首页入口） ============ */
+/* ============ 待收尾款（首页入口） ============ */
 function renderCollectBalance(){
   var isAdmin = currentUser.role === 'admin';
   var keyword = window._balanceKeyword || '';
@@ -8119,7 +8110,7 @@ function renderCollectBalance(){
   list = list.slice().sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
   var totalBalance = list.reduce(function(s,o){ return s + getOrderRemaining(o); }, 0);
 
-  var html = '<div class="card"><div class="card-title"><span class="title-text">💵 代收尾款</span>';
+  var html = '<div class="card"><div class="card-title"><span class="title-text">💵 待收尾款</span>';
   html += '<span style="margin-left:auto;font-size:13px;color:var(--text-muted)">待收尾款合计 <b style="color:var(--warning);font-size:15px">'+money(totalBalance)+'</b></span></div>';
   html += '<div class="filter-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="搜索订单号/客户/电话" value="'+keyword+'" oninput="window._balanceKeyword=this.value;renderCollectBalance()"></div></div>';
 
@@ -8135,7 +8126,7 @@ function renderCollectBalance(){
         '<td style="font-weight:600">'+money(total)+'</td>' +
         '<td>'+money(paid)+'</td>' +
         '<td style="font-weight:600;color:var(--warning)">'+money(remaining)+'</td>' +
-        '<td><button class="btn btn-primary btn-sm" onclick="openAddPayment(\''+o.id+'\', true)">代收尾款</button> ' +
+        '<td><button class="btn btn-primary btn-sm" onclick="openAddPayment(\''+o.id+'\', true)">去收款</button> ' +
         '<button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button></td>' +
         '</tr>';
     });
