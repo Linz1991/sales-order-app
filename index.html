@@ -2722,7 +2722,7 @@ function renderOrders(){
   // 管理员：按Tab分状态显示
   if(isAdmin){
     // ===== 两级筛选：先选订单类型，再选状态，售后下再选售后状态 =====
-    const adminType = window._adminType || 'normal';   // normal|warehouse|door（必选其一）
+    const adminType = window._adminType || 'normal';   // normal|warehouse|door|all
     const asSub = window._aftersaleSub || '';          // 售后子筛选：''|pending|processing|resolved
 
     // 类型对应的状态Tab（上门无"待反馈"）
@@ -2743,10 +2743,10 @@ function renderOrders(){
     const orderTypeMap = {};
     orders.forEach(o => { orderTypeMap[o.id] = o.type; });
     const asTypeOf = (a) => a.orderType || orderTypeMap[a.orderId] || 'normal';
-    const typeAftersales = aftersales.filter(a => asTypeOf(a) === adminType);
+    const typeAftersales = aftersales.filter(a => adminType === 'all' || asTypeOf(a) === adminType);
 
     // 当前类型下的订单与计数
-    const statusOrders = orders.filter(o => o.type === adminType);
+    const statusOrders = orders.filter(o => adminType === 'all' || o.type === adminType);
     const tabCount = {
       pending: statusOrders.filter(o=>o.status==='pending').reduce((sum,o)=>sum+((o.items||[]).filter(it=>it.ordered!==true).length),0),
       confirmed: statusOrders.filter(o=>['confirmed','shipped','received'].includes(o.status)).length,
@@ -2806,12 +2806,13 @@ function renderOrders(){
       <input type="date" class="form-control" style="width:150px;border-radius:6px" value="${window._expStart||''}" onchange="window._expStart=this.value;renderOrders()">
       <span style="color:var(--text-muted)">至</span>
       <input type="date" class="form-control" style="width:150px;border-radius:6px" value="${window._expEnd||''}" onchange="window._expEnd=this.value;renderOrders()">
-      ${hasDateRange?'<button class="btn btn-sm" onclick="clearExportDateFilter()" style="border:1px solid var(--border);background:#fff;color:var(--text-secondary)">清除时间</button>':''}
+      <button class="btn btn-sm" onclick="clearExportDateFilter()" style="border:1px solid var(--border);background:#fff;color:var(--text-secondary)">清除</button>
       <span style="font-size:12px;color:var(--text-muted)">${hasDateRange ? '已按时间筛选，点击右上角「导出全部订单」导出该时间段全部订单' : '选择时间范围后可导出全部订单'}</span>
     </div>`;
-    // 第一级：订单类型筛选（普通/留仓/上门）
+    // 第一级：订单类型筛选（全部/普通/留仓/上门）
     html += `<div class="admin-tab-bar" style="margin:6px 0;display:flex;align-items:center;flex-wrap:wrap">`;
     html += `<span style="font-size:13px;color:var(--text-muted);margin-right:8px">订单类型：</span>`;
+    html += `<button class="btn btn-sm ${adminType==='all'?'btn-primary':'btn-secondary'}" onclick="window._adminType='all';renderOrders()" style="margin-right:6px">全部</button>`;
     ['normal','warehouse','door'].forEach(tk => {
       html += `<button class="btn btn-sm ${adminType===tk?'btn-primary':'btn-secondary'}" onclick="window._adminType='${tk}';renderOrders()" style="margin-right:6px">${typeLabel[tk]}</button>`;
     });
@@ -6376,7 +6377,7 @@ function exportOrders(){
   const hasDateRange = !!(expStart || expEnd);
   let filtered = orders;
   if(!hasDateRange){
-    if(adminType) filtered = filtered.filter(o => (o.type||'normal') === adminType);
+    if(adminType && adminType !== 'all') filtered = filtered.filter(o => (o.type||'normal') === adminType);
     if(activeTab === 'pending') filtered = filtered.filter(o => o.status === 'pending');
     else if(activeTab === 'confirmed') filtered = filtered.filter(o => o.status === 'confirmed');
     else if(activeTab === 'feedback') filtered = filtered.filter(o => o.status === 'feedback');
@@ -6403,7 +6404,7 @@ function exportOrders(){
     return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
   };
 
-  const header = ['订单号','订单类型','状态','客户','电话','商品明细','总金额','成本','损耗','售后损耗','利润','创建时间'];
+  const header = ['订单号','订单类型','状态','客户','电话','下单人','商品明细','总金额','成本','损耗','售后损耗','利润','创建时间'];
   const rows = filtered.map(o => {
     const cost = o.items.reduce((s,it)=>{ const p = products.find(x=>x.id===it.productId); return s + (p?p.cost:0)*it.qty; }, 0);
     const waste = o.items.reduce((s,it)=> s + (it.waste||0), 0);
@@ -6412,7 +6413,8 @@ function exportOrders(){
     const itemsText = o.items.map(it => (it.name||'')+' x'+(it.qty||0)).join('、');
     return [
       o.id, typeLabel[o.type||'normal']||o.type, statusLabel[o.status]||o.status,
-      o.customerName||'', o.phone||'', itemsText,
+      o.customerName||'', o.phone||'', o.salesName||'',
+      itemsText,
       Math.round(o.total||0), Math.round(cost), Math.round(waste), Math.round(afterSaleLoss), Math.round(profit),
       o.createdAt||''
     ];
@@ -6422,7 +6424,7 @@ function exportOrders(){
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  const fileTag = hasDateRange ? '全部' : (typeLabel[adminType]||adminType);
+  const fileTag = hasDateRange ? '全部' : (typeLabel[adminType]||(adminType==='all'?'全部':adminType));
   const dateTag = (expStart || expEnd) ? (expStart||'') + (expEnd && expStart ? '_' + expEnd : (expEnd||'')) : new Date().toISOString().slice(0,10);
   a.download = '订单详情_' + fileTag + '_' + dateTag + '.csv';
   document.body.appendChild(a);
