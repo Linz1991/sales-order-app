@@ -2792,15 +2792,22 @@ function renderOrders(){
     }
     const products = DB.get('products');
 
-    let html = `<div class="card"><div class="card-title"><span class="title-text">📦 订单管理</span><button class="btn btn-secondary btn-sm" onclick="exportOrders()" style="margin-left:8px">⬇ 导出订单</button></div>`;
+    const hasDateRange = !!(window._expStart || window._expEnd);
+    let html = `<div class="card">
+      <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <span class="title-text">📦 订单管理</span>
+        <button class="btn btn-primary btn-sm" onclick="exportOrders()" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;box-shadow:0 2px 6px rgba(59,130,246,0.25)">
+          <span>📥</span><span>${hasDateRange ? '导出全部订单' : '导出订单'}</span>
+        </button>
+      </div>`;
     // 时间筛选（下单日期），同时作用于列表与导出
-    html += `<div class="admin-tab-bar" style="margin:10px 0 4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-      <span style="font-size:13px;color:var(--text-muted)">下单时间：</span>
-      <input type="date" class="form-control" style="width:150px" value="${window._expStart||''}" onchange="window._expStart=this.value;renderOrders()">
+    html += `<div class="admin-tab-bar" style="margin:10px 0 4px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span style="font-size:13px;color:var(--text-muted);white-space:nowrap">📅 下单时间：</span>
+      <input type="date" class="form-control" style="width:150px;border-radius:6px" value="${window._expStart||''}" onchange="window._expStart=this.value;renderOrders()">
       <span style="color:var(--text-muted)">至</span>
-      <input type="date" class="form-control" style="width:150px" value="${window._expEnd||''}" onchange="window._expEnd=this.value;renderOrders()">
-      ${(window._expStart||window._expEnd)?'<button class="btn btn-sm btn-secondary" onclick="clearExportDateFilter()">清除时间</button>':''}
-      <span style="font-size:12px;color:var(--text-muted)">（筛选后点「导出订单」即可按时间导出）</span>
+      <input type="date" class="form-control" style="width:150px;border-radius:6px" value="${window._expEnd||''}" onchange="window._expEnd=this.value;renderOrders()">
+      ${hasDateRange?'<button class="btn btn-sm" onclick="clearExportDateFilter()" style="border:1px solid var(--border);background:#fff;color:var(--text-secondary)">清除时间</button>':''}
+      <span style="font-size:12px;color:var(--text-muted)">${hasDateRange ? '已按时间筛选，点击右上角「导出全部订单」导出该时间段全部订单' : '选择时间范围后可导出全部订单'}</span>
     </div>`;
     // 第一级：订单类型筛选（普通/留仓/上门）
     html += `<div class="admin-tab-bar" style="margin:6px 0;display:flex;align-items:center;flex-wrap:wrap">`;
@@ -6357,16 +6364,19 @@ function exportOrders(){
   // 售后Tab展示的是售后单而非订单，导出订单时回退为全部状态
   if(activeTab === 'aftersale') activeTab = 'all';
 
-  // 复刻订单管理筛选：先按类型，再按状态
-  let filtered = orders;
-  if(adminType) filtered = filtered.filter(o => (o.type||'normal') === adminType);
-  if(activeTab === 'pending') filtered = filtered.filter(o => o.status === 'pending');
-  else if(activeTab === 'confirmed') filtered = filtered.filter(o => o.status === 'confirmed');
-  else if(activeTab === 'feedback') filtered = filtered.filter(o => o.status === 'feedback');
-  else if(activeTab === 'completed') filtered = filtered.filter(o => ['completed','feedback_done'].includes(o.status));
-  // 时间筛选（按创建日期）
+  // 导出筛选规则：选择了时间范围时，导出该时间范围内的全部订单（忽略类型/状态Tab）；否则复刻当前列表筛选
   const expStart = window._expStart, expEnd = window._expEnd;
-  if(expStart || expEnd){
+  const hasDateRange = !!(expStart || expEnd);
+  let filtered = orders;
+  if(!hasDateRange){
+    if(adminType) filtered = filtered.filter(o => (o.type||'normal') === adminType);
+    if(activeTab === 'pending') filtered = filtered.filter(o => o.status === 'pending');
+    else if(activeTab === 'confirmed') filtered = filtered.filter(o => o.status === 'confirmed');
+    else if(activeTab === 'feedback') filtered = filtered.filter(o => o.status === 'feedback');
+    else if(activeTab === 'completed') filtered = filtered.filter(o => ['completed','feedback_done'].includes(o.status));
+  }
+  // 时间筛选（按创建日期）
+  if(hasDateRange){
     filtered = filtered.filter(o => {
       const d = (o.createdAt||'').slice(0,10);
       if(!d) return false;
@@ -6405,7 +6415,9 @@ function exportOrders(){
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = '订单详情_' + (typeLabel[adminType]||adminType) + '_' + new Date().toISOString().slice(0,10) + '.csv';
+  const fileTag = hasDateRange ? '全部' : (typeLabel[adminType]||adminType);
+  const dateTag = (expStart || expEnd) ? (expStart||'') + (expEnd && expStart ? '_' + expEnd : (expEnd||'')) : new Date().toISOString().slice(0,10);
+  a.download = '订单详情_' + fileTag + '_' + dateTag + '.csv';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
