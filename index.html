@@ -6789,15 +6789,17 @@ function confirmPayment(paymentId){
   }
 }
 
-// 计算订单剩余尾款（订单总额 - 已到账收款合计）
+// 计算订单剩余尾款（订单总额 - 创建时已收金额 - 后续已到账收款合计）
 function getOrderRemaining(order){
   if(!order) return 0;
+  const initPaid = parseInt(order.collectedAmount) || 0;
   const paidRecords = (DB.get('payments') || []).filter(p => p.orderId === order.id && p.status === 'paid');
   const paidSum = paidRecords.reduce((s, p) => s + (parseInt(p.amount) || 0), 0);
-  return Math.max(0, (parseInt(order.total) || 0) - paidSum);
+  return Math.max(0, (parseInt(order.total) || 0) - initPaid - paidSum);
 }
 
 function openAddPayment(orderId, forceBalance){
+  window._collectBalancePayment = !!forceBalance;
   const order = DB.get('orders').find(o => o.id === orderId);
   if(!order) return;
   // 已收（已到账）合计，用于推算尾款余额
@@ -6828,26 +6830,21 @@ function openAddPayment(orderId, forceBalance){
             <select class="form-control" id="payStage">
               <option value="定金" ${defaultStage==='定金'?'selected':''}>定金</option>
               <option value="尾款" ${defaultStage==='尾款'?'selected':''}>尾款</option>
-              <option value="补款">补款</option>
+              <option value="还价">还价</option>
             </select>
           </div>
           <div class="form-group">
             <label class="form-label">收款金额（元）<span class="required">*</span></label>
-            <input type="number" class="form-control" id="payAmount" value="${defaultAmount}" min="0" step="1">
+            <input type="number" class="form-control" id="payAmount" value="${defaultAmount}" min="0" step="1" oninput="updatePayModalWechat('${orderId}')">
           </div>
           <div class="form-group">
             <label class="form-label">收款方式 <span class="required">*</span></label>
             <select class="form-control" id="payMethod" onchange="updatePayModalWechat('${orderId}')">
-              <option value="微信支付" ${defaultMethod==='微信支付'?'selected':''}>微信支付</option>
-              <option value="扫码支付" ${defaultMethod==='扫码支付'?'selected':''}>扫码支付</option>
-              <option value="银行转账">银行转账</option>
-              <option value="支付宝">支付宝</option>
-              <option value="现金">现金</option>
-              <option value="支票">支票</option>
+              <option value="微信支付" ${defaultMethod==='微信支付'?'selected':''}>微信收款</option>
+              <option value="扫码支付" ${defaultMethod==='扫码支付'?'selected':''}>扫码收款</option>
             </select>
           </div>
-          <div id="payWechatTotal" style="display:none;background:#e8f5e9;padding:10px 12px;border-radius:6px;margin-bottom:14px;font-size:13px;color:#1b5e20">
-            💰 当前微信收款总额：<b id="payWechatTotalValue">¥0</b>
+          <div id="payWechatTotal" style="display:none;background:#f0fdf4;border:1px solid #bbf7d0;padding:10px 12px;border-radius:8px;margin-bottom:14px;font-size:13px;color:var(--text);line-height:1.6">
           </div>
           <div class="form-group">
             <label class="form-label">到账日期 <span class="required">*</span></label>
@@ -6872,17 +6869,20 @@ function openAddPayment(orderId, forceBalance){
   updatePayModalWechat(orderId);
 }
 
-// 收款弹窗：选择「微信支付」时，实时显示该账号当前微信收款总额
+// 收款弹窗：选择「微信收款」时，实时显示本次收款及微信总额变化
 function updatePayModalWechat(orderId){
   const wrap = document.getElementById('payWechatTotal');
   if(!wrap) return;
   const methodEl = document.getElementById('payMethod');
+  const amountEl = document.getElementById('payAmount');
   const order = DB.get('orders').find(o => o.id === orderId);
   const salesId = order ? order.salesId : currentUser.id;
   if(methodEl && methodEl.value === '微信支付'){
     wrap.style.display = 'block';
-    const v = document.getElementById('payWechatTotalValue');
-    if(v) v.textContent = money(getWechatCollectedSum(salesId));
+    const thisAmount = parseInt(amountEl.value) || 0;
+    const beforeTotal = getWechatTotal(salesId);
+    const afterTotal = beforeTotal + thisAmount;
+    wrap.innerHTML = '此次微信收款 <b>' + money(thisAmount) + '</b>，之前微信总额是 <b>' + money(beforeTotal) + '</b>，那么现在微信总额是 <b>' + money(afterTotal) + '</b>';
   }else{
     wrap.style.display = 'none';
   }
@@ -6912,7 +6912,12 @@ function savePayment(orderId){
   }else{
     showToast('收款记录已添加','success');
   }
-  renderOrderDetail();
+  if(window._collectBalancePayment){
+    navigate('collect-balance');
+  }else{
+    renderOrderDetail();
+  }
+  window._collectBalancePayment = false;
 }
 
 /* ============ 销售提成 ============ */
@@ -8115,19 +8120,17 @@ function renderCollectBalance(){
   html += '<div class="filter-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="搜索订单号/客户/电话" value="'+keyword+'" oninput="window._balanceKeyword=this.value;renderCollectBalance()"></div></div>';
 
   if(list.length){
-    html += '<div class="table-wrap"><table><thead><tr><th>订单号</th><th>客户</th><th>订单金额</th><th>已收</th><th>尾款余额</th><th>操作</th></tr></thead><tbody>';
+    html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>订单金额</th><th>已收</th><th>尾款余额</th><th>操作</th></tr></thead><tbody>';
     list.forEach(function(o){
       var total = parseInt(o.total) || 0;
       var remaining = getOrderRemaining(o);
       var paid = total - remaining;
       html += '<tr>' +
-        '<td><a class="btn-link" onclick="viewOrder(\''+o.id+'\')">'+o.id+'</a></td>' +
         '<td>'+ (o.customerName||'-') +'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td>' +
         '<td style="font-weight:600">'+money(total)+'</td>' +
         '<td>'+money(paid)+'</td>' +
         '<td style="font-weight:600;color:var(--warning)">'+money(remaining)+'</td>' +
-        '<td><button class="btn btn-primary btn-sm" onclick="openAddPayment(\''+o.id+'\', true)">去收款</button> ' +
-        '<button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button></td>' +
+        '<td><button class="btn btn-primary btn-sm" onclick="openAddPayment(\''+o.id+'\', true)">去收款</button></td>' +
         '</tr>';
     });
     html += '</tbody></table></div>';
@@ -9192,6 +9195,7 @@ function openModal(modalHtml){
 }
 function closeModal(){
   document.getElementById('modalContainer').innerHTML = '';
+  window._collectBalancePayment = false;
 }
 
 function showToast(msg, type){
