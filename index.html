@@ -4156,6 +4156,8 @@ function renderOrderDetail(){
   const canSaveDates = isAdmin || isOwner || isDoor;
   // 销售查看「已下单/待反馈/已完成」订单：隐藏商品明细/收款信息，删除编辑订单与申请售后按钮
   const isSalesRestrictedView = !isAdmin && (order.status === 'confirmed' || order.status === 'feedback' || order.status === 'completed');
+  // 销售查看「已下单」订单：专属只读视图，商品明细中展示物流单号与查看按钮
+  const isSalesConfirmedView = !isAdmin && isOwner && order.status === 'confirmed';
   // 管理员「查看」订单：统一只读视图——含客户信息/下单人/商品信息/金额/利润，可改损耗与物流，含保存修改（覆盖 待下单/已下单/待反馈/已完成）
   const isAdminOrderView = isAdmin && viewOnly && ['pending','confirmed','feedback','completed','feedback_done'].includes(order.status);
   const totalColspan = isDoor ? (editMode?4:3) : (editMode?3:2);
@@ -4239,9 +4241,12 @@ function renderOrderDetail(){
       ` : ''}
     </div>
 
-    ${(isSalesRestrictedView && !isDoor) ? '' : `
+    ${(isSalesRestrictedView && !isDoor && !isSalesConfirmedView) ? '' : `
     <div class="detail-section card">
-      <h4>🛒 商品明细 ${editMode ? '<span style="font-size:12px;color:var(--success);font-weight:normal">（编辑模式）</span>' : ''}</h4>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+        <h4 style="margin:0">🛒 商品明细 ${editMode ? '<span style="font-size:12px;color:var(--success);font-weight:normal">（编辑模式）</span>' : ''}</h4>
+        ${isSalesConfirmedView ? `<button class="btn btn-secondary btn-sm" onclick="collectSalesLogisticsInfo('${order.id}')">📋 一键收集物流信息</button>` : ''}
+      </div>
       ${editMode ? `
       <div class="product-search-wrap" style="margin-bottom:12px">
         <div style="display:flex;gap:8px">
@@ -4260,6 +4265,7 @@ function renderOrderDetail(){
             <th>单价</th>
             <th>数量</th>
             <th>小计</th>
+            ${isSalesConfirmedView ? '<th>物流单号</th><th>操作</th>' : ''}
             ${isDoor ? '<th>是否备货</th>' : ''}
             ${isAdmin ? '<th>损耗</th>' : ''}
             ${editMode ? '<th>操作</th>' : ''}
@@ -4271,6 +4277,10 @@ function renderOrderDetail(){
                 <td>${editMode ? `<input type="number" class="form-control" id="editItemPrice_${i}" value="${it.price}" min="0" style="padding:6px 10px;width:80px" onchange="recalcEditItem(${i})">` : money(it.price)}</td>
                 <td>${editMode ? `<input type="number" class="form-control" id="editItemQty_${i}" value="${it.qty}" min="1" style="padding:6px 10px;width:60px" onchange="recalcEditItem(${i})">` : it.qty}</td>
                 <td style="font-weight:600" id="editItemSubtotal_${i}">${money(it.subtotal)}</td>
+                ${isSalesConfirmedView ? `
+                  <td>${it.trackingNo ? `<span class="mono" style="font-size:13px">${it.trackingNo}</span>` : '<span style="color:var(--text-muted)">-</span>'}</td>
+                  <td>${it.trackingNo ? `<button class="btn btn-primary btn-sm" onclick="queryLogistics('${order.id}', ${i}, '${it.trackingNo}')">查看</button>` : '<span style="color:var(--text-muted)">-</span>'}</td>
+                ` : ''}
                 ${isDoor ? `<td>${editMode ? `<select class="form-control" id="editItemStock_${i}" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : ((isAdmin || currentUser.role==='sales') ? `<select class="form-control" onchange="saveItemStock('${order.id}',${i},this.value)" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : (it.stock==='是'?'<span class="tag tag-completed">已备货</span>':'<span class="tag tag-pending">未备货</span>'))}</td>` : ''}
                 ${isAdmin ? `<td>${ isAdminOrderView ? `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" id="wasteItem_${i}" oninput="recalcAdminProfit('${order.id}')">` : `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" onchange="saveItemWaste('${order.id}',${i},this.value)">`}</td>` : ''}
                 ${editMode ? `<td><button class="btn-link danger" onclick="removeEditItem(${i})">删除</button></td>` : ''}
@@ -4279,6 +4289,7 @@ function renderOrderDetail(){
             <tr style="background:#f9fafb;font-weight:700">
               <td colspan="${totalColspan}" style="text-align:right">${isAdminOrderView?'商品总金额':'合计'}</td>
               <td style="color:var(--primary)" id="editTotalCell">${money(order.total)}</td>
+              ${isSalesConfirmedView ? '<td></td><td></td>' : ''}
               ${isDoor ? '<td></td>' : ''}
               ${editMode ? '<td></td>' : ''}
             </tr>
@@ -4363,9 +4374,11 @@ function renderOrderDetail(){
       <div class="detail-section card">
         <h4>💰 收款信息</h4>
         <div class="info-grid">
-          <div class="info-item"><div class="info-label">收款金额</div><div class="info-value" style="color:var(--primary);font-size:18px">${money(order.collectedAmount||0)}</div></div>
+          <div class="info-item"><div class="info-label">订单总额</div><div class="info-value" style="color:var(--primary);font-size:18px">${money(order.total||0)}</div></div>
+          <div class="info-item"><div class="info-label">已收款</div><div class="info-value" style="color:var(--success)">${money(order.collectedAmount||0)}</div></div>
+          <div class="info-item"><div class="info-label">待收款</div><div class="info-value" style="color:var(--danger)">${money(Math.max(0,(order.total||0)-(order.collectedAmount||0)))}</div></div>
           <div class="info-item"><div class="info-label">收款方式</div><div class="info-value">${order.paymentMethod==='wechat'?'微信支付':(order.paymentMethod==='scan'?'扫码支付':'-')}</div></div>
-          <div class="info-item"><div class="info-label">是否有尾款</div><div class="info-value">${order.deposit ? '有尾款（'+money(Math.max(0,(order.total||0)-(order.deposit||0)))+'）' : '无尾款（全款）'}</div></div>
+          <div class="info-item"><div class="info-label">尾款状态</div><div class="info-value">${order.deposit ? '有尾款（'+money(Math.max(0,(order.total||0)-(order.deposit||0)))+'）' : '无尾款（全款）'}</div></div>
         </div>
       </div>`;
     } else {
@@ -9093,6 +9106,18 @@ function copyOrderInfo(orderId){
     document.body.removeChild(ta);
     showToast('订单信息已复制','success');
   });
+}
+
+// 销售端一键收集物流信息（仅复制已有单号，无单号时提示）
+function collectSalesLogisticsInfo(orderId){
+  const order = DB.get('orders').find(o => o.id === orderId);
+  if(!order){ showToast('订单不存在','error'); return; }
+  const itemsWithTracking = order.items.filter(it => it.trackingNo && it.trackingNo.trim());
+  if(itemsWithTracking.length === 0){
+    showToast('暂无物流单号可收集','error');
+    return;
+  }
+  copyLogisticsInfo(orderId);
 }
 
 // 一键复制物流信息：商品 + 数量 + #单号（单号前默认加#），自动复制到剪贴板可直接粘贴
