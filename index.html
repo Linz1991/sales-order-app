@@ -5369,6 +5369,18 @@ function getWechatTotal(salesId){
   const user = (DB.get('users') || []).find(u => u.id === salesId) || {};
   return (parseInt(user.wechatAmount) || 0) + getWechatCollectedSum(salesId);
 }
+// 某个订单已经产生的微信支付总额：订单本身的微信收款 + 该订单 payments 记录里的微信支付
+// 编辑订单时用于从微信总额中扣除本单旧收款，避免重复计算
+function getOrderWechatTotal(order){
+  if(!order) return 0;
+  let sum = 0;
+  if(order.paymentMethod === 'wechat'){
+    sum += parseInt(order.collectedAmount) || 0;
+  }
+  const payments = (DB.get('payments') || []).filter(p => p.orderId === order.id && p.method === '微信支付');
+  sum += payments.reduce((s, p) => s + (parseInt(p.amount) || 0), 0);
+  return sum;
+}
 // 新建订单时，微信收款总额 = 微信总收款(含初始值) + 当前单收款（若选微信，尚未保存故额外加）
 function getWechatProjectedTotal(){
   const ownerId = getNewOrderOwnerId();
@@ -5402,8 +5414,8 @@ function getWechatProjectedTotalForOrder(){
   const collectedEl = document.getElementById('doorCollected');
   if(methodEl && methodEl.value === 'wechat' && collectedEl){
     const live = parseInt(collectedEl.value) || 0;
-    const orderCollected = (order && order.paymentMethod==='wechat') ? (parseInt(order.collectedAmount)||0) : 0;
-    sum = sum - orderCollected + live;
+    const orderWechat = getOrderWechatTotal(order);
+    sum = sum - orderWechat + live;
   }
   return sum;
 }
@@ -5416,7 +5428,8 @@ function updateDoorWechatTotal(){
     wrap.style.display = 'block';
     const order = DB.get('orders').find(o=>o.id===window._currentOrderId);
     const salesId = order ? (order.salesId||currentUser.id) : currentUser.id;
-    const beforeTotal = getWechatTotal(salesId);
+    const orderWechat = getOrderWechatTotal(order);
+    const beforeTotal = getWechatTotal(salesId) - orderWechat;
     const thisAmount = parseInt(document.getElementById('doorCollected').value) || 0;
     const afterTotal = getWechatProjectedTotalForOrder();
     v.innerHTML = '此次微信收款 <b>' + money(thisAmount) + '</b>，之前微信总额是 <b>' + money(beforeTotal) + '</b>，那么现在微信总额是 <b>' + money(afterTotal) + '</b>';
