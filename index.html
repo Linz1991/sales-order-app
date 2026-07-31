@@ -3291,8 +3291,9 @@ function renderOrderNew(defaultType){
             <span>扫码支付</span>
           </label>
         </div>
-        <div id="wechatTotalDisplay" style="display:none;margin-top:10px;padding:10px 12px;background:#eef2ff;border-radius:8px;font-size:13px;color:var(--primary)">
-          💰 微信收款总额：<b id="wechatTotalValue">¥0</b>
+        <div class="form-group" id="wechatTotalDisplay" style="display:none;margin-top:10px">
+          <label class="form-label" style="color:var(--success)">💰 微信收款总额提示</label>
+          <div id="wechatTotalValue" style="padding:10px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;font-size:13px;color:var(--text);line-height:1.6"></div>
         </div>
         <div class="form-row">
           <div class="form-group">
@@ -5433,7 +5434,13 @@ function updateWechatTotalDisplay(){
   if(methodEl && methodEl.value === 'wechat'){
     wrap.style.display = 'block';
     const v = document.getElementById('wechatTotalValue');
-    if(v) v.textContent = money(getWechatProjectedTotal());
+    if(v){
+      const ownerId = getNewOrderOwnerId();
+      const beforeTotal = getWechatTotal(ownerId);
+      const thisAmount = parseInt(document.getElementById('newOrderCollected').value) || 0;
+      const afterTotal = beforeTotal + thisAmount;
+      v.innerHTML = '此次微信收款 <b>' + money(thisAmount) + '</b>，之前微信总额是 <b>' + money(beforeTotal) + '</b>，那么现在微信总额是 <b>' + money(afterTotal) + '</b>';
+    }
   }else{
     wrap.style.display = 'none';
   }
