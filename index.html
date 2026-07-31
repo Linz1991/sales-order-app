@@ -9412,7 +9412,6 @@ function queryLogistics(orderId, itemIndex, trackingNo){
       try{
         const data = JSON.parse(cached);
         renderLogisticsTimeline(trackingNo, data, container);
-        syncOrderStatusFromLogistics(orderId, data);
       }catch(e){
         localStorage.removeItem(cacheKey);
         queryLogistics(orderId, itemIndex, trackingNo);
@@ -9435,38 +9434,10 @@ function queryLogistics(orderId, itemIndex, trackingNo){
     data.expressCompany = expressCompany;
     data.trackingNo = trackingNo;
     renderLogisticsTimeline(trackingNo, data, container);
-    syncOrderStatusFromLogistics(orderId, data);
   }, delay);
 }
 
-// 物流查询结果同步订单状态：已签收时自动更新订单状态
-function syncOrderStatusFromLogistics(orderId, data){
-  if(!orderId || !data || !data.length) return;
-  // 检查最新节点（第一条）是否为"已签收"
-  const latestNode = data[0];
-  if(latestNode && latestNode.status === '已签收'){
-    const orders = DB.get('orders');
-    const idx = orders.findIndex(o => o.id === orderId);
-    if(idx >= 0){
-      // 更新订单状态为已签收（仅当当前状态为运输中或已下单时）
-      if(orders[idx].status === 'shipped' || orders[idx].status === 'confirmed'){
-        orders[idx].status = 'received';
-        orders[idx].receivedAt = nowStr();
-        DB.set('orders', orders);
-        showToast('物流已签收，订单状态已自动更新为"已签收"','success');
-        // 刷新当前页面
-        if(typeof renderOrders === 'function' && (currentRoute === 'orders' || currentRoute === 'order-detail')){
-          renderOrders();
-        }
-      }
-      // 同步更新商品的物流状态
-      orders[idx].items.forEach(it => {
-        if(it.trackingNo) it.logisticsStatus = 'signed';
-      });
-      DB.set('orders', orders);
-    }
-  }
-}
+// 物流查询结果仅用于展示，不修改订单状态（避免查询物流时误把订单改为已签收）
 
 // 渲染物流时间线
 function renderLogisticsTimeline(trackingNo, data, container){
