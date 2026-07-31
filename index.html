@@ -4297,7 +4297,7 @@ function renderOrderDetail(){
                   <td>${money(cost)}</td>
                   <td>${isAdminOrderView ? `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" id="wasteItem_${i}" oninput="recalcAdminProfit('${order.id}')">` : `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" onchange="saveItemWaste('${order.id}',${i},this.value)">`}</td>
                   <td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}" id="adminItemProfit_${i}">${money(itemProfit)}</td>
-                  <td><select class="form-control" onchange="saveItemStock('${order.id}',${i},this.value)" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select></td>
+                  <td><select class="form-control" id="doorStockItem_${i}" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select></td>
                 ` : `
                   <td>${editMode ? `<input type="text" class="form-control" id="editItemName_${i}" value="${it.name}" style="padding:6px 10px">` : it.name}</td>
                   <td>${editMode ? `<input type="number" class="form-control" id="editItemPrice_${i}" value="${it.price}" min="0" style="padding:6px 10px;width:80px" onchange="recalcEditItem(${i})">` : money(it.price)}</td>
@@ -4486,7 +4486,11 @@ function renderOrderDetail(){
   // 操作按钮区
   html += `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;border-top:1px solid var(--border);padding-top:16px">`;
 
-  if(isAdminOrderView){
+  if(isAdminDoorDetail){
+    // 上门订单详情：保存修改仅针对商品「是否备货」（含损耗/日期回存），收款信息只读
+    html += `<button class="btn btn-success" onclick="saveDoorDetail('${order.id}')">保存修改</button>`;
+    html += `<button class="btn btn-secondary" onclick="backToOrders()">返回</button>`;
+  } else if(isAdminOrderView){
     // 管理员查看（待下单/已下单/待反馈）专用：保存修改（损耗+物流），无其余操作
     html += `<button class="btn btn-success" onclick="saveAdminOrder('${order.id}')">保存修改</button>`;
     html += `<button class="btn btn-secondary" onclick="backToOrders()">返回</button>`;
@@ -5756,6 +5760,32 @@ function saveItemStock(orderId, itemIndex, value) {
   DB.set('orders', orders);
   renderOrderDetail();
   showToast('备货状态已更新', 'success');
+}
+
+// 上门订单详情（管理员查看）：保存商品「是否备货」修改，并回存损耗与日期
+function saveDoorDetail(orderId){
+  const orders = DB.get('orders');
+  const idx = orders.findIndex(o => o.id === orderId);
+  if(idx < 0) return;
+  const o = orders[idx];
+  o.items.forEach((it, i) => {
+    const sEl = document.getElementById('doorStockItem_' + i);
+    if(sEl !== null) it.stock = (sEl.value === '是' ? '是' : '否');
+    const wEl = document.getElementById('wasteItem_' + i);
+    if(wEl !== null) it.waste = parseInt(wEl.value) || 0;
+  });
+  // 回存上门/备货日期（避免「查看」详情修改后日期丢失）
+  const dateEl = document.getElementById('detailOrderDate');
+  if(dateEl !== null) o.orderDate = dateEl.value;
+  const compEl = document.getElementById('detailCompletionDate');
+  if(compEl !== null) o.completionDate = compEl.value;
+  // 上门订单：备货日期不能晚于订单上门日期
+  if(o.type === 'door' && o.orderDate && o.completionDate && o.orderDate > o.completionDate){
+    showToast('备货日期不能晚于订单上门日期','error'); return;
+  }
+  DB.set('orders', orders);
+  showToast('修改已保存','success');
+  renderOrderDetail();
 }
 
 // 管理员确认订单（待下单->已下单）
