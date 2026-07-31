@@ -4344,10 +4344,11 @@ function renderOrderDetail(){
   }
 
   // 收款信息（仅提交人/管理员可见金额；销售查看已下单/待反馈时隐藏，
-  // 但已完成订单点击「查看」时，本单销售可只读查看收款信息，不再编辑/选择）
-  const isSalesCompletedView = !isAdmin && isOwner && order.status==='completed' && viewOnly;
-  if(canViewFinancials && (!isSalesRestrictedView || isSalesCompletedView)){
-    if(viewOnly){
+  // 但本人（提交人）查看「已下单/已完成」订单时，显示只读收款信息，不再编辑/选择）
+  const isSalesReadOnlyView = !isAdmin && isOwner && (order.status==='completed' || order.status==='confirmed');
+  const showPaymentReadonly = isSalesReadOnlyView || viewOnly;
+  if(canViewFinancials && (!isSalesRestrictedView || isSalesReadOnlyView)){
+    if(showPaymentReadonly){
       html += `
       <div class="detail-section card">
         <h4>💰 收款信息</h4>
@@ -4429,6 +4430,9 @@ function renderOrderDetail(){
     // 管理员查看（待下单/已下单/待反馈）专用：保存修改（损耗+物流），无其余操作
     html += `<button class="btn btn-success" onclick="saveAdminOrder('${order.id}')">保存修改</button>`;
     html += `<button class="btn btn-secondary" onclick="backToOrders()">返回</button>`;
+  } else if(!isAdmin && isOwner && order.status === 'confirmed'){
+    // 销售查看「已下单」订单：只读收款信息，底部只提供返回「订单列表-已下单」
+    html += `<button class="btn btn-secondary" onclick="window._orderTab='confirmed';navigate('orders')">← 返回订单列表-已下单</button>`;
   } else if(viewOnly){
     // 从提交成功页进入的只读模式：仅返回按钮
     html += `<button class="btn btn-secondary" onclick="backToOrders()">← 返回订单列表</button>`;
