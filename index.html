@@ -2964,7 +2964,7 @@ function renderOrders(){
           html += `<td style="color:var(--danger);font-weight:600">${a.loss ? money(a.loss) : '-'}</td>`;
           html += `<td>${aftersaleStatusTag(a.status)}</td>`;
           html += `<td>${a.createdAt||'-'}</td>`;
-          html += `<td><button class="btn-link" onclick="viewAftersale('${a.id}')">查看</button></td>`;
+          html += `<td><button class="btn btn-primary btn-sm" onclick="viewAftersale('${a.id}')">查看</button></td>`;
           html += `</tr>`;
         });
       } else {
@@ -3025,7 +3025,7 @@ function renderOrders(){
             html += `</td></tr>`;
           });
           html += `</tbody></table></td>`;
-          html += `<td style="vertical-align:top"><button class="btn-link" onclick="viewOrder('${o.id}', true)">查看</button></td></tr>`;
+          html += `<td style="vertical-align:top"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button></td></tr>`;
         });
       } else {
         html += `<tr><td colspan="3" class="table-empty">暂无已下单订单</td></tr>`;
@@ -3043,7 +3043,7 @@ function renderOrders(){
           html += `<td>${orderTypeTag(o.type)}</td>`;
           html += `<td>${statusTag(o.status)}</td>`;
           html += `<td>${o.createdAt||'-'}</td>`;
-          html += `<td>${(activeTab==='feedback' || ['completed','feedback_done'].includes(o.status) || o.type==='warehouse' || o.type==='door') ? `<button class="btn-link" onclick="viewOrder('${o.id}', true)">查看</button>` : `<button class="btn-link" onclick="viewOrder('${o.id}')">详情</button> <button class="btn btn-primary btn-sm" onclick="editOrder('${o.id}')">编辑</button>`}</td>`;
+          html += `<td>${(activeTab==='feedback' || ['completed','feedback_done'].includes(o.status) || o.type==='warehouse' || o.type==='door') ? `<button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button>` : `<button class="btn-link" onclick="viewOrder('${o.id}')">详情</button> <button class="btn btn-primary btn-sm" onclick="editOrder('${o.id}')">编辑</button>`}</td>`;
           html += `</tr>`;
         });
       } else {
@@ -3122,7 +3122,7 @@ function renderOrders(){
           ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();editOrder('${o.id}')">编辑</button>`
           : (o.status === 'feedback')
           ? `<button class="btn btn-warning btn-sm" onclick="event.stopPropagation();markOrderFeedbackDone('${o.id}')">反馈</button>`
-          : `<button class="btn-link" onclick="viewOrder('${o.id}')">查看</button>`;
+          : `<button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button>`;
         html += `
           <div class="order-card" onclick="viewOrder('${o.id}')">
             <div class="card-customer">${o.customerName||'-'}</div>
@@ -3162,7 +3162,7 @@ function renderOrders(){
                 ? `<button class="btn btn-primary btn-sm" onclick="editOrder('${o.id}')">编辑</button>`
               : (o.status === 'feedback')
               ? `<button class="btn btn-warning btn-sm" onclick="markOrderFeedbackDone('${o.id}')">反馈</button>`
-                : `<button class="btn-link" onclick="viewOrder('${o.id}')">查看</button>`;
+                : `<button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button>`;
               const remark = o.remark ? `<span title="${(o.remark||'').replace(/"/g,"'")}" style="display:inline-block;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${o.remark}</span>` : '<span style="color:var(--text-muted)">-</span>';
               return `
               <tr>
@@ -3383,13 +3383,12 @@ function renderOrderNew(defaultType){
       </div>
 
       <div class="form-group">
-        <label class="form-label">添加商品 <span class="required">*</span> <span style="font-size:12px;color:var(--text-muted);font-weight:normal">（勾选后点击确认添加）</span></label>
+        <label class="form-label">添加商品 <span class="required">*</span> <span style="font-size:12px;color:var(--text-muted);font-weight:normal">（勾选即添加）</span></label>
         <div class="product-search-wrap">
           <div style="display:flex;gap:8px">
             <input type="text" class="form-control" id="productSearch"
               placeholder="输入商品名称或分类搜索..." oninput="searchProducts(this.value)"
               autocomplete="off" style="flex:1">
-            <button class="btn btn-primary" onclick="confirmAddProducts()" id="confirmAddBtn" style="white-space:nowrap">确认添加</button>
           </div>
           <div class="product-search-results" id="searchResults" style="display:none"></div>
         </div>
@@ -3675,23 +3674,35 @@ function searchProducts(keyword){
   results.style.display = 'block';
 }
 
-// 多选切换
+// 多选切换 — 勾选即添加到购物车
 function toggleSearchSelect(productId, e){
   e && e.stopPropagation();
+  const products = DB.get('products');
+  const product = products.find(p => p.id === productId);
+  if(!product) return;
   if(_searchSelected.has(productId)){
     _searchSelected.delete(productId);
+    const idx = cart.findIndex(c => c.productId === productId);
+    if(idx >= 0){ cart.splice(idx, 1); }
   }else{
     _searchSelected.add(productId);
+    const existing = cart.find(c => c.productId === productId);
+    if(existing){
+      existing.qty += 1;
+      existing.subtotal = existing.price * existing.qty;
+    }else{
+      cart.push({ productId: product.id, name: product.name, price: product.price, qty: 1, subtotal: product.price, stock: '否' });
+    }
   }
+  renderCart();
   // 更新复选框状态
   const results = document.getElementById('searchResults');
- const cbs = results.querySelectorAll('input[type=checkbox]');
+  const cbs = results.querySelectorAll('input[type=checkbox]');
   const items = results.querySelectorAll('.ps-item');
   items.forEach((item, i) => {
-    // 从 onclick 里提取 id
     const match = item.getAttribute('onclick')?.match(/toggleSearchSelect\('([^']+)'/);
     if(match){
-      cbs[i] && (cbs[i].checked = _searchSelected.has(match[1]));
+      cbs[i] && (cbs[i].checked = _searchSelected.has(match[1]);
     }
   });
 }
@@ -4431,7 +4442,7 @@ function renderOrderDetail(){
           <input type="text" class="form-control" id="editProductSearch"
             placeholder="搜索商品添加到订单..." oninput="searchEditProducts(this.value)"
             autocomplete="off" style="flex:1">
-          <button class="btn btn-primary" onclick="confirmEditAddProducts()" style="white-space:nowrap">确认添加</button>
+          <button class="btn btn-primary" onclick="confirmEditAddProducts()" id="confirmEditAddBtn" style="white-space:nowrap;display:none">确认添加</button>
         </div>
         <div class="product-search-results" id="editSearchResults" style="display:none;position:static;margin-top:4px"></div>
       </div>
@@ -4897,7 +4908,7 @@ function renderOrderEdit(){
       <h4>⚙️ 操作</h4>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-secondary" onclick="backToOrders()">← 返回订单列表</button>
-        <button class="btn btn-link" onclick="viewOrder('${order.id}')">查看详情</button>
+        <button class="btn btn-primary btn-sm" onclick="viewOrder('${order.id}')">查看详情</button>
         <button class="btn btn-success btn-sm" onclick="openAddPayment('${order.id}')">+ 记录收款</button>
       </div>
     </div>
@@ -5255,14 +5266,35 @@ function searchEditProducts(keyword){
 }
 function toggleEditSelect(pid, e){
   e && e.stopPropagation();
-  if(_editSearchSelected.has(pid)) _editSearchSelected.delete(pid);
-  else _editSearchSelected.add(pid);
+  const products = DB.get('products');
+  const product = products.find(p => p.id === pid);
+  if(!product) return;
+  const orderId = window._currentOrderId;
+  const orders = DB.get('orders');
+  const idx = orders.findIndex(o => o.id === orderId);
+  if(idx < 0) return;
+  if(_editSearchSelected.has(pid)){
+    // 取消勾选 → 从订单移除
+    _editSearchSelected.delete(pid);
+    const itemIdx = orders[idx].items.findIndex(it => it.productId === pid);
+    if(itemIdx >= 0){ orders[idx].total -= (orders[idx].items[itemIdx].price * orders[idx].items[itemIdx].qty || 0); orders[idx].items.splice(itemIdx, 1); }
+  }else{
+    // 勾选 → 立即加入订单
+    _editSearchSelected.add(pid);
+    orders[idx].items.push({ productId: product.id, name: product.name, price: product.price, qty: 1, subtotal: product.price, stock: '否' });
+    orders[idx].total += product.price;
+  }
+  DB.set('orders', orders);
+  renderOrderDetail();
+  window._orderEditMode = true;
+  renderOrderDetail();
+  // 更新复选框状态
   const results = document.getElementById('editSearchResults');
   const items = results.querySelectorAll('.ps-item');
   const cbs = results.querySelectorAll('input[type=checkbox]');
   items.forEach((item, i) => {
     const m = item.getAttribute('onclick')?.match(/toggleEditSelect\('([^']+)'/);
-    if(m) cbs[i] && (cbs[i].checked = _editSearchSelected.has(m[1]));
+    if(m) cbs[i] && (cbs[i].checked = _editSearchSelected.has(m[1]);
   });
 }
 // 编辑模式下手动添加商品
@@ -6427,7 +6459,7 @@ function showCustomerOrders(customerId){
                       <td>${o.orderDate||o.createdAt||'-'}</td>
                       <td style="font-weight:600;color:var(--primary)">${money(o.total)}</td>
                       <td>${statusTag(o.status)}</td>
-                      <td><button class="btn-link" onclick="closeModal();viewOrder('${o.id}')">查看</button></td>
+                      <td><button class="btn btn-primary btn-sm" onclick="closeModal();viewOrder('${o.id}')">查看</button></td>
                     </tr>
                   `).join('')}
                 </tbody>
@@ -7647,7 +7679,7 @@ function renderAftersales(){
                 <td>${aftersaleStatusTag(a.status)}</td>
                 <td>${a.createdAt||'-'}</td>
                 <td>
-                  <button class="btn-link" onclick="viewAftersale('${a.id}')">查看</button>
+                  <button class="btn btn-primary btn-sm" onclick="viewAftersale('${a.id}')">查看</button>
                 </td>
               </tr>
             `).join('') : '<tr><td colspan="'+cols+'" class="table-empty">暂无售后记录</td></tr>'}
@@ -7726,7 +7758,7 @@ function viewAftersale(id){
             <label class="form-label">物流单号</label>
             <div style="display:flex;gap:8px;align-items:center">
               <input type="text" class="form-control" id="asTrackingNo" value="${as.trackingNo||''}" placeholder="录入物流单号，保存后永久留存" style="flex:1">
-              <button class="btn btn-secondary btn-sm" onclick="viewAftersaleTracking('${as.id}')">查看</button>
+              <button class="btn btn-primary btn-sm" onclick="viewAftersaleTracking('${as.id}')">查看</button>
             </div>
             <div style="font-size:12px;color:var(--text-muted);margin-top:4px">录入单号保存后永久留存，点击查看跳转物流实时流转轨迹</div>
           </div>
