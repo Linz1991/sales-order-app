@@ -187,6 +187,7 @@ export async function handler(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const num = (url.searchParams.get("num") || "").trim();
     const com = (url.searchParams.get("com") || "").trim();
+    const phone = (url.searchParams.get("phone") || "").trim();
     if (!num) {
       return new Response(JSON.stringify({ status: "400", message: "缺少运单号 num" }), {
         headers: { ...cors, "Content-Type": "application/json" },
@@ -200,7 +201,7 @@ export async function handler(req: Request): Promise<Response> {
     }
 
     // 实时查询接口入参
-    const param = JSON.stringify({ com, num, from: "", to: "" });
+    const param = JSON.stringify(phone ? { com, num, phone, from: "", to: "" } : { com, num, from: "", to: "" });
     const s = sign(param);
 
     const body = new URLSearchParams();
