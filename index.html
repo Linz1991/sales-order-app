@@ -2859,6 +2859,7 @@ function doOrderSearch(){
 }
 
 function renderOrders(){
+ try {
   const isAdmin = currentUser.role === 'admin';
   let orders = DB.get('orders').filter(o => !o._deleted);
   const recycleCount = (DB.get('orders') || []).filter(o => o._deleted).length;
@@ -2973,7 +2974,7 @@ function renderOrders(){
           html += `<tr>`;
           html += `<td style="vertical-align:top">${o.customerName}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col/><col/><col/><col/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}${isAdmin?'<th>下单</th>':''}</tr></thead><tbody>`;
-          o.items.forEach((it, idx) => {
+          (o.items||[]).forEach((it, idx) => {
             const prod = productList.find(p => p.id === it.productId);
             const cost = prod ? prod.cost : 0;
             const waste = it.waste || 0;
@@ -3004,7 +3005,7 @@ function renderOrders(){
           html += `<tr>`;
           html += `<td style="vertical-align:top">${o.customerName}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col/><col/><col/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th>':''}<th>物流单号</th></tr></thead><tbody>`;
-          o.items.forEach((it, idx) => {
+          (o.items||[]).forEach((it, idx) => {
             const prod = (products||[]).find(p => p.id === it.productId);
             const cost = prod ? prod.cost : 0;
             html += `<tr><td>${it.name}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
@@ -3116,7 +3117,7 @@ function renderOrders(){
     if(filtered.length){
       filtered.forEach(o => {
         const canEdit = isAdmin || o.salesId === currentUser.id;
-        const hasOrderedItem = o.items.some(it => it.ordered === true);
+        const hasOrderedItem = (o.items||[]).some(it => it.ordered === true);
         const opBtn = (o.status === 'pending' && canEdit && !hasOrderedItem)
           ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();editOrder('${o.id}')">编辑</button>`
           : (o.status === 'feedback')
@@ -3156,7 +3157,7 @@ function renderOrders(){
           <tbody>
             ${filtered.length ? filtered.map(o=>{
               const canEdit = isAdmin || o.salesId === currentUser.id;
-              const hasOrderedItem = o.items.some(it => it.ordered === true);
+              const hasOrderedItem = (o.items||[]).some(it => it.ordered === true);
               const opBtn = (o.status === 'pending' && canEdit && !hasOrderedItem)
                 ? `<button class="btn btn-primary btn-sm" onclick="editOrder('${o.id}')">编辑</button>`
               : (o.status === 'feedback')
@@ -3183,6 +3184,11 @@ function renderOrders(){
   document.getElementById('mainContent').innerHTML = html;
   // 检查留仓/上门订单是否到期待流转
   checkOrderAutoFlow();
+ } catch(err) {
+  console.error('renderOrders error:', err);
+  const mc = document.getElementById('mainContent');
+  if(mc) mc.innerHTML = '<div class="card"><div class="card-title"><span class="title-text">⚠️ 订单列表渲染出错</span></div><div style="padding:16px;color:var(--danger);font-size:13px;line-height:1.7">渲染订单列表时发生错误，已阻止白屏。错误详情：<br><code>' + (err && err.message ? err.message : err) + '</code><br><br>请尝试：① 关闭所有标签页后重新打开本系统；② 若仍报错，请把上方红色错误信息发给我。</div></div>';
+ }
 }
 
 function clearDateFilter(){
