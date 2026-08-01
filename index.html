@@ -2990,7 +2990,7 @@ function renderOrders(){
           });
           html += `</tbody></table></td>`;
           html += `<td style="font-size:12px;text-align:center">${o.remark||'-'}</td>`;
-          html += `<td "><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button></td></tr>`;
+          html += `<td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button></td></tr>`;
         });
       } else {
         html += `<tr><td colspan="4" class="table-empty">暂无待下单订单</td></tr>`;
@@ -3017,7 +3017,7 @@ function renderOrders(){
             html += `</td></tr>`;
           });
           html += `</tbody></table></td>`;
-          html += `<td "><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button></td></tr>`;
+          html += `<td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button></td></tr>`;
         });
       } else {
         html += `<tr><td colspan="3" class="table-empty">暂无已下单订单</td></tr>`;
@@ -3169,7 +3169,7 @@ function renderOrders(){
                 <td>${salesStatusLabel(o.status)}</td>
                 <td style="font-size:12px">${remark}</td>
                 <td>${formatOrderDate(o.createdAt)}</td>
-                <td>${opBtn}</td>
+                <td style="text-align:center">${opBtn}</td>
               </tr>`;
             }).join('') : '<tr><td colspan="5" class="table-empty">暂无符合条件的订单</td></tr>'}
           </tbody>
@@ -8711,7 +8711,7 @@ function renderSchedule(){
     html += '<div class="table-wrap"><table><thead><tr><th>订单号</th><th>客户</th><th>订单日期</th><th>状态</th><th>操作</th></tr></thead><tbody>';
     if(sorted.length){
       sorted.forEach(function(o){
-        html += '<tr><td><a class="btn-link" onclick="viewOrder(\''+o.id+'\')">'+o.id+'</a></td><td>'+o.customerName+'</td><td>'+(o.orderDate||'-')+'</td><td>'+statusTag(o.status)+'</td><td><button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button></td></tr>';
+        html += '<tr><td><a class="btn-link" onclick="viewOrder(\''+o.id+'\')">'+o.id+'</a></td><td>'+o.customerName+'</td><td>'+(o.orderDate||'-')+'</td><td>'+statusTag(o.status)+'</td><td style="text-align:center"><button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button></td></tr>';
       });
     } else {
       html += '<tr><td colspan="5" class="table-empty">暂无上门订单</td></tr>';
@@ -8733,7 +8733,7 @@ function showScheduleDayOrders(dateStr){
   if(!dayOrders.length){ el.innerHTML = ''; return; }
   var html = '<div class="detail-section card"><h4 style="margin-bottom:10px">'+dateStr+' 的上门订单</h4><div class="table-wrap"><table><thead><tr><th>订单号</th><th>客户</th><th>状态</th><th>操作</th></tr></thead><tbody>';
   dayOrders.forEach(function(o){
-    html += '<tr><td>'+o.id+'</td><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td><button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button></td></tr>';
+    html += '<tr><td>'+o.id+'</td><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td style="text-align:center"><button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button></td></tr>';
   });
   html += '</tbody></table></div></div>';
   el.innerHTML = html;
@@ -8801,7 +8801,7 @@ function renderWarehouse(){
   if(filtered.length){
     html += '<div class="table-wrap"><table><thead><tr><th>订单号</th><th>客户</th><th>订单日期</th><th>金额</th><th>状态</th><th>操作</th></tr></thead><tbody>';
     filtered.forEach(function(o){
-      html += '<tr><td><a class="btn-link" onclick="viewOrder(\''+o.id+'\')">'+o.id+'</a></td><td>'+o.customerName+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+(o.orderDate||'-')+'</td><td style="font-weight:600">'+money(o.total)+'</td><td>'+statusTag(o.status)+'</td><td><button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button></td></tr>';
+      html += '<tr><td><a class="btn-link" onclick="viewOrder(\''+o.id+'\')">'+o.id+'</a></td><td>'+o.customerName+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+(o.orderDate||'-')+'</td><td style="font-weight:600">'+money(o.total)+'</td><td>'+statusTag(o.status)+'</td><td style="text-align:center"><button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button></td></tr>';
     });
     html += '</tbody></table></div>';
   } else {
