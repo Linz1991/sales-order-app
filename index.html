@@ -2865,8 +2865,8 @@ function renderOrders(){
   if(isAdmin){
     // 状态Tab（普通+留仓共用，结构一致）
     const statusTabsByType = {
-      normal:    [{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'}],
-      warehouse: [{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'}]
+      normal:    [{key:'all',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'}],
+      warehouse: [{key:'all',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'}]
     };
     const typeLabel = { normal:'普通', warehouse:'留仓', door:'上门' };
     const tabs = statusTabsByType.normal;
@@ -2878,6 +2878,7 @@ function renderOrders(){
     // 当前类型下的订单与计数（固定排除上门订单，上门在「上门订单」页面管理）
     const statusOrders = orders.filter(o => o.type !== 'door');
     const tabCount = {
+      all: statusOrders.length,
       pending: statusOrders.filter(o=>o.status==='pending').length,
       confirmed: statusOrders.filter(o=>['confirmed','shipped','received'].includes(o.status)).length,
       feedback: statusOrders.filter(o=>o.status==='feedback').length,
@@ -2926,7 +2927,7 @@ function renderOrders(){
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn btn-secondary btn-sm" onclick="renderRecycleBin()">🗑️ 回收站(${recycleCount})</button>
           <button class="btn btn-primary btn-sm" onclick="exportOrders()" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;box-shadow:0 2px 6px rgba(59,130,246,0.25)">
-            <span>📥</span><span>${hasDateRange ? '导出全部订单' : '导出订单'}</span>
+            <span>📥</span><span>${hasDateRange || activeTab==='all' ? '导出全部订单' : '导出订单'}</span>
           </button>
         </div>
       </div>`;
