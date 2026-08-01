@@ -1,5 +1,5 @@
 // 销售订单管理系统 Service Worker：网络优先，离线时回退到缓存，保证断网也能打开页面查看历史数据
-const CACHE = 'soms-v2';
+const CACHE = 'soms-v3';
 const ASSETS = [
   './',
   './index.html',
