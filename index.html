@@ -4323,7 +4323,7 @@ function renderOrderDetail(){
   const isAdminDoorDetail = isAdmin && isDoor && !editMode;
   // 商品明细实际列数（销售仅 名称/数量/售价 3 列；管理员加 成本/损耗/利润）
   const _orderCols = isAdminDoorDetail ? 7
-    : 3 + (isAdmin ? 3 : 0) + (isSalesConfirmedView ? 2 : 0) + (isDoor ? 1 : 0) + (editMode ? 1 : 0);
+    : 3 + (isAdmin ? 3 : 0) + (isDoor ? 1 : 0) + (editMode ? 1 : 0);
   const totalColspan = _orderCols - 1;
 
   const payments = DB.get('payments').filter(p => p.orderId === orderId);
@@ -4427,7 +4427,6 @@ function renderOrderDetail(){
     <div class="detail-section card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
         <h4 style="margin:0">🛒 商品明细 ${editMode ? '<span style="font-size:12px;color:var(--success);font-weight:normal">（编辑模式）</span>' : ''}</h4>
-        ${isSalesConfirmedView ? `<button class="btn btn-secondary btn-sm" onclick="collectSalesLogisticsInfo('${order.id}')">📋 一键收集物流信息</button>` : ''}
       </div>
       ${editMode ? `
       <div class="product-search-wrap" style="margin-bottom:12px">
@@ -4456,7 +4455,6 @@ function renderOrderDetail(){
               <th>数量</th>
               <th>售价</th>
               ${isAdmin ? '<th>成本</th><th>损耗</th><th>利润</th>' : ''}
-              ${isSalesConfirmedView ? '<th>物流单号</th><th>操作</th>' : ''}
               ${isDoor ? '<th>是否备货</th>' : ''}
               ${editMode ? '<th>操作</th>' : ''}
             `}
@@ -4484,10 +4482,6 @@ function renderOrderDetail(){
                   ${isAdmin ? `<td>${money(cost)}</td>` : ''}
                   ${isAdmin ? `<td>${ isAdminOrderView ? `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" id="wasteItem_${i}" oninput="recalcAdminProfit('${order.id}')">` : `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" onchange="saveItemWaste('${order.id}',${i},this.value)">`}</td>` : ''}
                   ${isAdmin ? `<td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}">${money(itemProfit)}</td>` : ''}
-                  ${isSalesConfirmedView ? `
-                    <td>${it.trackingNo ? `<span class="mono" style="font-size:13px">${it.trackingNo}</span>` : '<span style="color:var(--text-muted)">-</span>'}</td>
-                    <td>${it.trackingNo ? `<button class="btn btn-primary btn-sm" onclick="queryLogistics('${order.id}', ${i}, '${it.trackingNo}')">查看</button>` : '<span style="color:var(--text-muted)">-</span>'}</td>
-                  ` : ''}
                   ${isDoor ? `<td>${editMode ? `<select class="form-control" id="editItemStock_${i}" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : ((isAdmin || currentUser.role==='sales') ? `<select class="form-control" onchange="saveItemStock('${order.id}',${i},this.value)" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : (it.stock==='是'?'<span class="tag tag-completed">已备货</span>':'<span class="tag tag-pending">未备货</span>'))}</td>` : ''}
                   ${editMode ? `<td><button class="btn-link danger" onclick="removeEditItem(${i})">删除</button></td>` : ''}
                 `}
@@ -4570,7 +4564,7 @@ function renderOrderDetail(){
                 ` : (it.trackingNo ? `<span class="mono" style="font-size:13px">${it.trackingNo}</span>` : '<span style="color:var(--text-muted)">-</span>')}
                 </td>
                 <td>${getLogisticsStatusTag(it)}</td>
-                <td>${it.trackingNo ? `<button class="btn btn-primary btn-sm" onclick="queryLogistics('${order.id}', ${i}, '${it.trackingNo}')">查询</button>` : ''}</td>
+                <td>${it.trackingNo ? `<button class="btn btn-primary btn-sm" onclick="queryLogistics('${order.id}', ${i}, '${it.trackingNo}')">查看</button>` : ''}</td>
               </tr>
             `).join('')}
           </tbody>
@@ -5181,7 +5175,7 @@ function editOrder(orderId){
 function setOrderFeedback(orderId){
   updateOrderStatus(orderId, 'feedback_done');
 }
-// 销售列表：待反馈订单一键置为「已反馈」
+// 销售/管理员列表：待反馈订单一键置为「已反馈」，确认后转入「已完成」列表
 function markOrderFeedbackDone(orderId){
   const orders = DB.get('orders');
   const idx = orders.findIndex(o => o.id === orderId);
@@ -5194,7 +5188,14 @@ function markOrderFeedbackDone(orderId){
     showToast('该订单不是待反馈状态', 'error');
     return;
   }
-  updateOrderStatus(orderId, 'feedback_done');
+  showConfirm('确认将该订单标记为「已反馈」？确认后订单将转入「已完成」列表。', () => {
+    orders[idx].status = 'feedback_done';
+    orders[idx].feedbackDoneAt = nowStr();
+    DB.set('orders', orders);
+    window._orderTab = 'completed';
+    renderOrders();
+    showToast('已反馈，订单已转入「已完成」列表', 'success');
+  });
 }
 // 已完成（上门）
 function setOrderCompleted(orderId){
