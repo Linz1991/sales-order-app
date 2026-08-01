@@ -6103,9 +6103,27 @@ function saveTrackingNo(orderId, itemIndex, value) {
   item.trackingNo = value.trim();
   item.expressCompany = value.trim() ? detectExpressCompany(value.trim()) : '';
   const order = orders[idx];
+  const allTracking = order.items.every(it => it.trackingNo);
+  const isAdmin = currentUser.role === 'admin';
+  // 管理员填完最后一个物流单号：弹确认框，确认后再转入待反馈并跳转到待反馈列表（销售保持原自动流转）
+  if(isAdmin && allTracking && (order.status === 'confirmed' || order.status === 'pending' || order.status === 'shipped')){
+    showConfirm('所有商品物流单号已录入，确认将该订单转入「待反馈」？', () => {
+      order.status = 'feedback';
+      order.feedbackAt = nowStr();
+      DB.set('orders', orders);
+      window._orderTab = 'feedback';
+      showToast('订单已转入待反馈', 'success');
+      navigate('orders');
+    }, () => {
+      order.status = 'shipped';
+      order.shippedAt = order.shippedAt || nowStr();
+      DB.set('orders', orders);
+      renderOrderDetail();
+    });
+    return;
+  }
   if(order.status === 'confirmed' || order.status === 'pending'){
     const hasTracking = order.items.some(it => it.trackingNo);
-    const allTracking = order.items.every(it => it.trackingNo);
     if(allTracking){
       order.status = 'feedback';
       order.feedbackAt = nowStr();
@@ -6116,7 +6134,6 @@ function saveTrackingNo(orderId, itemIndex, value) {
       showToast('已填写物流单号，订单状态已更新为"运输中"', 'success');
     }
   }else if(order.status === 'shipped'){
-    const allTracking = order.items.every(it => it.trackingNo);
     if(allTracking){
       order.status = 'feedback';
       order.feedbackAt = nowStr();
@@ -6137,6 +6154,24 @@ function saveTrackingNoFromList(orderId, itemIndex, value) {
   order.items[itemIndex].expressCompany = value.trim() ? detectExpressCompany(value.trim()) : '';
   const hasTracking = order.items.some(it => it.trackingNo);
   const allTracking = order.items.every(it => it.trackingNo);
+  const isAdmin = currentUser.role === 'admin';
+  // 管理员填完最后一个物流单号：弹确认框，确认后再转入待反馈并跳转到待反馈列表（销售保持原自动流转）
+  if(isAdmin && allTracking && (order.status === 'confirmed' || order.status === 'pending' || order.status === 'shipped')){
+    showConfirm('所有商品物流单号已录入，确认将该订单转入「待反馈」？', () => {
+      order.status = 'feedback';
+      order.feedbackAt = nowStr();
+      DB.set('orders', orders);
+      window._orderTab = 'feedback';
+      showToast('订单已转入待反馈', 'success');
+      renderOrders();
+    }, () => {
+      order.status = 'shipped';
+      order.shippedAt = order.shippedAt || nowStr();
+      DB.set('orders', orders);
+      renderOrders();
+    });
+    return;
+  }
   // 自动流转：确认/待下单 → 有物流 → 运输中
   if(hasTracking && (order.status === 'confirmed' || order.status === 'pending')){
     if(allTracking){
@@ -10102,27 +10137,38 @@ window.addEventListener('appinstalled', function(){
   _deferredPrompt = null;
 });
 
-function showConfirm(msg, onConfirm){
+function showConfirm(msg, onConfirm, onCancel){
   // 用唯一函数名包装
   window._confirmCallback = onConfirm;
+  window._cancelCallback = onCancel;
   const modalHtml = `
-    <div class="modal-mask" onclick="if(event.target===this)closeModal()">
+    <div class="modal-mask" onclick="if(event.target===this){closeModal();_safeCancel()}">
       <div class="modal" style="max-width:400px">
         <div class="modal-header">
           <h3>确认操作</h3>
-          <button class="modal-close" onclick="closeModal()">×</button>
+          <button class="modal-close" onclick="closeModal();_safeCancel()">×</button>
         </div>
         <div class="modal-body">
           <p style="font-size:14px;line-height:1.7">${msg}</p>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="closeModal()">取消</button>
-          <button class="btn btn-danger" onclick="closeModal(); window._confirmCallback()">确认</button>
+          <button class="btn btn-secondary" onclick="closeModal();_safeCancel()">取消</button>
+          <button class="btn btn-danger" onclick="closeModal();_safeConfirm()">确认</button>
         </div>
       </div>
     </div>
   `;
   document.getElementById('modalContainer').innerHTML = modalHtml;
+}
+function _safeConfirm(){
+  const cb = window._confirmCallback;
+  window._confirmCallback = null;
+  if(typeof cb === 'function') cb();
+}
+function _safeCancel(){
+  const cb = window._cancelCallback;
+  window._cancelCallback = null;
+  if(typeof cb === 'function') cb();
 }
 
 /* ============ 物流轨迹查询模块 ============ */
