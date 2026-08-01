@@ -2973,7 +2973,7 @@ function renderOrders(){
           const itemCols = isAdmin ? 7 : 6;
           html += `<tr>`;
           html += `<td style="vertical-align:top">${o.customerName}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
-          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col/><col/><col/><col/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}${isAdmin?'<th>下单</th>':''}</tr></thead><tbody>`;
+          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col/><col/><col/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>利润</th>':''}${isAdmin?'<th>下单</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const prod = productList.find(p => p.id === it.productId);
             const cost = prod ? prod.cost : 0;
@@ -2983,7 +2983,6 @@ function renderOrders(){
             html += `<tr><td>${it.name}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
             if(isAdmin){
               html += `<td>${money(cost)}</td>`;
-              html += `<td><input type="number" value="${it.waste||''}" min="0" placeholder="0" onchange="saveItemWaste('${o.id}',${idx},this.value)"></td>`;
               html += `<td style="color:${profit>=0?'var(--success)':'var(--danger)'};font-weight:600">${money(profit)}</td>`;
             }
             html += `<td>${isAdmin ? (isOrdered ? '<button class="btn btn-sm" disabled style="opacity:.5;cursor:not-allowed;background:#d1d5db;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:12px">已下单</button>' : '<button class="btn btn-success btn-sm" onclick="markItemOrdered(\''+o.id+'\','+idx+')">下单</button>') : ''}</td>`;
@@ -3004,18 +3003,15 @@ function renderOrders(){
         filtered.forEach(o => {
           html += `<tr>`;
           html += `<td style="vertical-align:top">${o.customerName}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
-          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col/><col/><col/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th>':''}<th>物流单号</th></tr></thead><tbody>`;
+          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const prod = (products||[]).find(p => p.id === it.productId);
             const cost = prod ? prod.cost : 0;
             html += `<tr><td>${it.name}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
             if(isAdmin){
               html += `<td>${money(cost)}</td>`;
-              html += `<td><input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" onchange="saveItemWaste('${o.id}',${idx},this.value)"></td>`;
             }
-            html += `<td><input type="text" value="${it.trackingNo||''}" placeholder="输入运单号" style="padding:3px 6px;min-width:160px;border:1px solid var(--border);border-radius:4px;font-size:12px;width:100%" onchange="saveTrackingNoFromList('${o.id}',${idx},this.value)">`;
-            if(it.expressCompany) html += `<br><span style="font-size:11px;color:var(--info)">${it.expressCompany}</span>`;
-            html += `</td></tr>`;
+            html += `</tr>`;
           });
           html += `</tbody></table></td>`;
           html += `<td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button></td></tr>`;
@@ -4554,7 +4550,7 @@ function renderOrderDetail(){
                   <td>${it.qty}</td>
                   <td>${it.expressCompany || '<span style="color:var(--text-muted)">-</span>'}</td>
                   <td><input type="text" class="form-control" id="trackItem_${i}" value="${it.trackingNo||''}" placeholder="输入运单号" style="padding:6px 10px;min-width:160px"></td>
-                  <td>${it.trackingNo ? `<button class="btn btn-primary btn-sm" onclick="queryLogistics('${order.id}', ${i}, '${it.trackingNo}')">查询</button>` : ''}</td>
+                  <td>${it.trackingNo ? `<button class="btn btn-primary btn-sm" onclick="queryLogistics('${order.id}', ${i}, '${it.trackingNo}')">查看</button>` : ''}</td>
                 </tr>
               `).join('')}
             </tbody>
