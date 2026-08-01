@@ -2388,7 +2388,7 @@ function renderSidebar(){
   nav.innerHTML = '<div class="nav-section-title">功能菜单</div>' +
     menus.map(m => {
       let b = '';
-      if(m.route === 'orders') b = badge(pendingCount + feedbackCount);
+      // if(m.route === 'orders') b = badge(pendingCount + feedbackCount);
       if(m.route === 'aftersales') b = badge(asTotalCount);
       const click = m.route === 'orders' ? "gotoOrdersList()" : `navigate('${m.route}')`;
       return `
@@ -2808,20 +2808,18 @@ function renderOrders(){
   const typeFilter = window._orderType || '';
   const dateFilter = window._orderDateFilter || '';
 
-  // 管理员：按Tab分状态显示
+  // 管理员：按Tab分状态显示（订单管理仅显示普通+留仓订单，上门订单在「上门订单」页面管理）
   if(isAdmin){
-    // ===== 两级筛选：先选订单类型，再选状态，售后下再选售后状态 =====
-    const adminType = window._adminType || 'normal';   // normal|warehouse|door|all
+    // ===== 筛选：状态 + 售后子筛选（不含订单类型，固定排除上门订单） =====
     const asSub = window._aftersaleSub || '';          // 售后子筛选：''|pending|processing|resolved
 
-    // 类型对应的状态Tab（上门无"待反馈"）
+    // 状态Tab（普通+留仓共用，结构一致）
     const statusTabsByType = {
       normal:    [{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'},{key:'aftersale',label:'售后'}],
-      warehouse: [{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'},{key:'aftersale',label:'售后'}],
-      door:      [{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'completed',label:'已完成'},{key:'aftersale',label:'售后'}]
+      warehouse: [{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'},{key:'aftersale',label:'售后'}]
     };
     const typeLabel = { normal:'普通', warehouse:'留仓', door:'上门' };
-    const tabs = statusTabsByType[adminType] || statusTabsByType.normal;
+    const tabs = statusTabsByType.normal;
 
     // 当前状态Tab（校验合法性：切换类型后若原Tab不存在则回退到待下单）
     let activeTab = window._orderTab || 'pending';
@@ -2832,10 +2830,10 @@ function renderOrders(){
     const orderTypeMap = {};
     orders.forEach(o => { orderTypeMap[o.id] = o.type; });
     const asTypeOf = (a) => a.orderType || orderTypeMap[a.orderId] || 'normal';
-    const typeAftersales = aftersales.filter(a => adminType === 'all' || asTypeOf(a) === adminType);
+    const typeAftersales = aftersales.filter(a => { const t = a.orderType || orderTypeMap[a.orderId] || 'normal'; return t !== 'door'; });
 
-    // 当前类型下的订单与计数
-    const statusOrders = orders.filter(o => adminType === 'all' || o.type === adminType);
+    // 当前类型下的订单与计数（固定排除上门订单，上门在「上门订单」页面管理）
+    const statusOrders = orders.filter(o => o.type !== 'door');
     const tabCount = {
       pending: statusOrders.filter(o=>o.status==='pending').reduce((sum,o)=>sum+((o.items||[]).filter(it=>it.ordered!==true).length),0),
       confirmed: statusOrders.filter(o=>['confirmed','shipped','received'].includes(o.status)).length,
@@ -2900,16 +2898,7 @@ function renderOrders(){
       <input type="date" class="form-control" style="width:150px;border-radius:6px" value="${window._expEnd||''}" onchange="window._expEnd=this.value;renderOrders()">
       <button class="btn btn-sm" onclick="clearExportDateFilter()" style="border:1px solid var(--border);background:#fff;color:var(--text-secondary)">清除</button>
     </div>`;
-    // 第一级：订单类型筛选（全部/普通/留仓/上门）
-    html += `<div class="admin-tab-bar" style="margin:6px 0;display:flex;align-items:center;flex-wrap:wrap">`;
-    html += `<span style="font-size:13px;color:var(--text-muted);margin-right:8px">订单类型：</span>`;
-    html += `<button class="btn btn-sm ${adminType==='all'?'btn-primary':'btn-secondary'}" onclick="window._adminType='all';renderOrders()" style="margin-right:6px">全部</button>`;
-    ['normal','warehouse','door'].forEach(tk => {
-      html += `<button class="btn btn-sm ${adminType===tk?'btn-primary':'btn-secondary'}" onclick="window._adminType='${tk}';renderOrders()" style="margin-right:6px">${typeLabel[tk]}</button>`;
-    });
-    html += `</div>`;
-    // 第二级：状态Tab（随类型变化）
-    html += `<div class="admin-order-tabs">`;
+    // 状态Tab
     tabs.forEach(t => {
       const count = tabCount[t.key];
       const needBadge = (t.key === 'pending' || t.key === 'feedback') && count > 0;
@@ -3078,8 +3067,14 @@ function renderOrders(){
   if(typeFilter === 'whdoor'){
     filtered = filtered.filter(o => o.type==='warehouse' || o.type==='door');
   }
-  if(dateFilter){
-    filtered = filtered.filter(o => (o.createdAt||'').startsWith(dateFilter));
+  // 销售端日期范围筛选
+  const salesDateStart = window._salesDateStart || '';
+  const salesDateEnd = window._salesDateEnd || '';
+  if(salesDateStart){
+    filtered = filtered.filter(o => { var d = (o.createdAt||'').slice(0,10); return d >= salesDateStart; });
+  }
+  if(salesDateEnd){
+    filtered = filtered.filter(o => { var d = (o.createdAt||'').slice(0,10); return d <= salesDateEnd; });
   }
 
   filtered = [...filtered].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
@@ -3106,6 +3101,13 @@ function renderOrders(){
           <input type="text" id="orderSearchInput" placeholder="搜索姓名/电话/商品" value="${keyword}" onkeydown="if(event.key==='Enter')doOrderSearch()">
         </div>
         <button class="btn btn-primary btn-sm" onclick="doOrderSearch()">搜索</button>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0">
+        <span style="font-size:13px;color:var(--text-muted);white-space:nowrap">📅 下单时间：</span>
+        <input type="date" class="form-control" style="width:145px;border-radius:6px" value="${window._salesDateStart||''}" onchange="window._salesDateStart=this.value;renderOrders()">
+        <span style="color:var(--text-muted)">至</span>
+        <input type="date" class="form-control" style="width:145px;border-radius:6px" value="${window._salesDateEnd||''}" onchange="window._salesDateEnd=this.value;renderOrders()">
+        <button class="btn btn-sm" onclick="window._salesDateStart='';window._salesDateEnd='';renderOrders()" style="border:1px solid var(--border);background:#fff;color:var(--text-secondary)">清除</button>
       </div>
       <div class="sales-status-tabs" style="display:flex;gap:20px;margin:14px 0 4px;flex-wrap:wrap">
         ${salesStatusTabs.map(t=>`<span class="sales-status-tab ${status===t.key?'active':''}" onclick="filterOrders('${t.key}','status')" style="cursor:pointer;font-size:14px;padding-bottom:4px;color:${status===t.key?'var(--danger)':'var(--text-muted)'};${status===t.key?'font-weight:600;border-bottom:2px solid var(--danger)':''}">${t.label}</span>`).join('')}
@@ -6709,7 +6711,7 @@ function exportOrders(){
   if(!isAdmin){ showToast('仅管理员可导出','error'); return; }
   const orders = DB.get('orders').filter(o => !o._deleted);
   const products = DB.get('products');
-  const adminType = window._adminType || 'normal';
+  // 订单管理页面固定排除上门订单（上门订单在「上门订单」页面导出）
   let activeTab = window._orderTab || 'pending';
   // 售后Tab展示的是售后单而非订单，导出订单时回退为全部状态
   if(activeTab === 'aftersale') activeTab = 'all';
@@ -6717,9 +6719,8 @@ function exportOrders(){
   // 导出筛选规则：选择了时间范围时，导出该时间范围内的全部订单（忽略类型/状态Tab）；否则复刻当前列表筛选
   const expStart = window._expStart, expEnd = window._expEnd;
   const hasDateRange = !!(expStart || expEnd);
-  let filtered = orders;
+  let filtered = orders.filter(o => o.type !== 'door'); // 订单管理排除上门订单
   if(!hasDateRange){
-    if(adminType && adminType !== 'all') filtered = filtered.filter(o => (o.type||'normal') === adminType);
     if(activeTab === 'pending') filtered = filtered.filter(o => o.status === 'pending');
     else if(activeTab === 'confirmed') filtered = filtered.filter(o => o.status === 'confirmed');
     else if(activeTab === 'feedback') filtered = filtered.filter(o => o.status === 'feedback');
@@ -6778,7 +6779,7 @@ function exportOrders(){
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  const fileTag = hasDateRange ? '全部' : (typeLabel[adminType]||(adminType==='all'?'全部':adminType));
+  const fileTag = hasDateRange ? '全部' : '普通留仓';
   const dateTag = (expStart || expEnd) ? (expStart||'') + (expEnd && expStart ? '_' + expEnd : (expEnd||'')) : new Date().toISOString().slice(0,10);
   a.download = '订单详情_' + fileTag + '_' + dateTag + '.csv';
   document.body.appendChild(a);
@@ -6793,6 +6794,158 @@ function clearExportDateFilter(){
   window._expStart = '';
   window._expEnd = '';
   renderOrders();
+}
+
+// 导出上门订单
+function exportScheduleOrders(){
+  var allDoorOrders = DB.get('orders').filter(function(o){ return o.type === 'door' && !o._deleted; });
+  var statusKey = window._scheduleStatus || '';
+  var schKeyword = window._scheduleFilter || '';
+  var schDateStart = window._scheduleDateStart || '';
+  var schDateEnd = window._scheduleDateEnd || '';
+
+  var doorStatusMap = {
+    'pending': ['pending'],
+    'confirmed': ['confirmed','shipped','received'],
+    'completed': ['completed','canceled']
+  };
+
+  var filtered = allDoorOrders;
+  if(statusKey && doorStatusMap[statusKey]){
+    filtered = filtered.filter(function(o){ return doorStatusMap[statusKey].indexOf(o.status) >= 0; });
+  }
+  if(schKeyword){
+    var skw = schKeyword.toLowerCase();
+    filtered = filtered.filter(function(o){
+      return (o.customerName||'').indexOf(schKeyword) >= 0 ||
+        (o.phone||'').indexOf(schKeyword) >= 0 ||
+        (o.items||[]).some(function(it){ return (it.name||'').indexOf(schKeyword) >= 0; });
+    });
+  }
+  if(schDateStart){
+    filtered = filtered.filter(function(o){ var d = o.orderDate || (o.createdAt||'').slice(0,10); return d >= schDateStart; });
+  }
+  if(schDateEnd){
+    filtered = filtered.filter(function(o){ var d = o.orderDate || (o.createdAt||'').slice(0,10); return d <= schDateEnd; });
+  }
+
+  if(!filtered.length){ showToast('当前筛选无上门订单可导出','error'); return; }
+
+  var products = DB.get('products');
+  var statusLabel = { pending:'待下单', confirmed:'已下单', completed:'已完成', received:'已签收', canceled:'已取消', shipped:'运输中' };
+  var escapeCell = function(cell){
+    var s = String(cell == null ? '' : cell).replace(/"/g,'""');
+    return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
+  };
+  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','利润','订单日期','创建时间'];
+  var rows = [];
+  filtered.forEach(function(o){
+    var cost = o.items.reduce(function(s,it){ var p = products.find(function(x){return x.id===it.productId}); return s + (p?p.cost:0)*it.qty; }, 0);
+    var profit = (parseInt(o.total)||0) - cost - (o.wasteLoss||0);
+    var address = [o.province,o.city,o.district,o.region,o.address].filter(Boolean).join(' ');
+    var items = (o.items&&o.items.length) ? o.items : [{ name:'(无商品)', price:0, qty:0, productId:null, waste:0 }];
+    items.forEach(function(it, idx){
+      var p = products.find(function(x){return x.id===it.productId});
+      var qty = it.qty||0;
+      var price = it.price||0;
+      rows.push([
+        o.id, statusLabel[o.status]||o.status,
+        o.customerName||'', o.phone||'', address, o.salesName||'',
+        it.name||'', qty, Math.round(price), Math.round(price*qty),
+        Math.round(o.total||0), Math.round(cost), Math.round(it.waste||0), Math.round(profit),
+        o.orderDate||'', o.createdAt||''
+      ]);
+    });
+  });
+  var csv = [header].concat(rows).map(function(r){ return r.map(escapeCell).join(','); }).join('\r\n');
+  var blob = new Blob(['\ufeff'+csv], { type:'text/csv;charset=utf-8;' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  var dateTag = (schDateStart || schDateEnd) ? (schDateStart||'') + (schDateEnd && schDateStart ? '_' + schDateEnd : (schDateEnd||'')) : new Date().toISOString().slice(0,10);
+  a.download = '上门订单_' + dateTag + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('上门订单已导出','success');
+}
+
+// 导出留仓订单
+function exportWarehouseOrders(){
+  var orders = DB.get('orders').filter(function(o){ return o.type === 'warehouse' && !o._deleted; });
+  var statusKey = window._warehouseStatus || '';
+  var keyword = window._warehouseFilter || '';
+  var whDateStart = window._whDateStart || '';
+  var whDateEnd = window._whDateEnd || '';
+
+  var statusMap = {
+    'pending': ['pending'],
+    'confirmed': ['confirmed','shipped','received'],
+    'feedback': ['feedback','feedback_done'],
+    'completed': ['completed','canceled']
+  };
+
+  var filtered = orders;
+  if(statusKey && statusMap[statusKey]){
+    filtered = filtered.filter(function(o){ return statusMap[statusKey].indexOf(o.status) >= 0; });
+  }
+  if(keyword){
+    var kw = keyword.toLowerCase();
+    filtered = filtered.filter(function(o){
+      return o.id.toLowerCase().indexOf(kw) >= 0 ||
+        (o.customerName||'').indexOf(keyword) >= 0 ||
+        (o.phone||'').indexOf(keyword) >= 0 ||
+        (o.items||[]).some(function(it){ return (it.name||'').indexOf(keyword) >= 0; });
+    });
+  }
+  if(whDateStart){
+    filtered = filtered.filter(function(o){ var d = (o.orderDate||o.createdAt||'').slice(0,10); return d >= whDateStart; });
+  }
+  if(whDateEnd){
+    filtered = filtered.filter(function(o){ var d = (o.orderDate||o.createdAt||'').slice(0,10); return d <= whDateEnd; });
+  }
+
+  if(!filtered.length){ showToast('当前筛选无留仓订单可导出','error'); return; }
+
+  var products = DB.get('products');
+  var statusLabel = { pending:'待下单', confirmed:'已下单', feedback:'待反馈', feedback_done:'已完成', completed:'已完成', received:'已签收', canceled:'已取消', shipped:'运输中' };
+  var escapeCell = function(cell){
+    var s = String(cell == null ? '' : cell).replace(/"/g,'""');
+    return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
+  };
+  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','利润','订单日期','创建时间'];
+  var rows = [];
+  filtered.forEach(function(o){
+    var cost = o.items.reduce(function(s,it){ var p = products.find(function(x){return x.id===it.productId}); return s + (p?p.cost:0)*it.qty; }, 0);
+    var profit = (parseInt(o.total)||0) - cost - (o.wasteLoss||0);
+    var address = [o.province,o.city,o.district,o.region,o.address].filter(Boolean).join(' ');
+    var items = (o.items&&o.items.length) ? o.items : [{ name:'(无商品)', price:0, qty:0, productId:null, waste:0 }];
+    items.forEach(function(it){
+      var p = products.find(function(x){return x.id===it.productId});
+      var qty = it.qty||0;
+      var price = it.price||0;
+      rows.push([
+        o.id, statusLabel[o.status]||o.status,
+        o.customerName||'', o.phone||'', address, o.salesName||'',
+        it.name||'', qty, Math.round(price), Math.round(price*qty),
+        Math.round(o.total||0), Math.round(cost), Math.round(it.waste||0), Math.round(profit),
+        o.orderDate||'', o.createdAt||''
+      ]);
+    });
+  });
+  var csv = [header].concat(rows).map(function(r){ return r.map(escapeCell).join(','); }).join('\r\n');
+  var blob = new Blob(['\ufeff'+csv], { type:'text/csv;charset=utf-8;' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  var dateTag = (whDateStart || whDateEnd) ? (whDateStart||'') + (whDateEnd && whDateStart ? '_' + whDateEnd : (whDateEnd||'')) : new Date().toISOString().slice(0,10);
+  a.download = '留仓订单_' + dateTag + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('留仓订单已导出','success');
 }
 
 /* ============ 商品列表 ============ */
@@ -8322,12 +8475,44 @@ function renderSchedule(){
   var schTabs = [
     {key:'',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'completed',label:'已完成'}
   ];
-  var html = '<div class="card"><div class="card-title"><span class="title-text">📅 上门订单</span><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="renderOrderNew(\'door\')">+ 新建上门订单</button><button class="btn btn-sm '+(viewMode==='calendar'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'calendar\';renderSchedule()">日历视图</button><button class="btn btn-sm '+(viewMode==='list'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'list\';renderSchedule()">列表视图</button></div></div>';
+  var schKeyword = window._scheduleFilter || '';
+  var schDateStart = window._scheduleDateStart || '';
+  var schDateEnd = window._scheduleDateEnd || '';
+
+  // 关键词检索（客户姓名/电话/商品）
+  if(schKeyword){
+    var skw = schKeyword.toLowerCase();
+    orders = orders.filter(function(o){
+      return (o.customerName||'').indexOf(schKeyword) >= 0 ||
+        (o.phone||'').indexOf(schKeyword) >= 0 ||
+        (o.items||[]).some(function(it){ return (it.name||'').indexOf(schKeyword) >= 0; });
+    });
+  }
+  // 日期范围筛选
+  if(schDateStart){
+    orders = orders.filter(function(o){ var d = o.orderDate || (o.createdAt||'').slice(0,10); return d >= schDateStart; });
+  }
+  if(schDateEnd){
+    orders = orders.filter(function(o){ var d = o.orderDate || (o.createdAt||'').slice(0,10); return d <= schDateEnd; });
+  }
+
+  var html = '<div class="card"><div class="card-title"><span class="title-text">📅 上门订单</span><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="renderOrderNew(\'door\')">+ 新建上门订单</button><button class="btn btn-sm '+(viewMode==='calendar'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'calendar\';renderSchedule()">日历视图</button><button class="btn btn-sm '+(viewMode==='list'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'list\';renderSchedule()">列表视图</button><button class="btn btn-primary btn-sm" onclick="exportScheduleOrders()" style="display:inline-flex;align-items:center;gap:4px">📥 导出</button></div></div>';
   html += '<div class="admin-order-tabs" style="margin:12px 0">';
   schTabs.forEach(function(t){
     var cnt = t.key==='' ? allDoorOrders.length : allDoorOrders.filter(function(o){ return doorStatusMap[t.key].indexOf(o.status) >= 0; }).length;
     html += '<div class="tab-item '+(statusKey===t.key?'active':'')+'" onclick="window._scheduleStatus=\''+t.key+'\';renderSchedule()">'+t.label+' ('+cnt+')</div>';
   });
+  html += '</div>';
+  // 检索栏 + 日期筛选
+  html += '<div class="filter-bar" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0">';
+  html += '<div class="search-box" style="flex:1;min-width:180px"><span class="search-icon">🔍</span><input type="text" placeholder="搜索客户/电话/商品" value="'+schKeyword+'" oninput="window._scheduleFilter=this.value;renderSchedule()"></div>';
+  html += '</div>';
+  html += '<div class="admin-tab-bar" style="margin:6px 0;display:flex;align-items:center;gap:6px;flex-wrap:wrap">';
+  html += '<span style="font-size:13px;color:var(--text-muted)">📅 订单日期：</span>';
+  html += '<input type="date" class="form-control" style="width:140px;border-radius:6px" value="'+schDateStart+'" onchange="window._scheduleDateStart=this.value;renderSchedule()">';
+  html += '<span style="color:var(--text-muted)">至</span>';
+  html += '<input type="date" class="form-control" style="width:140px;border-radius:6px" value="'+schDateEnd+'" onchange="window._scheduleDateEnd=this.value;renderSchedule()">';
+  html += '<button class="btn btn-sm" onclick="window._scheduleDateStart=\'\';window._scheduleDateEnd=\'\';renderSchedule()" style="border:1px solid var(--border);background:#fff;color:var(--text-secondary)">清除</button>';
   html += '</div>';
 
   if(viewMode === 'calendar'){
@@ -8430,6 +8615,8 @@ function renderWarehouse(){
   if(!isAdmin) orders = orders.filter(function(o){ return o.salesId === currentUser.id; });
   var keyword = window._warehouseFilter || '';
   var statusKey = window._warehouseStatus || '';
+  var whDateStart = window._whDateStart || '';
+  var whDateEnd = window._whDateEnd || '';
   // 状态映射：待下单/已下单/待反馈/已完成；其余内部状态归入对应显示组
   var statusMap = {
     'pending': ['pending'],
@@ -8445,8 +8632,16 @@ function renderWarehouse(){
     filtered = filtered.filter(function(o){
       return o.id.toLowerCase().indexOf(keyword.toLowerCase()) >= 0 ||
         (o.customerName||'').indexOf(keyword) >= 0 ||
-        (o.phone||'').indexOf(keyword) >= 0;
+        (o.phone||'').indexOf(keyword) >= 0 ||
+        (o.items||[]).some(function(it){ return (it.name||'').indexOf(keyword) >= 0; });
     });
+  }
+  // 日期范围筛选
+  if(whDateStart){
+    filtered = filtered.filter(function(o){ var d = (o.orderDate||o.createdAt||'').slice(0,10); return d >= whDateStart; });
+  }
+  if(whDateEnd){
+    filtered = filtered.filter(function(o){ var d = (o.orderDate||o.createdAt||'').slice(0,10); return d <= whDateEnd; });
   }
   filtered = filtered.slice().sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
 
@@ -8454,13 +8649,21 @@ function renderWarehouse(){
     {key:'',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},
     {key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'}
   ];
-  var html = '<div class="card"><div class="card-title"><span class="title-text">🏷️ 留仓订单</span><button class="btn btn-primary btn-sm" onclick="renderOrderNew(\'warehouse\')" style="margin-left:auto">+ 新建留仓订单</button></div>';
-  html += '<div class="filter-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="搜索订单号/客户/电话" value="'+keyword+'" oninput="window._warehouseFilter=this.value;renderWarehouse()"></div></div>';
+  var html = '<div class="card"><div class="card-title"><span class="title-text">🏷️ 留仓订单</span><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="renderOrderNew(\'warehouse\')">+ 新建留仓订单</button><button class="btn btn-primary btn-sm" onclick="exportWarehouseOrders()" style="display:inline-flex;align-items:center;gap:4px">📥 导出</button></div></div>';
+  html += '<div class="filter-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="搜索订单号/客户/电话/商品" value="'+keyword+'" oninput="window._warehouseFilter=this.value;renderWarehouse()"></div></div>';
   html += '<div class="admin-order-tabs" style="margin-bottom:12px">';
   whTabs.forEach(function(t){
     var count = t.key==='' ? orders.length : orders.filter(function(o){ return statusMap[t.key].indexOf(o.status) >= 0; }).length;
     html += '<div class="tab-item '+(statusKey===t.key?'active':'')+'" onclick="window._warehouseStatus=\''+t.key+'\';renderWarehouse()">'+t.label+' ('+count+')</div>';
   });
+  html += '</div>';
+  // 日期范围筛选
+  html += '<div class="admin-tab-bar" style="margin:6px 0;display:flex;align-items:center;gap:6px;flex-wrap:wrap">';
+  html += '<span style="font-size:13px;color:var(--text-muted)">📅 订单日期：</span>';
+  html += '<input type="date" class="form-control" style="width:140px;border-radius:6px" value="'+whDateStart+'" onchange="window._whDateStart=this.value;renderWarehouse()">';
+  html += '<span style="color:var(--text-muted)">至</span>';
+  html += '<input type="date" class="form-control" style="width:140px;border-radius:6px" value="'+whDateEnd+'" onchange="window._whDateEnd=this.value;renderWarehouse()">';
+  html += '<button class="btn btn-sm" onclick="window._whDateStart=\'\';window._whDateEnd=\'\';renderWarehouse()" style="border:1px solid var(--border);background:#fff;color:var(--text-secondary)">清除</button>';
   html += '</div>';
 
   if(filtered.length){
