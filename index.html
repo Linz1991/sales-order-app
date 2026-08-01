@@ -4594,6 +4594,7 @@ function renderOrderDetail(){
             <div class="info-item"><div class="info-label">尾款状态</div><div class="info-value">${order.deposit ? '有尾款（'+money(Math.max(0,(order.total||0)-(order.deposit||0)))+'）' : '无尾款（全款）'}</div></div>
           </div>
         </div>
+        ${(!isAdmin && isOwner && order.status==='confirmed') ? `<div style="margin-top:14px"><button class="btn btn-secondary" onclick="window._orderTab='confirmed';navigate('orders')">← 返回订单列表-已下单</button></div>` : ''}
       </div>`;
     } else {
       html += `
@@ -9877,13 +9878,22 @@ function copyLogisticsInfo(orderId){
   const order = DB.get('orders').find(o => o.id === orderId);
   if(!order){ showToast('订单不存在','error'); return; }
   let text = '';
+  const missing = [];
   order.items.forEach(it => {
     const tn = (it.trackingNo || '').trim();
+    if(!tn) missing.push(it.name);
     text += it.name + ' x' + it.qty + (tn ? ' #' + tn : '') + '\n';
   });
   text = text.trim();
+  const afterCopy = (ok) => {
+    if(missing.length){
+      showToast('⚠️ 已复制，但'+missing.length+'个商品暂无物流单号：'+missing.join('、'), 'warning');
+    } else {
+      showToast(ok ? '物流信息已复制到剪贴板，可直接粘贴' : '物流信息已复制', 'success');
+    }
+  };
   navigator.clipboard.writeText(text).then(() => {
-    showToast('物流信息已复制到剪贴板，可直接粘贴','success');
+    afterCopy(true);
   }).catch(() => {
     // 降级方案
     const ta = document.createElement('textarea');
@@ -9892,7 +9902,7 @@ function copyLogisticsInfo(orderId){
     ta.select();
     document.execCommand('copy');
     document.body.removeChild(ta);
-    showToast('物流信息已复制','success');
+    afterCopy(false);
   });
 }
 
