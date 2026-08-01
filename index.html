@@ -26,20 +26,9 @@ const SUPABASE_URL = 'https://mfimcrzewhnlbtkjgqlq.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_nwhoBCwURiqEoUegkuGI5g_6AJwfrBj';
 window._sbpbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// 一次性清空全部订单（B 方案：清系统所有订单）。每台浏览器只执行一次，之后新建的订单不会被误删。
-(function(){
-  try{
-    if(localStorage.getItem('SOMS_WIPED_ALL_V1')==='1') return;
-    localStorage.setItem('soms_orders','[]');
-    if(window._sbpbClient){
-      window._sbpbClient.from('orders').delete().neq('id','___never_exist___')
-        .then(function(r){ if(!r.error) localStorage.setItem('SOMS_WIPED_ALL_V1','1'); })
-        .catch(function(){});
-    } else {
-      localStorage.setItem('SOMS_WIPED_ALL_V1','1');
-    }
-  }catch(e){ console.warn('wipe orders once failed', e); }
-})();
+// 注意：原先的“一次性清空全部订单”脚本（含云端 DELETE）已移除——
+// 其云端 DELETE 会在未设标记的浏览器首次加载时清空整个 orders 表，误删他人刚提交的订单。
+// 清旧单已通过云端 Node 脚本完成；本地残留旧单保留，避免误删。
 
 /* ============ 快递100 实时物流（真实接口，非模拟） ============
  * 快递100 实时查询(poll) 接口需要 key + customer + MD5 签名，且浏览器直连会被 CORS 拦截，
@@ -1187,11 +1176,22 @@ const DB = {
     }
   },
 
-  // 按 id 合并本地与云端数据（本地优先），避免多端互相覆盖导致订单丢失
+  // 按 id 合并本地与云端数据：以 updatedAt/createdAt 较新者优先（云端权威、更新覆盖旧本地），
+  // 解决多端协作时“一端改动被另一端本地旧版覆盖/订单丢失”的问题。
   _mergeById(local, cloud){
     const map = {};
-    (cloud || []).forEach(r => { if(r && r.id != null) map[r.id] = r; });
-    (local || []).forEach(r => { if(r && r.id != null) map[r.id] = r; }); // 本地优先覆盖
+    const ts = r => {
+      if(!r) return 0;
+      const v = r.updatedAt || r.createdAt || r.orderDate || r.payDate || '';
+      const n = v ? Date.parse((''+v).replace(' ', 'T')) : 0;
+      return isNaN(n) ? 0 : n;
+    };
+    (local || []).forEach(r => { if(r && r.id != null) map[r.id] = r; });
+    (cloud || []).forEach(r => {
+      if(!r || r.id == null) return;
+      if(!map[r.id]) map[r.id] = r;                 // 云端独有 → 保留
+      else if(ts(r) >= ts(map[r.id])) map[r.id] = r; // 云端更新（或相等）→ 覆盖本地旧版
+    });
     return Object.keys(map).map(id => map[id]);
   },
 
