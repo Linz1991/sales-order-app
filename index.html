@@ -2873,7 +2873,7 @@ function renderOrders(){
     // 当前类型下的订单与计数（固定排除上门订单，上门在「上门订单」页面管理）
     const statusOrders = orders.filter(o => o.type !== 'door');
     const tabCount = {
-      pending: statusOrders.filter(o=>o.status==='pending').reduce((sum,o)=>sum+((o.items||[]).filter(it=>it.ordered!==true).length),0),
+      pending: statusOrders.filter(o=>o.status==='pending').length,
       confirmed: statusOrders.filter(o=>['confirmed','shipped','received'].includes(o.status)).length,
       feedback: statusOrders.filter(o=>o.status==='feedback').length,
       completed: statusOrders.filter(o=>['completed','feedback_done'].includes(o.status)).length
@@ -2972,7 +2972,7 @@ function renderOrders(){
             html += `</tr>`;
           });
           html += `</tbody></table></td>`;
-          html += `<td style="vertical-align:top;font-size:12px">${o.remark||'-'}</td>`;
+          html += `<td style="font-size:12px;text-align:center">${o.remark||'-'}</td>`;
           html += `<td "><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button></td></tr>`;
         });
       } else {
