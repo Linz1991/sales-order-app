@@ -4521,28 +4521,27 @@ function renderOrderDetail(){
   // 物流信息（已下单/运输中/待反馈/已反馈/已完成均显示，仅管理员可编辑）
   const showLogistics = ['confirmed','shipped','feedback','feedback_done','completed'].includes(order.status);
   if(showLogistics && isAdminOrderView){
-    // 已下单/待反馈「查看」专用：管理员填写物流单号，保存修改统一提交
-    // 待反馈状态：运单号右侧「操作」列提供「查询」按钮，实时查询物流轨迹
-    const showLogiQuery = order.status === 'feedback';
+    // 管理员查看（已下单/运输中/待反馈/已反馈/已完成）统一物流信息模块界面：
+    // 运单号右侧「操作」列提供「查询」按钮实时查询轨迹，并提供「一键复制物流信息」按钮
     html += `
       <div class="detail-section card">
-        <h4>🚚 物流信息 <span style="font-size:12px;color:var(--text-muted);font-weight:normal">（填写运单号后点击下方「保存修改」）</span></h4>
+        <h4>🚚 物流信息 <span style="font-size:12px;color:var(--text-muted);font-weight:normal">（填写运单号后点击下方「保存修改」）</span><button class="btn btn-primary btn-sm" style="margin-left:12px" onclick="copyLogisticsInfo('${order.id}')">📋 一键复制物流信息</button></h4>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>商品名称</th><th>快递公司</th><th>运单号</th>${showLogiQuery?'<th>操作</th>':''}</tr></thead>
+            <thead><tr><th>商品名称</th><th>快递公司</th><th>运单号</th><th>操作</th></tr></thead>
             <tbody>
               ${order.items.map((it, i) => `
                 <tr>
                   <td>${it.name}</td>
                   <td>${it.expressCompany || '<span style="color:var(--text-muted)">-</span>'}</td>
                   <td><input type="text" class="form-control" id="trackItem_${i}" value="${it.trackingNo||''}" placeholder="输入运单号" style="padding:6px 10px;min-width:160px"></td>
-                  ${showLogiQuery ? `<td>${it.trackingNo ? `<button class="btn btn-primary btn-sm" onclick="queryLogistics('${order.id}', ${i}, '${it.trackingNo}')">查询</button>` : ''}</td>` : ''}
+                  <td>${it.trackingNo ? `<button class="btn btn-primary btn-sm" onclick="queryLogistics('${order.id}', ${i}, '${it.trackingNo}')">查询</button>` : ''}</td>
                 </tr>
               `).join('')}
             </tbody>
           </table>
         </div>
-        ${showLogiQuery ? `<div id="logistics-timeline-container"></div>` : ''}
+        <div id="logistics-timeline-container"></div>
       </div>`;
   } else if(showLogistics){
     const canEditLogistics = isAdmin;
