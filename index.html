@@ -477,6 +477,33 @@ tbody tr:hover{background:#f3f4f6}
   border-radius:8px;font-size:13px;background:#fff;
 }
 
+/* 日期范围筛选：统一美观组件（订单管理 / 售后工单 共用） */
+.date-filter{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  background:#f8fafc;border:1px solid var(--border);border-radius:10px;
+  padding:10px 14px;margin:14px 0 6px;
+}
+.date-filter .df-label{
+  font-size:13px;font-weight:600;color:var(--text-secondary);
+  white-space:nowrap;display:inline-flex;align-items:center;gap:6px;
+}
+.date-filter .df-sep{color:var(--text-muted);font-size:13px}
+.date-filter .df-input{
+  width:150px;padding:7px 10px;border:1px solid var(--border);
+  border-radius:8px;font-size:13px;background:#fff;color:var(--text);transition:.15s;
+}
+.date-filter .df-input:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(79,70,229,.12)}
+.date-filter .df-clear{
+  padding:6px 12px;border:1px solid var(--border);border-radius:8px;
+  background:#fff;color:var(--text-secondary);font-size:12px;cursor:pointer;transition:.15s;
+}
+.date-filter .df-clear:hover{background:#f1f5f9;color:var(--text)}
+/* 移动端：日期筛选纵向堆叠 */
+@media(max-width:768px){
+  .date-filter{flex-direction:column;align-items:stretch}
+  .date-filter .df-input{width:100%}
+}
+
 /* 双列布局 */
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:24px}
 
@@ -2814,15 +2841,12 @@ function renderOrders(){
   const typeFilter = window._orderType || '';
   const dateFilter = window._orderDateFilter || '';
 
-  // 管理员：按Tab分状态显示（订单管理仅显示普通+留仓订单，上门订单在「上门订单」页面管理）
+  // 管理员：按Tab分状态显示（订单管理仅显示普通+留仓订单，上门订单在「上门订单」页面管理，售后统一在「售后工单」模块）
   if(isAdmin){
-    // ===== 筛选：状态 + 售后子筛选（不含订单类型，固定排除上门订单） =====
-    const asSub = window._aftersaleSub || '';          // 售后子筛选：''|pending|processing|resolved
-
     // 状态Tab（普通+留仓共用，结构一致）
     const statusTabsByType = {
-      normal:    [{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'},{key:'aftersale',label:'售后'}],
-      warehouse: [{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'},{key:'aftersale',label:'售后'}]
+      normal:    [{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'}],
+      warehouse: [{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'}]
     };
     const typeLabel = { normal:'普通', warehouse:'留仓', door:'上门' };
     const tabs = statusTabsByType.normal;
@@ -2831,21 +2855,13 @@ function renderOrders(){
     let activeTab = window._orderTab || 'pending';
     if(!tabs.some(t => t.key === activeTab)) activeTab = 'pending';
 
-    const aftersales = DB.get('aftersales');
-    // 售后按订单类型归属：建立 orderId -> type 映射（提交时已写入 orderType，旧数据回退到普通）
-    const orderTypeMap = {};
-    orders.forEach(o => { orderTypeMap[o.id] = o.type; });
-    const asTypeOf = (a) => a.orderType || orderTypeMap[a.orderId] || 'normal';
-    const typeAftersales = aftersales.filter(a => { const t = a.orderType || orderTypeMap[a.orderId] || 'normal'; return t !== 'door'; });
-
     // 当前类型下的订单与计数（固定排除上门订单，上门在「上门订单」页面管理）
     const statusOrders = orders.filter(o => o.type !== 'door');
     const tabCount = {
       pending: statusOrders.filter(o=>o.status==='pending').reduce((sum,o)=>sum+((o.items||[]).filter(it=>it.ordered!==true).length),0),
       confirmed: statusOrders.filter(o=>['confirmed','shipped','received'].includes(o.status)).length,
       feedback: statusOrders.filter(o=>o.status==='feedback').length,
-      completed: statusOrders.filter(o=>['completed','feedback_done'].includes(o.status)).length,
-      aftersale: typeAftersales.length
+      completed: statusOrders.filter(o=>['completed','feedback_done'].includes(o.status)).length
     };
 
     // 订单过滤（售后Tab单独处理）
@@ -2860,7 +2876,7 @@ function renderOrders(){
     } else if(activeTab === 'completed'){
       filtered = filtered.filter(o => ['completed','feedback_done'].includes(o.status));
     }
-    if(keyword && activeTab !== 'aftersale'){
+    if(keyword){
       const kw = keyword.toLowerCase();
       filtered = filtered.filter(o =>
         o.id.toLowerCase().includes(kw) ||
@@ -2871,7 +2887,7 @@ function renderOrders(){
     }
     // 时间筛选（按创建日期，影响列表与导出）
     const expStart = window._expStart, expEnd = window._expEnd;
-    if((expStart||expEnd) && activeTab !== 'aftersale'){
+    if((expStart||expEnd)){
       filtered = filtered.filter(o => {
         const d = (o.createdAt||'').slice(0,10);
         if(!d) return false;
@@ -2880,9 +2896,7 @@ function renderOrders(){
         return true;
       });
     }
-    if(activeTab !== 'aftersale'){
-      filtered = [...filtered].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
-    }
+    filtered = [...filtered].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
     const products = DB.get('products');
 
     const hasDateRange = !!(window._expStart || window._expEnd);
@@ -2897,12 +2911,12 @@ function renderOrders(){
         </div>
       </div>`;
     // 时间筛选（下单日期），同时作用于列表与导出
-    html += `<div class="admin-tab-bar" style="margin:10px 0 4px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-      <span style="font-size:13px;color:var(--text-muted);white-space:nowrap">📅 下单时间：</span>
-      <input type="date" class="form-control" style="width:150px;border-radius:6px" value="${window._expStart||''}" onchange="window._expStart=this.value;renderOrders()">
-      <span style="color:var(--text-muted)">至</span>
-      <input type="date" class="form-control" style="width:150px;border-radius:6px" value="${window._expEnd||''}" onchange="window._expEnd=this.value;renderOrders()">
-      <button class="btn btn-sm" onclick="clearExportDateFilter()" style="border:1px solid var(--border);background:#fff;color:var(--text-secondary)">清除</button>
+    html += `<div class="date-filter">
+      <span class="df-label">📅 下单时间</span>
+      <input type="date" class="df-input" value="${window._expStart||''}" onchange="window._expStart=this.value;renderOrders()">
+      <span class="df-sep">至</span>
+      <input type="date" class="df-input" value="${window._expEnd||''}" onchange="window._expEnd=this.value;renderOrders()">
+      <button class="df-clear" onclick="clearExportDateFilter()">清除</button>
     </div>`;
     // 状态Tab
     tabs.forEach(t => {
@@ -2911,64 +2925,13 @@ function renderOrders(){
       html += `<div class="tab-item ${activeTab===t.key?'active':''}" onclick="switchOrderTab('${t.key}')">${t.label} ${(needBadge) ? '<span style="background:var(--danger);color:#fff;font-size:10px;padding:0 5px;border-radius:8px;margin-left:3px">'+count+'</span>' : '('+count+')'}</div>`;
     });
     html += `</div>`;
-    // 第三级：售后子筛选（待处理/处理中/已处理），仅售后Tab显示
-    if(activeTab === 'aftersale'){
-      const asFilters = [
-        {key:'pending',label:'待处理'},{key:'processing',label:'处理中'},{key:'resolved',label:'已处理'}
-      ];
-      html += `<div class="admin-tab-bar" style="margin:6px 0;display:flex;align-items:center;flex-wrap:wrap">`;
-      html += `<span style="font-size:13px;color:var(--text-muted);margin-right:8px">售后状态：</span>`;
-      asFilters.forEach(tf => {
-        html += `<button class="btn btn-sm ${asSub===tf.key?'btn-primary':'btn-secondary'}" onclick="window._aftersaleSub='${tf.key}';renderOrders()" style="margin-right:6px">${tf.label}</button>`;
-      });
-      html += `</div>`;
-    }
 
     // Search bar
-    html += `<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="${activeTab==='aftersale'?'搜索售后单号/客户/原订单号/商品':'搜索订单号/客户/电话'}" value="${keyword}" oninput="window._orderFilter=this.value;renderOrders()"></div></div>`;
+    html += `<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="搜索订单号/客户/电话" value="${keyword}" oninput="window._orderFilter=this.value;renderOrders()"></div></div>`;
 
     if(activeTab === 'pending'){
       html += `<div style="text-align:center;margin-bottom:14px"><button class="btn btn-success btn-sm" onclick="collectPendingOrdersInfo()">📋 一键收集订单信息</button></div>`;
       html += `<div class="collect-info-box" id="collectInfoBox"></div>`;
-    }
-
-    // ===== 售后Tab内容 =====
-    if(activeTab === 'aftersale'){
-      let asList = typeAftersales;
-      if(asSub === 'pending') asList = asList.filter(a => a.status==='pending');
-      else if(asSub === 'processing') asList = asList.filter(a => a.status==='processing');
-      else if(asSub === 'resolved') asList = asList.filter(a => a.status==='resolved');
-      if(keyword){
-        const kw = keyword.toLowerCase();
-        asList = asList.filter(a =>
-          (a.id||'').toLowerCase().includes(kw) ||
-          (a.customerName||'').includes(keyword) ||
-          (a.orderId||'').toLowerCase().includes(kw) ||
-          (a.items||[]).some(it=>(it.name||'').includes(keyword))
-        );
-      }
-      asList = [...asList].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
-      const cols = 7;
-      html += `<div class="table-wrap"><table><thead><tr><th>客户</th><th>原订单号</th><th>售后商品</th><th>售后损耗</th><th>当前状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody>`;
-      if(asList.length){
-        asList.forEach(a => {
-          html += `<tr>`;
-          html += `<td>${a.customerName}</td>`;
-          html += `<td>${a.orderId||'-'}</td>`;
-          html += `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.items.map(it=>it.name+' x'+it.qty).join('、')}</td>`;
-          html += `<td style="color:var(--danger);font-weight:600">${a.loss ? money(a.loss) : '-'}</td>`;
-          html += `<td>${aftersaleStatusTag(a.status)}</td>`;
-          html += `<td>${a.createdAt||'-'}</td>`;
-          html += `<td><button class="btn btn-primary btn-sm" onclick="viewAftersale('${a.id}')">查看</button></td>`;
-          html += `</tr>`;
-        });
-      } else {
-        html += `<tr><td colspan="${cols}" class="table-empty">暂无售后记录</td></tr>`;
-      }
-      html += `</tbody></table></div>`;
-      html += `</div>`;
-      document.getElementById('mainContent').innerHTML = html;
-      return;
     }
 
     // ===== 订单Tab内容 =====
@@ -6802,6 +6765,83 @@ function clearExportDateFilter(){
   renderOrders();
 }
 
+// 清除售后工单日期筛选
+function clearAsDateFilter(){
+  window._asStart = '';
+  window._asEnd = '';
+  renderAftersales();
+}
+
+// 导出售后工单（导出当前筛选结果：状态Tab + 关键词 + 日期范围）
+function exportAftersales(){
+  const isAdmin = currentUser.role === 'admin';
+  let aftersales = DB.get('aftersales');
+  if(!isAdmin){
+    aftersales = aftersales.filter(a => a.salesId === currentUser.id);
+  }
+  const activeTab = window._aftersaleTab || 'all';
+  const keyword = window._aftersaleKeyword || '';
+  const asStart = window._asStart || '', asEnd = window._asEnd || '';
+
+  let filtered = aftersales;
+  if(activeTab !== 'all') filtered = filtered.filter(a => a.status === activeTab);
+  if(keyword){
+    const kw = keyword.toLowerCase();
+    filtered = filtered.filter(a =>
+      (a.id||'').toLowerCase().includes(kw) ||
+      (a.customerName||'').includes(keyword) ||
+      (a.orderId||'').toLowerCase().includes(kw) ||
+      (a.items||[]).some(it => (it.name||'').includes(keyword))
+    );
+  }
+  if(asStart || asEnd){
+    filtered = filtered.filter(a => {
+      const d = (a.createdAt||'').slice(0,10);
+      if(!d) return false;
+      if(asStart && d < asStart) return false;
+      if(asEnd && d > asEnd) return false;
+      return true;
+    });
+  }
+  filtered = [...filtered].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+
+  if(!filtered.length){ showToast('当前筛选无售后工单可导出','error'); return; }
+
+  const statusLabel = { pending:'待处理', processing:'处理中', resolved:'已处理' };
+  const escapeCell = (cell) => {
+    const s = String(cell == null ? '' : cell).replace(/"/g,'""');
+    return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
+  };
+  const header = ['售后单号','原订单号','客户','电话','售后商品','数量','单价','售后损耗','状态','创建时间','售后原因'];
+  const rows = [];
+  filtered.forEach(a => {
+    const items = (a.items&&a.items.length) ? a.items : [{ name:'(无商品)', qty:0, price:0 }];
+    items.forEach((it, idx) => {
+      rows.push([
+        a.id, a.orderId||'',
+        a.customerName||'', a.phone||'',
+        it.name||'', it.qty||0, Math.round(it.price||0),
+        (idx === 0 && isAdmin) ? Math.round(a.loss||0) : (isAdmin ? '' : ''),
+        statusLabel[a.status]||a.status,
+        a.createdAt||'',
+        idx === 0 ? (a.reason||'') : ''
+      ]);
+    });
+  });
+  const csv = [header, ...rows].map(r => r.map(escapeCell).join(',')).join('\r\n');
+  const blob = new Blob(['﻿'+csv], { type:'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const dateTag = (asStart || asEnd) ? (asStart||'') + (asEnd && asStart ? '_' + asEnd : (asEnd||'')) : new Date().toISOString().slice(0,10);
+  a.download = '售后工单_' + dateTag + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('售后工单已导出','success');
+}
+
 // 导出上门订单
 function exportScheduleOrders(){
   var allDoorOrders = DB.get('orders').filter(function(o){ return o.type === 'door' && !o._deleted; });
@@ -7796,11 +7836,10 @@ function renderAftersales(){
   }
   const keyword = window._aftersaleKeyword || '';
   const activeTab = window._aftersaleTab || 'all';
+  // 日期范围筛选（按创建时间）
+  const asStart = window._asStart || '', asEnd = window._asEnd || '';
   let filtered;
-  if(activeTab === 'open'){
-    // 待处理 + 处理中（后台首页「售后订单」入口）
-    filtered = aftersales.filter(a => a.status === 'pending' || a.status === 'processing');
-  } else if(activeTab === 'all'){
+  if(activeTab === 'all'){
     filtered = aftersales;
   } else {
     filtered = aftersales.filter(a => a.status === activeTab);
@@ -7813,32 +7852,52 @@ function renderAftersales(){
       (a.items||[]).some(it => (it.name||'').includes(keyword))
     );
   }
+  if(asStart || asEnd){
+    filtered = filtered.filter(a => {
+      const d = (a.createdAt||'').slice(0,10);
+      if(!d) return false;
+      if(asStart && d < asStart) return false;
+      if(asEnd && d > asEnd) return false;
+      return true;
+    });
+  }
   filtered = [...filtered].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
 
   const tabs = [
     {key:'all',label:'全部'},{key:'pending',label:'待处理'},
-    {key:'processing',label:'处理中'},{key:'resolved',label:'已处理'},
-    {key:'open',label:'待处理+处理中'}
+    {key:'processing',label:'处理中'},{key:'resolved',label:'已处理'}
   ];
 
   // 售后损耗列仅管理员可见
   const showLossCol = isAdmin;
   const cols = showLossCol ? 6 : 5;
+  const hasDateRange = !!(asStart || asEnd);
 
   let html = `
     <div class="card">
       <div class="card-title">
-        <span class="title-text">🔧 售后管理</span>
-        <button class="btn btn-primary btn-sm" onclick="openNewAftersaleModal()">+ 新建售后</button>
+        <span class="title-text">🔧 售后工单</span>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-secondary btn-sm" onclick="exportAftersales()" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;box-shadow:0 2px 6px rgba(59,130,246,0.18)">
+            <span>📥</span><span>${hasDateRange ? '导出全部售后' : '导出售后'}</span>
+          </button>
+          <button class="btn btn-primary btn-sm" onclick="openNewAftersaleModal()">+ 新建售后</button>
+        </div>
       </div>
       <div class="admin-tab-bar" style="margin-bottom:14px">
         ${tabs.map(t=>{
           let cnt;
           if(t.key==='all') cnt = aftersales.length;
-          else if(t.key==='open') cnt = aftersales.filter(a=>a.status==='pending'||a.status==='processing').length;
           else cnt = aftersales.filter(a=>a.status===t.key).length;
           return `<button class="btn ${activeTab===t.key?'btn-primary':'btn-secondary'} btn-sm" onclick="window._aftersaleTab='${t.key}';renderAftersales()" style="margin-right:6px">${t.label} (${cnt})</button>`;
         }).join('')}
+      </div>
+      <div class="date-filter">
+        <span class="df-label">📅 创建时间</span>
+        <input type="date" class="df-input" value="${asStart}" onchange="window._asStart=this.value;renderAftersales()">
+        <span class="df-sep">至</span>
+        <input type="date" class="df-input" value="${asEnd}" onchange="window._asEnd=this.value;renderAftersales()">
+        <button class="df-clear" onclick="clearAsDateFilter()">清除</button>
       </div>
       <div class="admin-tab-bar" style="margin-bottom:14px">
         <div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="搜索售后单号/客户姓名/原订单号/商品名称" value="${keyword}" oninput="window._aftersaleKeyword=this.value;renderAftersales()"></div>
