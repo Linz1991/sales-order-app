@@ -3702,7 +3702,7 @@ function toggleSearchSelect(productId, e){
   items.forEach((item, i) => {
     const match = item.getAttribute('onclick')?.match(/toggleSearchSelect\('([^']+)'/);
     if(match){
-      cbs[i] && (cbs[i].checked = _searchSelected.has(match[1]);
+      cbs[i] && (cbs[i].checked = _searchSelected.has(match[1]));
     }
   });
 }
@@ -5296,7 +5296,7 @@ function toggleEditSelect(pid, e){
   const cbs = results.querySelectorAll('input[type=checkbox]');
   items.forEach((item, i) => {
     const m = item.getAttribute('onclick')?.match(/toggleEditSelect\('([^']+)'/);
-    if(m) cbs[i] && (cbs[i].checked = _editSearchSelected.has(m[1]);
+    if(m) cbs[i] && (cbs[i].checked = _editSearchSelected.has(m[1]));
   });
 }
 // 编辑模式下手动添加商品
