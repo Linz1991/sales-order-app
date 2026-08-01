@@ -6047,6 +6047,14 @@ function saveAdminOrder(orderId){
     if(whEl !== null) it.trackingNo = (whEl.value || '').trim();
     if(it.trackingNo) it.expressCompany = detectExpressCompany(it.trackingNo);
   });
+  // 普通已下单(confirmed)订单：全部商品均填写物流单号则保存后自动转入「待反馈」（留仓订单单独处理）
+  const isNormalConfirmed = o.type !== 'warehouse' && o.type !== 'door' && o.status === 'confirmed';
+  if(isNormalConfirmed){
+    const allTracked = o.items.length > 0 && o.items.every(it => (it.trackingNo||'').trim() !== '');
+    if(allTracked && !['feedback','completed','feedback_done'].includes(o.status)){
+      o.status = 'feedback';
+    }
+  }
   // 留仓订单：全部商品均填写物流单号则保存后自动转入「待反馈」
   if(o.type === 'warehouse'){
     const allTracked = o.items.length > 0 && o.items.every(it => (it.trackingNo||'').trim() !== '');
@@ -6064,7 +6072,7 @@ function saveAdminOrder(orderId){
     showToast('备货日期不能晚于订单上门日期','error'); return;
   }
   DB.set('orders', orders);
-  showToast(o.status === 'feedback' && o.type === 'warehouse' ? '全部商品物流单号已录入，订单已转入「待反馈」' : '修改完成', 'success');
+  showToast(o.status === 'feedback' ? '全部商品物流单号已录入，订单已转入「待反馈」' : '修改完成', 'success');
   // 返回对应列表（confirmed/shipped/received 归入「已下单」Tab；completed/feedback_done 归入「已完成」Tab）
   window._orderTab = (o.status === 'pending') ? 'pending' : (o.status === 'feedback' ? 'feedback' : (['completed','feedback_done'].includes(o.status) ? 'completed' : 'confirmed'));
   renderOrders();
@@ -6202,8 +6210,8 @@ function saveTrackingNo(orderId, itemIndex, value) {
   const order = orders[idx];
   const allTracking = order.items.every(it => it.trackingNo);
   const isAdmin = currentUser.role === 'admin';
-  // 管理员填完最后一个物流单号：弹确认框，确认后再转入待反馈并跳转到待反馈列表（销售保持原自动流转）
-  if(isAdmin && allTracking && (order.status === 'confirmed' || order.status === 'pending' || order.status === 'shipped')){
+  // 管理员填完最后一个物流单号：待下单/运输中状态弹确认框确认后转入待反馈；已下单(confirmed)不弹框，走下方自动流转直接转待反馈
+  if(isAdmin && allTracking && (order.status === 'pending' || order.status === 'shipped')){
     showConfirm('所有商品物流单号已录入，确认将该订单转入「待反馈」？', () => {
       order.status = 'feedback';
       order.feedbackAt = nowStr();
@@ -6252,8 +6260,8 @@ function saveTrackingNoFromList(orderId, itemIndex, value) {
   const hasTracking = order.items.some(it => it.trackingNo);
   const allTracking = order.items.every(it => it.trackingNo);
   const isAdmin = currentUser.role === 'admin';
-  // 管理员填完最后一个物流单号：弹确认框，确认后再转入待反馈并跳转到待反馈列表（销售保持原自动流转）
-  if(isAdmin && allTracking && (order.status === 'confirmed' || order.status === 'pending' || order.status === 'shipped')){
+  // 管理员填完最后一个物流单号：待下单/运输中状态弹确认框确认后转入待反馈；已下单(confirmed)不弹框，走下方自动流转直接转待反馈
+  if(isAdmin && allTracking && (order.status === 'pending' || order.status === 'shipped')){
     showConfirm('所有商品物流单号已录入，确认将该订单转入「待反馈」？', () => {
       order.status = 'feedback';
       order.feedbackAt = nowStr();
