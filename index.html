@@ -2963,16 +2963,19 @@ function renderOrders(){
           const itemCols = isAdmin ? 7 : 6;
           html += `<tr>`;
           html += `<td style="vertical-align:top">${o.customerName}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
-          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><thead><tr><th>商品名称</th><th>数量</th><th>售价</th><th>成本</th><th>损耗</th><th>利润</th>${isAdmin?'<th>下单</th>':''}</tr></thead><tbody>`;
+          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}${isAdmin?'<th>下单</th>':''}</tr></thead><tbody>`;
           o.items.forEach((it, idx) => {
             const prod = productList.find(p => p.id === it.productId);
             const cost = prod ? prod.cost : 0;
             const waste = it.waste || 0;
             const profit = it.price * it.qty - cost * it.qty - waste;
             const isOrdered = it.ordered;
-            html += `<tr><td>${it.name}</td><td>${it.qty}</td><td>${money(it.price)}</td><td>${money(cost)}</td>`;
-            html += `<td><input type="number" value="${it.waste||''}" min="0" placeholder="0" onchange="saveItemWaste('${o.id}',${idx},this.value)"></td>`;
-            html += `<td style="color:${profit>=0?'var(--success)':'var(--danger)'};font-weight:600">${money(profit)}</td>`;
+            html += `<tr><td>${it.name}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
+            if(isAdmin){
+              html += `<td>${money(cost)}</td>`;
+              html += `<td><input type="number" value="${it.waste||''}" min="0" placeholder="0" onchange="saveItemWaste('${o.id}',${idx},this.value)"></td>`;
+              html += `<td style="color:${profit>=0?'var(--success)':'var(--danger)'};font-weight:600">${money(profit)}</td>`;
+            }
             html += `<td>${isAdmin ? (isOrdered ? '<button class="btn btn-sm" disabled style="opacity:.5;cursor:not-allowed;background:#d1d5db;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:12px">已下单</button>' : '<button class="btn btn-success btn-sm" onclick="markItemOrdered(\''+o.id+'\','+idx+')">下单</button>') : ''}</td>`;
             html += `</tr>`;
           });
@@ -2991,12 +2994,15 @@ function renderOrders(){
         filtered.forEach(o => {
           html += `<tr>`;
           html += `<td style="vertical-align:top">${o.customerName}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
-          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><thead><tr><th>商品名称</th><th>数量</th><th>售价</th><th>成本</th><th>损耗</th><th>物流单号</th></tr></thead><tbody>`;
+          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th>':''}<th>物流单号</th></tr></thead><tbody>`;
           o.items.forEach((it, idx) => {
             const prod = (products||[]).find(p => p.id === it.productId);
             const cost = prod ? prod.cost : 0;
-            html += `<tr><td>${it.name}</td><td>${it.qty}</td><td>${money(it.price)}</td><td>${money(cost)}</td>`;
-            html += `<td><input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" onchange="saveItemWaste('${o.id}',${idx},this.value)"></td>`;
+            html += `<tr><td>${it.name}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
+            if(isAdmin){
+              html += `<td>${money(cost)}</td>`;
+              html += `<td><input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" onchange="saveItemWaste('${o.id}',${idx},this.value)"></td>`;
+            }
             html += `<td><input type="text" value="${it.trackingNo||''}" placeholder="输入运单号" style="padding:3px 6px;min-width:160px;border:1px solid var(--border);border-radius:4px;font-size:12px;width:100%" onchange="saveTrackingNoFromList('${o.id}',${idx},this.value)">`;
             if(it.expressCompany) html += `<br><span style="font-size:11px;color:var(--info)">${it.expressCompany}</span>`;
             html += `</td></tr>`;
@@ -4315,7 +4321,10 @@ function renderOrderDetail(){
   const isAdminOrderView = isAdmin && viewOnly && ['pending','confirmed','feedback','completed','feedback_done'].includes(order.status);
   // 管理员端上门订单明细：采用截图中的商品名称/数量/售价/成本/损耗/利润/是否备货布局
   const isAdminDoorDetail = isAdmin && isDoor && !editMode;
-  const totalColspan = isAdminDoorDetail ? 6 : (isDoor ? (editMode?4:3) : (editMode?5:5));
+  // 商品明细实际列数（销售仅 名称/数量/售价 3 列；管理员加 成本/损耗/利润）
+  const _orderCols = isAdminDoorDetail ? 7
+    : 3 + (isAdmin ? 3 : 0) + (isSalesConfirmedView ? 2 : 0) + (isDoor ? 1 : 0) + (editMode ? 1 : 0);
+  const totalColspan = _orderCols - 1;
 
   const payments = DB.get('payments').filter(p => p.orderId === orderId);
   const commissions = DB.get('commissions').filter(c => c.orderId === orderId);
@@ -4446,9 +4455,7 @@ function renderOrderDetail(){
               <th>商品名称</th>
               <th>数量</th>
               <th>售价</th>
-              <th>成本</th>
-              <th>损耗</th>
-              <th>利润</th>
+              ${isAdmin ? '<th>成本</th><th>损耗</th><th>利润</th>' : ''}
               ${isSalesConfirmedView ? '<th>物流单号</th><th>操作</th>' : ''}
               ${isDoor ? '<th>是否备货</th>' : ''}
               ${editMode ? '<th>操作</th>' : ''}
@@ -4474,9 +4481,9 @@ function renderOrderDetail(){
                   <td>${editMode ? `<input type="text" class="form-control" id="editItemName_${i}" value="${it.name}" style="padding:6px 10px">` : it.name}</td>
                   <td>${editMode ? `<input type="number" class="form-control" id="editItemQty_${i}" value="${it.qty}" min="1" style="padding:6px 10px;width:60px" onchange="recalcEditItem(${i})">` : it.qty}</td>
                   <td>${editMode ? `<input type="number" class="form-control" id="editItemPrice_${i}" value="${it.price}" min="0" style="padding:6px 10px;width:80px" onchange="recalcEditItem(${i})">` : money(it.price)}</td>
-                  <td>${money(cost)}</td>
+                  ${isAdmin ? `<td>${money(cost)}</td>` : ''}
                   ${isAdmin ? `<td>${ isAdminOrderView ? `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" id="wasteItem_${i}" oninput="recalcAdminProfit('${order.id}')">` : `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" onchange="saveItemWaste('${order.id}',${i},this.value)">`}</td>` : ''}
-                  <td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}">${money(itemProfit)}</td>
+                  ${isAdmin ? `<td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}">${money(itemProfit)}</td>` : ''}
                   ${isSalesConfirmedView ? `
                     <td>${it.trackingNo ? `<span class="mono" style="font-size:13px">${it.trackingNo}</span>` : '<span style="color:var(--text-muted)">-</span>'}</td>
                     <td>${it.trackingNo ? `<button class="btn btn-primary btn-sm" onclick="queryLogistics('${order.id}', ${i}, '${it.trackingNo}')">查看</button>` : '<span style="color:var(--text-muted)">-</span>'}</td>
@@ -4498,16 +4505,11 @@ function renderOrderDetail(){
             <tr style="background:#f8f9fa;font-weight:700">
               <td colspan="${totalColspan}" style="text-align:right;padding:10px 12px">${isAdminOrderView?'商品总金额':'合计'}</td>
               <td style="color:var(--primary);padding:10px 12px" id="editTotalCell">${money(order.total)}</td>
-              ${isSalesConfirmedView ? '<td></td><td></td>' : ''}
-              ${isDoor ? '<td></td>' : ''}
-              ${editMode ? '<td></td>' : ''}
             </tr>
             ${isAdminOrderView ? `
             <tr style="background:#f8f9fa;font-weight:700">
               <td colspan="${totalColspan}" style="text-align:right;padding:10px 12px">实时利润（商品售价-成本-损耗）</td>
               <td style="color:${calcOrderProfit(order)>=0?'var(--success)':'var(--danger)'};padding:10px 12px" id="adminProfitCell">${money(calcOrderProfit(order))}</td>
-              ${isDoor ? '<td></td>' : ''}
-              ${editMode ? '<td></td>' : ''}
             </tr>` : ''}
             `}
           </tbody>
