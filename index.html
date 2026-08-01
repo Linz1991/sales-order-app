@@ -4542,7 +4542,7 @@ function renderOrderDetail(){
               ${order.items.map((it, i) => `
                 <tr>
                   <td>${it.name}</td>
-                  <td>${it.qty}${it.trackingNo ? '' : ' <span style="color:var(--danger);font-weight:700">⚠️</span>'}</td>
+                  <td>${it.qty}</td>
                   <td>${it.expressCompany || '<span style="color:var(--text-muted)">-</span>'}</td>
                   <td><input type="text" class="form-control" id="trackItem_${i}" value="${it.trackingNo||''}" placeholder="输入运单号" style="padding:6px 10px;min-width:160px"></td>
                   <td>${it.trackingNo ? `<button class="btn btn-primary btn-sm" onclick="queryLogistics('${order.id}', ${i}, '${it.trackingNo}')">查询</button>` : ''}</td>
@@ -4564,7 +4564,7 @@ function renderOrderDetail(){
             ${order.items.map((it, i) => `
               <tr>
                   <td>${it.name}</td>
-                  <td>${it.qty}${it.trackingNo ? '' : ' <span style="color:var(--danger);font-weight:700">⚠️</span>'}</td>
+                  <td>${it.qty}</td>
                   <td>${it.expressCompany || '<span style="color:var(--text-muted)">-</span>'}</td>
                 <td>${canEditLogistics ? `
                   <input type="text" class="form-control" value="${it.trackingNo||''}" 
@@ -9931,7 +9931,7 @@ function copyLogisticsInfo(orderId){
   order.items.forEach(it => {
     const tn = (it.trackingNo || '').trim();
     if(!tn) missing.push(it.name);
-    text += it.name + ' x' + it.qty + (tn ? ' #' + tn : '') + '\n';
+    text += it.name + ' x' + it.qty + (tn ? ' #' + tn : ' #⚠️') + '\n';
   });
   text = text.trim();
   const afterCopy = (ok) => {
