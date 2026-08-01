@@ -5223,20 +5223,42 @@ function exitEditMode(){
   renderOrderDetail();
 }
 
-// 重新计算编辑项小计
+// 重新计算编辑项小计，并实时同步订单总额 / 全款金额 / 收款信息显示
 function recalcEditItem(i){
   const price = parseInt(document.getElementById('editItemPrice_'+i).value) || 0;
   const qty = Math.max(1, parseInt(document.getElementById('editItemQty_'+i).value) || 1);
-  document.getElementById('editItemSubtotal_'+i).textContent = money(price * qty);
-  // 更新合计
+  const subtotal = price * qty;
+  document.getElementById('editItemSubtotal_'+i).textContent = money(subtotal);
+  // 更新合计（始终反映当前页面所有小计）
   const rows = document.querySelectorAll('[id^="editItemSubtotal_"]');
-  let total = 0;
+  let displayTotal = 0;
   rows.forEach(r => {
     const txt = r.textContent.replace(/[¥,]/g,'');
-    total += parseInt(txt) || 0;
+    displayTotal += parseInt(txt) || 0;
   });
   const totalCell = document.getElementById('editTotalCell');
-  if(totalCell) totalCell.textContent = money(total);
+  if(totalCell) totalCell.textContent = money(displayTotal);
+  // 同步到数据：更新该项并重新计算订单总额
+  const orderId = window._currentOrderId;
+  const orders = DB.get('orders');
+  const idx = orders.findIndex(o => o.id === orderId);
+  if(idx >= 0){
+    const it = orders[idx].items[i];
+    if(it){ it.price = price; it.qty = qty; it.subtotal = subtotal; }
+    const total = orders[idx].items.reduce((s,x)=> s + (x.subtotal || (x.price * x.qty) || 0), 0);
+    orders[idx].total = total;
+    // 全款订单：同步「全款金额」(fullPayment) = 最新订单总额
+    if(orders[idx].fullPayment){ orders[idx].fullPayment = total; }
+    DB.set('orders', orders);
+    // 实时刷新收款信息里的「全款金额」（readonly 输入框）
+    const fp = document.getElementById('doorFullPay');
+    if(fp) fp.value = (orders[idx].fullPayment || orders[idx].total || '');
+    // 同步定金上限 / 尾款 / 收款金额 / 微信总额，保持收款信息一致
+    const depEl = document.getElementById('doorDeposit');
+    if(depEl && depEl.value){ validateDetailDeposit(); }
+    calcDetailFinalPay();
+    fillDoorCollectedByMode();
+  }
 }
 
 // 删除编辑项
