@@ -25,6 +25,23 @@ if('serviceWorker' in navigator){
 const SUPABASE_URL = 'https://mfimcrzewhnlbtkjgqlq.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_nwhoBCwURiqEoUegkuGI5g_6AJwfrBj';
 window._sbpbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+/* ============ 快递100 实时物流（真实接口，非模拟） ============
+ * 快递100 实时查询(poll) 接口需要 key + customer + MD5 签名，且浏览器直连会被 CORS 拦截，
+ * 因此统一经 Supabase Edge Function 代理：密钥仅存于函数 Secrets（不下发前端），
+ * 函数地址由 Supabase 项目自动推导。部署函数并在函数 Secrets 中配置
+ * KUAIDI100_KEY / KUAIDI100_CUSTOMER 后即生效。
+ */
+const KUAIDI100_PROXY = SUPABASE_URL.replace(/\.supabase\.co$/, '.functions.supabase.co') + '/query-kuaidi100';
+// 快递公司中文名 → 快递100 公司编码（com）
+const EXPRESS_CODE_MAP = {
+  '顺丰速运':'shunfeng','顺丰':'shunfeng','京东物流':'jd','京东':'jd','圆通速递':'yuantong','圆通':'yuantong',
+  '中通快递':'zhongtong','中通':'zhongtong','韵达快递':'yunda','韵达':'yunda','申通快递':'shentong','申通':'shentong',
+  'EMS':'ems','德邦快递':'deppon','德邦':'deppon','邮政包裹':'youzhengguonei','邮政':'youzhengguonei','其他快递':''
+};
+const EXPRESS_NAME_MAP = {shunfeng:'顺丰速运',jd:'京东物流',yuantong:'圆通速递',zhongtong:'中通快递',yunda:'韵达快递',shentong:'申通快递',ems:'EMS',deppon:'德邦快递',youzhengguonei:'邮政包裹'};
+function expressCodeOf(name){ return EXPRESS_CODE_MAP[(name||'').trim()] || ''; }
+function reverseExpressName(code){ return EXPRESS_NAME_MAP[code] || (code||''); }
 </script>
 <style>
 /* ============ CSS 变量与全局样式 ============ */
@@ -728,6 +745,9 @@ tbody tr:hover{background:#f3f4f6}
 .detail-locked{color:var(--text-muted)}
 .detail-customer{margin-top:14px;padding:14px 16px;background:#f0fdfa;border:1px solid #99f6e4;border-radius:12px}
 .detail-customer-title{font-size:14px;font-weight:600;color:#0f766e;margin-bottom:10px}
+/* 浅绿信息卡片（与订单客户信息同款）：订单信息 / 收款信息 复用 */
+.detail-green{margin-top:14px;padding:14px 16px;background:#f0fdfa;border:1px solid #99f6e4;border-radius:12px}
+.detail-green-title{font-size:14px;font-weight:600;color:#0f766e;margin-bottom:10px}
 
 /* 响应式 */
 @media(max-width:900px){
@@ -1250,10 +1270,10 @@ function initData(){
   const users = DB.get('users', null);
   if(!users || users.length === 0){
     DB.set('users', [
-      {id:'u_admin', username:'admin', password:'admin123', name:'管理员', role:'admin', phone:'13800000000'},
-      {id:'u_daxian', username:'daxian', password:'123456', name:'大仙', role:'sales', phone:'13800000001'},
-      {id:'u_lichao', username:'lichao', password:'123456', name:'李超', role:'sales', phone:'13800000002'},
-      {id:'u_xiaoxing', username:'xiaoxing', password:'123456', name:'小邢', role:'sales', phone:'13800000003'}
+      {id:'u_admin', username:'admin', password:'10a398eb0c19de52372d8220055ae37a3f8bad82a65274738af6c4a8a7e4b971', name:'管理员', role:'admin', phone:'13800000000'},
+      {id:'u_daxian', username:'daxian', password:'a538f6d30d189ac9993fdc5c2473d401104068efc4e27c61a912f0672449a309', name:'大仙', role:'sales', phone:'13800000001'},
+      {id:'u_lichao', username:'lichao', password:'a538f6d30d189ac9993fdc5c2473d401104068efc4e27c61a912f0672449a309', name:'李超', role:'sales', phone:'13800000002'},
+      {id:'u_xiaoxing', username:'xiaoxing', password:'a538f6d30d189ac9993fdc5c2473d401104068efc4e27c61a912f0672449a309', name:'小邢', role:'sales', phone:'13800000003'}
     ]);
   }
 
@@ -1268,9 +1288,9 @@ function initData(){
   }
 
   // 商品数据（从商品目录表导入，158条）
-  // 强制覆盖，确保商品库最新（仅在本地为空或从未同步时才写入种子数据）
+  // 仅在本地与云端都没有商品时才写入种子，避免覆盖用户新增/改价的商品，也避免污染云端
   const existingProducts = DB.get('products', null);
-  if(true || !existingProducts){
+  if(!existingProducts){
     DB.set('products', [
       {id:'p_001', name:'宫尾 单盖 3l', price:950, cost:690, status:'on', category:'其他'},
       {id:'p_002', name:'宫尾双盖 D285xH240      5L', price:1050, cost:850, status:'on', category:'其他'},
@@ -2185,18 +2205,40 @@ function parseOrderText(text){
 }
 
 /* ============ 登录/登出 ============ */
-function handleLogin(){
+// 密码加盐哈希（SHA-256），避免明文存储；兼容旧明文数据自动升级
+async function hashPassword(pwd){
+  const SALT = 'soms_salt_2024';
+  const enc = new TextEncoder().encode(SALT + pwd);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+async function handleLogin(){
   const user = document.getElementById('loginUser').value.trim();
   const pass = document.getElementById('loginPass').value;
   if(!user || !pass){ showToast('请输入用户名和密码','error'); return; }
   // 用户数据已通过 DB.syncFromCloud() 从 Supabase 同步到 localStorage 缓存
   const users = DB.get('users');
-  const found = users.find(u => u.username === user && u.password === pass);
-  if(!found){ showToast('用户名或密码错误','error'); return; }
-  currentUser = found;
-  sessionStorage.setItem('soms_current_user', JSON.stringify(found));
+  const target = users.find(u => u.username === user);
+  if(!target){ showToast('用户名或密码错误','error'); return; }
+  let ok = false;
+  try{
+    const h = await hashPassword(pass);
+    if(target.password === h) ok = true;
+    else if(target.password === pass){ // 兼容旧明文：首次登录自动升级为哈希
+      target.password = h; DB.set('users', users); ok = true;
+    }
+  }catch(e){
+    // 非安全上下文（如 http）Web Crypto 不可用，降级明文比对，保证可登录
+    if(target.password === pass) ok = true;
+  }
+  if(!ok){ showToast('用户名或密码错误','error'); return; }
+  // 不把密码（即使是哈希）存入会话，降低泄露风险
+  const {password, ...safe} = target;
+  currentUser = safe;
+  sessionStorage.setItem('soms_current_user', JSON.stringify(safe));
   showApp();
-  showToast('登录成功，欢迎回来 '+found.name,'success');
+  showToast('登录成功，欢迎回来 '+safe.name,'success');
 }
 
 function handleLogout(){
@@ -2229,23 +2271,69 @@ function showApp(){
   startAutoSync();
 }
 
-// 后台自动同步：每 15 秒从云端拉取一次，仅当订单集合发生变化且正查看订单列表时才刷新
+// 后台自动同步：每 15 秒从云端拉取全表，仅在停留的列表页对应数据变化时才刷新，不打断详情/编辑页
 function startAutoSync(){
   if(window._autoSyncTimer) return;
   if(typeof window._sbpbClient === 'undefined') return;
+  // 路由 -> 该路由依赖的数据表（schedule/warehouse 由 orders 派生，故都看 orders）
+  const routeTable = {
+    orders:'orders', schedule:'orders', warehouse:'orders',
+    customers:'customers', products:'products', aftersales:'aftersales',
+    commissions:'commissions', payments:'payments'
+  };
+  const routeRenderers = {
+    orders: renderOrders, schedule: renderSchedule, warehouse: renderWarehouse,
+    customers: renderCustomers, products: renderProducts, aftersales: renderAftersales,
+    commissions: renderCommissions, payments: renderPayments
+  };
   window._autoSyncTimer = setInterval(async () => {
     if(window._autoSyncing) return;
     window._autoSyncing = true;
     try{
-      const before = (DB.get('orders') || []).map(o => o.id).join(',');
+      const before = snapshotSyncTables();
       await DB.syncFromCloud();
-      const after = (DB.get('orders') || []).map(o => o.id).join(',');
-      if(before !== after && (currentRoute === 'orders')){
-        renderOrders();
+      const after = snapshotSyncTables();
+      // 仅当正停留在可安全刷新的列表页，且该页依赖的表有变化时才刷新
+      if(currentRoute && routeTable[currentRoute] && routeRenderers[currentRoute]){
+        const t = routeTable[currentRoute];
+        if(before[t] !== after[t]) routeRenderers[currentRoute]();
       }
-    }catch(e){ /* 忽略临时同步错误 */ }
+    }catch(e){
+      // 同步失败不频繁打扰：每 60 秒最多提示一次
+      window._autoSyncErrAt = window._autoSyncErrAt || 0;
+      if(Date.now() - window._autoSyncErrAt > 60000){
+        showToast('云端同步失败，请检查网络或手动点“同步到云端”','error');
+        window._autoSyncErrAt = Date.now();
+      }
+    }
     finally{ window._autoSyncing = false; }
   }, 15000);
+}
+
+// 对可同步的核心表做轻量快照（仅 id 集合+行数），用于判断是否需要刷新当前列表页
+function snapshotSyncTables(){
+  const keys = ['orders','customers','products','aftersales','commissions','payments'];
+  const out = {};
+  keys.forEach(k => {
+    const rows = DB.get(k) || [];
+    out[k] = rows.map(r => r.id || '').join('|') + '#' + rows.length;
+  });
+  return out;
+}
+
+// 写操作后异步推送云端（防抖合并，避免高频写造成频繁全量同步）
+function schedulePushToCloud(){
+  if(window._pushTimer) return;
+  window._pushTimer = setTimeout(() => {
+    window._pushTimer = null;
+    DB.pushToCloud().catch(e => {
+      window._lastPushErrAt = window._lastPushErrAt || 0;
+      if(Date.now() - window._lastPushErrAt > 60000){
+        showToast('数据同步到云端失败，请检查网络','error');
+        window._lastPushErrAt = Date.now();
+      }
+    });
+  }, 800);
 }
 
 /* ============ 侧边栏渲染 ============ */
@@ -2711,7 +2799,8 @@ function doOrderSearch(){
 
 function renderOrders(){
   const isAdmin = currentUser.role === 'admin';
-  let orders = DB.get('orders');
+  let orders = DB.get('orders').filter(o => !o._deleted);
+  const recycleCount = (DB.get('orders') || []).filter(o => o._deleted).length;
   if(!isAdmin) orders = orders.filter(o => o.salesId === currentUser.id || o.type === 'door'); // 上门订单全员可见（财务仅提交人可见）
 
   const keyword = window._orderFilter || '';
@@ -2796,9 +2885,12 @@ function renderOrders(){
     let html = `<div class="card">
       <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
         <span class="title-text">📦 订单管理</span>
-        <button class="btn btn-primary btn-sm" onclick="exportOrders()" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;box-shadow:0 2px 6px rgba(59,130,246,0.25)">
-          <span>📥</span><span>${hasDateRange ? '导出全部订单' : '导出订单'}</span>
-        </button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-secondary btn-sm" onclick="renderRecycleBin()">🗑️ 回收站(${recycleCount})</button>
+          <button class="btn btn-primary btn-sm" onclick="exportOrders()" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;box-shadow:0 2px 6px rgba(59,130,246,0.25)">
+            <span>📥</span><span>${hasDateRange ? '导出全部订单' : '导出订单'}</span>
+          </button>
+        </div>
       </div>`;
     // 时间筛选（下单日期），同时作用于列表与导出
     html += `<div class="admin-tab-bar" style="margin:10px 0 4px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -3131,9 +3223,72 @@ function deleteOrder(orderId){
       // 删除该订单关联的收款记录
       DB.set('payments', beforePayments.filter(p => p.orderId !== orderId));
     }
-    DB.set('orders', DB.get('orders').filter(o => o.id !== orderId));
-    showToast('订单已删除' + refundText,'success');
+    // 软删除：标记 _deleted，进入回收站可恢复，避免误删永久丢失
+    const orders = DB.get('orders');
+    const idx = orders.findIndex(o => o.id === orderId);
+    if(idx >= 0){
+      orders[idx]._deleted = true;
+      orders[idx]._deletedAt = nowStr();
+      DB.set('orders', orders);
+    }
+    showToast('订单已移到回收站' + refundText,'success');
+    schedulePushToCloud();
     navigate('orders');
+  });
+}
+
+// 回收站：列出已软删除的订单，可恢复或彻底删除
+function renderRecycleBin(){
+  const isAdmin = currentUser.role === 'admin';
+  let deleted = DB.get('orders').filter(o => o._deleted);
+  if(!isAdmin) deleted = deleted.filter(o => o.salesId === currentUser.id);
+  deleted = deleted.slice().sort((a,b) => (b._deletedAt||'').localeCompare(a._deletedAt||''));
+  let html = '<div class="card"><div class="card-title"><span class="title-text">🗑️ 回收站</span><button class="btn btn-sm" onclick="navigate(\'orders\')">返回订单</button></div>';
+  html += '<p style="font-size:12px;color:var(--text-muted);margin:8px 0">以下为已删除的订单，可恢复或彻底删除。彻底删除后不可恢复。</p>';
+  if(deleted.length){
+    html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>订单号</th><th>金额</th><th>删除时间</th><th>操作</th></tr></thead><tbody>';
+    deleted.forEach(o => {
+      html += '<tr>' +
+        '<td>' + (o.customerName||'-') + '</td>' +
+        '<td style="font-size:12px">' + (o.id||'') + '</td>' +
+        '<td style="font-weight:600">' + money(parseInt(o.total)||0) + '</td>' +
+        '<td style="font-size:12px">' + (o._deletedAt||'-') + '</td>' +
+        '<td><button class="btn btn-primary btn-sm" onclick="restoreOrder(\'' + o.id + '\')">恢复</button> ' +
+        '<button class="btn btn-danger btn-sm" onclick="purgeOrder(\'' + o.id + '\')">彻底删除</button></td>' +
+        '</tr>';
+    });
+    html += '</tbody></table></div>';
+  } else {
+    html += '<div class="empty-state"><div class="empty-icon">🗑️</div><div class="empty-text">回收站为空</div></div>';
+  }
+  html += '</div>';
+  document.getElementById('mainContent').innerHTML = html;
+}
+
+// 恢复软删除的订单
+function restoreOrder(orderId){
+  showConfirm('确定恢复此订单吗？', () => {
+    const orders = DB.get('orders');
+    const idx = orders.findIndex(o => o.id === orderId);
+    if(idx >= 0){
+      delete orders[idx]._deleted;
+      delete orders[idx]._deletedAt;
+      DB.set('orders', orders);
+    }
+    showToast('订单已恢复','success');
+    schedulePushToCloud();
+    renderRecycleBin();
+  });
+}
+
+// 彻底删除（物理删除，不可恢复）
+function purgeOrder(orderId){
+  showConfirm('彻底删除后不可恢复，确定吗？', () => {
+    DB.set('orders', DB.get('orders').filter(o => o.id !== orderId));
+    DB.set('payments', DB.get('payments').filter(p => p.orderId !== orderId));
+    showToast('订单已彻底删除','success');
+    schedulePushToCloud();
+    renderRecycleBin();
   });
 }
 
@@ -3484,8 +3639,11 @@ function generateOrderNumber(){
   const ymd = '' + d.getFullYear() +
     String(d.getMonth()+1).padStart(2,'0') +
     String(d.getDate()).padStart(2,'0');
-  const rand = String(Math.floor(Math.random()*9000)+1000);
-  return 'ORD' + ymd + rand;
+  // 唯一后缀：销售标识 + 毫秒时间戳 + 2位随机，避免多端/多销售同天提交撞号互相覆盖
+  const salesTag = (currentUser && currentUser.id) ? currentUser.id.replace(/[^a-zA-Z0-9]/g,'').slice(-4) : 'sys';
+  const ms = String(Date.now() % 100000).padStart(5,'0');
+  const rand = String(Math.floor(Math.random()*90)+10);
+  return 'ORD' + ymd + '-' + salesTag + ms + rand;
 }
 
 // 商品搜索（多选模式，不显示售价）
@@ -4032,6 +4190,7 @@ function submitOrder(){
 
   window._currentOrderId = orderId;
   window._orderFilter = '';
+  schedulePushToCloud();
   navigate('order-success');
 }
 
@@ -4181,7 +4340,7 @@ function renderOrderDetail(){
   let html = `
     <div class="back-link" onclick="backToOrders()">← 返回订单列表</div>
     <div class="detail-section card">
-      <h4>📋 订单信息</h4>
+      ${isAdminOrderView ? '' : '<h4>📋 订单信息</h4>'}
       ${isPending && editMode ? `
         <div class="form-group">
           <label class="form-label">客户信息（姓名 电话 地址）</label>
@@ -4209,6 +4368,31 @@ function renderOrderDetail(){
           <textarea class="form-control" id="editOrderRemark" style="min-height:50px">${order.remark||''}</textarea>
         </div>
       ` : `
+        ${isAdminOrderView ? `
+        <div class="detail-green">
+          <div class="detail-green-title">📋 订单信息</div>
+          <div class="info-grid">
+            <div class="info-item"><div class="info-label">订单号</div><div class="info-value mono">${order.id}</div></div>
+            <div class="info-item"><div class="info-label">状态</div><div class="info-value">${statusTag(order.status)}</div></div>
+            <div class="info-item"><div class="info-label">订单类型</div><div class="info-value">${orderTypeTag(order.type)}</div></div>
+            <div class="info-item"><div class="info-label">下单人</div><div class="info-value">${order.salesName||'-'}</div></div>
+            ${isAdmin ? `<div class="info-item"><div class="info-label">订单金额</div><div class="info-value" style="color:var(--primary);font-size:18px">${money(order.total)}</div></div>` : ''}
+            <div class="info-item"><div class="info-label">创建时间</div><div class="info-value">${order.createdAt||'-'}</div></div>
+            ${(order.type==='warehouse'||order.type==='door') ? `
+            <div class="info-item"><div class="info-label">${dateLabel1}</div><div class="info-value"><input type="date" class="form-control" id="detailOrderDate" value="${order.orderDate||''}" style="max-width:200px" onchange="var c=document.getElementById('detailCompletionDate');if(c)c.min=this.value;">${order.orderDate && todayStr()>order.orderDate ? '<div style="font-size:11px;color:var(--danger);margin-top:2px">已到期</div>' : ''}</div></div>
+            ${isDoor ? `<div class="info-item"><div class="info-label">订单上门日期</div><div class="info-value"><input type="date" class="form-control" id="detailCompletionDate" value="${order.completionDate||''}" style="max-width:200px" onchange="var c=document.getElementById('detailOrderDate');if(c)c.max=this.value;"></div></div>` : ''}
+            ` : ''}
+          </div>
+        </div>
+        <div class="detail-customer">
+          <div class="detail-customer-title">👤 订单客户信息</div>
+          <div class="info-grid">
+            <div class="info-item"><div class="info-label">客户姓名</div><div class="info-value">${order.customerName||order.contact||'-'}</div></div>
+            <div class="info-item"><div class="info-label">联系电话</div><div class="info-value">${order.phone||'-'}</div></div>
+            <div class="info-item full"><div class="info-label">收货地址</div><div class="info-value">${[order.province,order.city,order.district,order.region,order.address].filter(Boolean).join(' ')||'-'}</div></div>
+          </div>
+        </div>
+        ` : `
         <div class="info-grid">
           <div class="info-item"><div class="info-label">订单号</div><div class="info-value mono">${order.id}</div></div>
           <div class="info-item"><div class="info-label">状态</div><div class="info-value">${statusTag(order.status)}</div></div>
@@ -4221,15 +4405,7 @@ function renderOrderDetail(){
           ${isDoor ? `<div class="info-item"><div class="info-label">订单上门日期</div><div class="info-value"><input type="date" class="form-control" id="detailCompletionDate" value="${order.completionDate||''}" style="max-width:200px" onchange="var c=document.getElementById('detailOrderDate');if(c)c.max=this.value;"></div></div>` : ''}
           ` : ''}
         </div>
-        ${isAdminOrderView ? `
-        <div class="detail-customer">
-          <div class="detail-customer-title">👤 订单客户信息</div>
-          <div class="info-grid">
-            <div class="info-item"><div class="info-label">客户姓名</div><div class="info-value">${order.customerName||order.contact||'-'}</div></div>
-            <div class="info-item"><div class="info-label">联系电话</div><div class="info-value">${order.phone||'-'}</div></div>
-            <div class="info-item full"><div class="info-label">收货地址</div><div class="info-value">${[order.province,order.city,order.district,order.region,order.address].filter(Boolean).join(' ')||'-'}</div></div>
-          </div>
-        </div>` : `<div class="detail-box"><strong>客户信息：</strong>${custInfoText}</div>`}
+        <div class="detail-box"><strong>客户信息：</strong>${custInfoText}</div>`}
         ${(order.type==='warehouse'||order.type==='door') && canSaveDates && !isAdminOrderView ? `<div style="margin-top:12px"><button class="btn btn-primary btn-sm" onclick="saveOrderDates('${order.id}')">保存修改</button></div>` : ''}
         ${order.remark ? `<div class="detail-note"><strong>备注：</strong>${order.remark}</div>` : ''}
       `}
@@ -4409,13 +4585,15 @@ function renderOrderDetail(){
     if(showPaymentReadonly){
       html += `
       <div class="detail-section card">
-        <h4>💰 收款信息</h4>
-        <div class="info-grid">
-          <div class="info-item"><div class="info-label">订单总额</div><div class="info-value" style="color:var(--primary);font-size:18px">${money(order.total||0)}</div></div>
-          <div class="info-item"><div class="info-label">已收款</div><div class="info-value" style="color:var(--success)">${money(order.collectedAmount||0)}</div></div>
-          <div class="info-item"><div class="info-label">待收款</div><div class="info-value" style="color:var(--danger)">${money(Math.max(0,(order.total||0)-(order.collectedAmount||0)))}</div></div>
-          <div class="info-item"><div class="info-label">收款方式</div><div class="info-value">${order.paymentMethod==='wechat'?'微信支付':(order.paymentMethod==='scan'?'扫码支付':'-')}</div></div>
-          <div class="info-item"><div class="info-label">尾款状态</div><div class="info-value">${order.deposit ? '有尾款（'+money(Math.max(0,(order.total||0)-(order.deposit||0)))+'）' : '无尾款（全款）'}</div></div>
+        <div class="detail-green">
+          <div class="detail-green-title">💰 收款信息</div>
+          <div class="info-grid">
+            <div class="info-item"><div class="info-label">订单总额</div><div class="info-value" style="color:var(--primary);font-size:18px">${money(order.total||0)}</div></div>
+            <div class="info-item"><div class="info-label">已收款</div><div class="info-value" style="color:var(--success)">${money(order.collectedAmount||0)}</div></div>
+            <div class="info-item"><div class="info-label">待收款</div><div class="info-value" style="color:var(--danger)">${money(Math.max(0,(order.total||0)-(order.collectedAmount||0)))}</div></div>
+            <div class="info-item"><div class="info-label">收款方式</div><div class="info-value">${order.paymentMethod==='wechat'?'微信支付':(order.paymentMethod==='scan'?'扫码支付':'-')}</div></div>
+            <div class="info-item"><div class="info-label">尾款状态</div><div class="info-value">${order.deposit ? '有尾款（'+money(Math.max(0,(order.total||0)-(order.deposit||0)))+'）' : '无尾款（全款）'}</div></div>
+          </div>
         </div>
       </div>`;
     } else {
@@ -5279,6 +5457,7 @@ function saveEditOrder(orderId){
 
   window._orderEditMode = false;
   showToast('订单已保存','success');
+  schedulePushToCloud();
   navigate('order-saved-success');
 }
 
@@ -6430,6 +6609,7 @@ function saveCustomer(){
   DB.set('customers', customers);
   closeModal();
   showToast('客户保存成功','success');
+  schedulePushToCloud();
   renderCustomers();
 }
 
@@ -6469,7 +6649,7 @@ function exportCustomers(){
 function exportOrders(){
   const isAdmin = currentUser.role === 'admin';
   if(!isAdmin){ showToast('仅管理员可导出','error'); return; }
-  const orders = DB.get('orders');
+  const orders = DB.get('orders').filter(o => !o._deleted);
   const products = DB.get('products');
   const adminType = window._adminType || 'normal';
   let activeTab = window._orderTab || 'pending';
@@ -6842,6 +7022,7 @@ function saveProduct(){
   DB.set('products', products);
   closeModal();
   showToast('商品保存成功','success');
+  schedulePushToCloud();
   renderProducts();
 }
 
@@ -7059,6 +7240,7 @@ function savePayment(orderId){
     renderOrderDetail();
   }
   window._collectBalancePayment = false;
+  schedulePushToCloud();
 }
 
 /* ============ 销售提成 ============ */
@@ -7901,6 +8083,7 @@ function submitAftersale(){
     showToast('售后已提交，等待管理员处理','success');
   }
   closeModal();
+  schedulePushToCloud();
   renderAftersales();
 }
 
@@ -8004,6 +8187,7 @@ function saveAftersaleEdit(id){
 
   showToast('售后信息已更新，利润已重新核算','success');
   closeModal();
+  schedulePushToCloud();
   renderAftersales();
 }
 
@@ -8386,7 +8570,88 @@ function renderUsers(){
     html += `</td></tr>`;
   });
   html += `</tbody></table></div></div>`;
+
+  // 数据备份与恢复
+  html += '<div class="detail-section card" style="margin-top:16px"><h4 style="margin-bottom:12px">🗄️ 数据备份与恢复</h4>';
+  html += '<div style="display:flex;gap:10px;flex-wrap:wrap">';
+  html += '<button class="btn btn-primary" onclick="exportBackup()">导出全量备份(JSON)</button>';
+  html += '<button class="btn btn-secondary" onclick="document.getElementById(\'backupFileInput\').click()">导入恢复备份</button>';
+  html += '<input type="file" id="backupFileInput" accept="application/json" style="display:none" onchange="importBackup(this)">';
+  html += '</div>';
+  html += '<p style="font-size:12px;color:var(--text-muted);margin-top:8px">建议定期导出备份。导入会用备份文件覆盖本地及云端全部数据，操作不可撤销。</p>';
+  html += '</div>';
+
+  // 同步与权限说明
+  html += '<div class="detail-section card" style="margin-top:16px"><h4 style="margin-bottom:12px">🔐 数据同步与权限说明</h4>';
+  html += '<p style="font-size:13px;line-height:1.7;color:var(--text-secondary)">本系统使用 Supabase 云端存储，所有设备通过匿名密钥（anon key）直连读写。当前功能正常依赖在 Supabase 后台为相关表关闭行级安全（RLS）或配置允许匿名读写的策略。</p>';
+  html += '<p style="font-size:13px;line-height:1.7;color:var(--text-secondary);margin-top:8px"><b>安全建议：</b>匿名密钥会被前端代码暴露，请勿在其中存放高度敏感数据；如需更高安全性，应改用自建后端代理代替匿名直连。</p>';
+  html += '<button class="btn btn-secondary" style="margin-top:10px" onclick="copyRlsSql()">复制 RLS 配置 SQL（供 Supabase 后台执行）</button>';
+  html += '</div>';
+
   document.getElementById('mainContent').innerHTML = html;
+}
+
+// 导出全量备份（JSON 下载）
+function exportBackup(){
+  const tables = ['users','customers','products','orders','aftersales','payments','commissions'];
+  const data = {};
+  tables.forEach(t => { data[t] = DB.get(t) || []; });
+  data._exportedAt = nowStr();
+  data._version = '1.0';
+  const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'soms-backup-' + todayStr() + '.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('备份已导出到下载目录','success');
+}
+
+// 导入恢复备份：用备份文件覆盖本地及云端全部数据
+function importBackup(input){
+  const file = input.files && input.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try{
+      const data = JSON.parse(reader.result);
+      const tables = ['users','customers','products','orders','aftersales','payments','commissions'];
+      tables.forEach(t => { if(Array.isArray(data[t])) DB.set(t, data[t]); });
+      showToast('备份已导入，正在同步到云端...','success');
+      await DB.pushToCloud();
+      showToast('恢复完成','success');
+      renderSettings();
+    }catch(e){
+      showToast('备份文件解析失败：' + e.message, 'error');
+    } finally {
+      input.value = '';
+    }
+  };
+  reader.readAsText(file);
+}
+
+// 复制 RLS 配置 SQL（开启 RLS 并允许匿名读写，作为安全基线；后续可细化策略）
+function copyRlsSql(){
+  const sql = '-- 在 Supabase SQL Editor 执行：开启 RLS 并允许匿名(anon)读写\n' +
+    'ALTER TABLE users ENABLE ROW LEVEL SECURITY;\n' +
+    'CREATE POLICY "anon_all_users" ON users FOR ALL TO anon USING (true) WITH CHECK (true);\n' +
+    'ALTER TABLE customers ENABLE ROW LEVEL SECURITY;\n' +
+    'CREATE POLICY "anon_all_customers" ON customers FOR ALL TO anon USING (true) WITH CHECK (true);\n' +
+    'ALTER TABLE products ENABLE ROW LEVEL SECURITY;\n' +
+    'CREATE POLICY "anon_all_products" ON products FOR ALL TO anon USING (true) WITH CHECK (true);\n' +
+    'ALTER TABLE orders ENABLE ROW LEVEL SECURITY;\n' +
+    'CREATE POLICY "anon_all_orders" ON orders FOR ALL TO anon USING (true) WITH CHECK (true);\n' +
+    'ALTER TABLE aftersales ENABLE ROW LEVEL SECURITY;\n' +
+    'CREATE POLICY "anon_all_aftersales" ON aftersales FOR ALL TO anon USING (true) WITH CHECK (true);\n' +
+    'ALTER TABLE payments ENABLE ROW LEVEL SECURITY;\n' +
+    'CREATE POLICY "anon_all_payments" ON payments FOR ALL TO anon USING (true) WITH CHECK (true);\n' +
+    'ALTER TABLE commissions ENABLE ROW LEVEL SECURITY;\n' +
+    'CREATE POLICY "anon_all_commissions" ON commissions FOR ALL TO anon USING (true) WITH CHECK (true);\n';
+  navigator.clipboard.writeText(sql).then(() => showToast('RLS 配置 SQL 已复制到剪贴板','success'))
+    .catch(() => showToast('复制失败，请手动复制','error'));
 }
 
 function toggleUserForm(){
@@ -8394,7 +8659,7 @@ function toggleUserForm(){
   el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
-function addUser(){
+async function addUser(){
   const name = document.getElementById('newUserName').value.trim();
   const account = document.getElementById('newUserAccount').value.trim();
   const password = document.getElementById('newUserPassword').value.trim();
@@ -8406,7 +8671,9 @@ function addUser(){
   if(!password){ showToast('请输入密码','error'); return; }
   const users = DB.get('users');
   if(users.find(u => u.username === account)){ showToast('登录账号已存在','error'); return; }
-  users.push({id:DB.uid('u'), username:account, password:password, name:name, role:role, wechatAmount:wechatAmount, createdAt:nowStr()});
+  let hp = password;
+  try{ hp = await hashPassword(password); }catch(e){}
+  users.push({id:DB.uid('u'), username:account, password:hp, name:name, role:role, wechatAmount:wechatAmount, createdAt:nowStr()});
   DB.set('users', users);
   showToast('人员已添加','success');
   renderUsers();
@@ -8440,11 +8707,13 @@ function deleteUser(id){
   });
 }
 
-function resetUserPassword(id){
+async function resetUserPassword(id){
   const users = DB.get('users');
   const idx = users.findIndex(u => u.id === id);
   if(idx >= 0){
-    users[idx].password = '123456';
+    let hp = '123456';
+    try{ hp = await hashPassword('123456'); }catch(e){}
+    users[idx].password = hp;
     DB.set('users', users);
     showToast('密码已重置为 123456','success');
   }
@@ -9194,16 +9463,70 @@ function copyOrderInfo(orderId){
   });
 }
 
-// 销售端一键收集物流信息（仅复制已有单号，无单号时提示）
+// 销售端「一键收集物流信息」：经快递100 实时接口批量查询并汇总
 function collectSalesLogisticsInfo(orderId){
   const order = DB.get('orders').find(o => o.id === orderId);
   if(!order){ showToast('订单不存在','error'); return; }
-  const itemsWithTracking = order.items.filter(it => it.trackingNo && it.trackingNo.trim());
-  if(itemsWithTracking.length === 0){
-    showToast('暂无物流单号可收集','error');
-    return;
-  }
-  copyLogisticsInfo(orderId);
+  const items = order.items.filter(it => it.trackingNo && it.trackingNo.trim());
+  if(items.length === 0){ showToast('暂无物流单号可收集','error'); return; }
+  if(!KUAIDI100_PROXY){ copyLogisticsInfo(orderId); showToast('未配置物流代理，已复制单号','info'); return; }
+  openLogiCollectModal(order, items);
+}
+
+// 弹出「一键收集」实时物流汇总
+function openLogiCollectModal(order, items){
+  window._logiCollItems = items;
+  const rows = items.map((it, i) => `
+    <div style="padding:10px 0;border-bottom:1px dashed var(--border)">
+      <div style="font-weight:600">${it.name} x${it.qty} <span class="mono" style="font-size:12px;color:var(--text-muted)">#${it.trackingNo}</span></div>
+      <div style="font-size:12px;color:var(--text-muted)" id="logiCollStatus_${i}">查询中...</div>
+    </div>`).join('');
+  const modalHtml = `
+    <div class="modal-mask" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:540px">
+        <div class="modal-header"><h3>📋 一键收集物流（快递100实时）</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+        <div class="modal-body">
+          ${rows}
+          <div style="margin-top:14px;display:flex;gap:10px">
+            <button class="btn btn-primary btn-sm" onclick="copyCollectedLogi()">📋 复制汇总</button>
+            <button class="btn btn-secondary btn-sm" onclick="closeModal()">关闭</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('modalContainer').innerHTML = modalHtml;
+  items.forEach((it, i) => {
+    const com = expressCodeOf(it.expressCompany) || expressCodeOf(detectExpressCompany(it.trackingNo)) || 'auto';
+    const url = KUAIDI100_PROXY + '?num=' + encodeURIComponent(it.trackingNo) + '&com=' + encodeURIComponent(com);
+    fetch(url).then(r => r.json()).then(resp => {
+      const el = document.getElementById('logiCollStatus_' + i);
+      if(resp && resp.status === '200' && resp.data && resp.data.length){
+        const latest = resp.data[0];
+        const st = mapKuaidiStatus(latest.status, latest.context);
+        el.innerHTML = `<span style="color:var(--success)">${st}</span> · ${latest.context || ''} <span style="color:var(--text-muted)">(${latest.time || ''})</span>`;
+        el.dataset.status = (latest.context || '') + '|' + (latest.time || '');
+      } else {
+        el.innerHTML = `<span style="color:var(--danger)">查询失败：${((resp && (resp.message || resp.msg)) || '无结果')}</span>`;
+      }
+    }).catch(e => {
+      const el = document.getElementById('logiCollStatus_' + i);
+      if(el) el.innerHTML = '<span style="color:var(--danger)">查询失败</span>';
+    });
+  });
+}
+
+// 复制「一键收集」实时物流汇总
+function copyCollectedLogi(){
+  const items = window._logiCollItems || [];
+  let text = '';
+  items.forEach((it, i) => {
+    const tn = (it.trackingNo || '').trim();
+    const el = document.getElementById('logiCollStatus_' + i);
+    const st = (el && el.dataset && el.dataset.status) ? el.dataset.status.split('|')[0] : '';
+    text += it.name + ' x' + it.qty + (tn ? ' #' + tn : '') + (st ? ' ' + st : '') + '\n';
+  });
+  text = text.trim();
+  navigator.clipboard.writeText(text).then(() => showToast('物流汇总已复制','success')).catch(() => showToast('物流汇总已复制','success'));
 }
 
 // 一键复制物流信息：商品 + 数量 + #单号（单号前默认加#），自动复制到剪贴板可直接粘贴
@@ -9268,18 +9591,27 @@ function submitChangePassword(){
   const newPass = document.getElementById('newPass').value;
   const confirmPass = document.getElementById('confirmPass').value;
   if(!oldPass || !newPass || !confirmPass){ showToast('请填写所有字段','error'); return; }
-  if(oldPass !== currentUser.password){ showToast('原密码错误','error'); return; }
   if(newPass !== confirmPass){ showToast('两次输入的新密码不一致','error'); return; }
   if(newPass.length < 4){ showToast('新密码至少4位','error'); return; }
-
   const users = DB.get('users');
   const idx = users.findIndex(u => u.id === currentUser.id);
-  users[idx].password = newPass;
-  DB.set('users', users);
-  currentUser.password = newPass;
-  sessionStorage.setItem('soms_current_user', JSON.stringify(currentUser));
-  closeModal();
-  showToast('密码修改成功','success');
+  if(idx < 0){ showToast('账号异常','error'); return; }
+  const cur = users[idx];
+  (async () => {
+    let oldOk = false;
+    try{
+      const h = await hashPassword(oldPass);
+      if(cur.password === h) oldOk = true;
+      else if(cur.password === oldPass) oldOk = true; // 兼容旧明文
+    }catch(e){ if(cur.password === oldPass) oldOk = true; }
+    if(!oldOk){ showToast('原密码错误','error'); return; }
+    let nh = newPass;
+    try{ nh = await hashPassword(newPass); }catch(e){}
+    cur.password = nh;
+    DB.set('users', users);
+    closeModal();
+    showToast('密码修改成功','success');
+  })();
 }
 
 /* ============ 通用：状态选项（按订单类型） ============ */
@@ -9540,65 +9872,70 @@ function parseLogisticsTime(str){
   return new Date(str.replace(/-/g,'/')).getTime();
 }
 
-// 物流轨迹查询
+// 物流轨迹查询（快递100 实时接口，经 Supabase Edge Function 代理）
 function queryLogistics(orderId, itemIndex, trackingNo){
   const container = document.getElementById('logistics-timeline-container');
   if(!container) return;
+  const cacheKey = 'soms_logi_' + trackingNo;
 
-  // 显示加载中
   container.innerHTML = `
     <div style="text-align:center;padding:20px;color:var(--text-muted)">
       <span style="display:inline-block;width:16px;height:16px;border:2px solid var(--primary);border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;margin-right:8px;vertical-align:middle"></span>
-      正在查询物流信息...
+      正在查询快递100实时物流...
     </div>
   `;
 
-  // 检查缓存
-  const cacheKey = 'soms_logi_' + trackingNo;
+  // 缓存优先
   const cached = localStorage.getItem(cacheKey);
   if(cached){
-    setTimeout(() => {
-      try{
-        const data = JSON.parse(cached);
-        renderLogisticsTimeline(trackingNo, data, container);
-      }catch(e){
-        localStorage.removeItem(cacheKey);
-        queryLogistics(orderId, itemIndex, trackingNo);
-      }
-    }, 300);
+    try{
+      const data = JSON.parse(cached);
+      renderLogisticsTimeline(trackingNo, data, container, data.expressCompany);
+      return;
+    }catch(e){ localStorage.removeItem(cacheKey); }
+  }
+
+  if(!KUAIDI100_PROXY){
+    showLogiError(container, trackingNo, '未配置快递100 物流代理地址（KUAIDI100_PROXY 为空），请在系统设置或代码中配置 Supabase Edge Function 地址。');
     return;
   }
 
-  // 模拟网络延迟
-  const delay = 600 + Math.random() * 800;
-  setTimeout(() => {
-    const expressCompany = detectExpressCompany(trackingNo);
-    const data = generateSimulatedLogistics(trackingNo, expressCompany);
+  const order = DB.get('orders').find(o => o.id === orderId);
+  const it = order && order.items ? order.items[itemIndex] : null;
+  const com = expressCodeOf(it && it.expressCompany) || expressCodeOf(detectExpressCompany(trackingNo)) || 'auto';
+  const url = KUAIDI100_PROXY + '?num=' + encodeURIComponent(trackingNo) + '&com=' + encodeURIComponent(com);
 
-    // 缓存结果
-    try{
-      localStorage.setItem(cacheKey, JSON.stringify(data));
-    }catch(e){}
-
-    data.expressCompany = expressCompany;
-    data.trackingNo = trackingNo;
-    renderLogisticsTimeline(trackingNo, data, container);
-  }, delay);
+  fetch(url, { headers: { 'Accept': 'application/json' } })
+    .then(r => r.json())
+    .then(resp => {
+      if(resp && resp.status === '200' && resp.data && resp.data.length){
+        try{ localStorage.setItem(cacheKey, JSON.stringify(resp)); }catch(e){}
+        resp.expressCompany = reverseExpressName(resp.com) || (it && it.expressCompany) || detectExpressCompany(trackingNo);
+        resp.trackingNo = trackingNo;
+        renderLogisticsTimeline(trackingNo, resp, container, resp.expressCompany);
+      } else {
+        showLogiError(container, trackingNo, '快递100：' + ((resp && (resp.message || resp.msg)) ? resp.message : '查询失败，请确认运单号与快递公司'));
+      }
+    })
+    .catch(e => {
+      showLogiError(container, trackingNo, '物流查询失败（网络异常或代理未部署）：' + ((e && e.message) ? e.message : e));
+    });
 }
 
 // 物流查询结果仅用于展示，不修改订单状态（避免查询物流时误把订单改为已签收）
 
-// 渲染物流时间线
-function renderLogisticsTimeline(trackingNo, data, container){
+// 渲染物流时间线（兼容 快递100 返回结构，自动规整为节点数组）
+function renderLogisticsTimeline(trackingNo, nodes, container, expressCompany){
   if(!container) container = document.getElementById('logistics-timeline-container');
-  if(!container || !data || !data.length) return;
-
-  const expressCompany = data.expressCompany || detectExpressCompany(trackingNo);
+  if(!nodes) return;
+  if(nodes.data && Array.isArray(nodes.data)){ nodes = normalizeKuaidiData(nodes); }
+  if(!nodes.length) return;
+  expressCompany = expressCompany || (nodes.expressCompany) || detectExpressCompany(trackingNo);
 
   let timelineHtml = '';
-  data.forEach((node, idx) => {
+  nodes.forEach((node, idx) => {
     const isFirst = idx === 0;
-    const isLast = idx === data.length - 1;
+    const isLast = idx === nodes.length - 1;
     const dotColor = isFirst ? 'var(--primary)' : (node.status === '已签收' ? '#10b981' : '#94a3b8');
     const textColor = isFirst ? 'var(--text)' : 'var(--text-secondary)';
     const fontWeight = isFirst ? '600' : '400';
@@ -9609,7 +9946,7 @@ function renderLogisticsTimeline(trackingNo, data, container){
         ${!isLast ? '<div class="logi-timeline-line"></div>' : ''}
         <div class="logi-timeline-content" style="color:${textColor};font-weight:${fontWeight}">
           <div class="logi-timeline-time">${node.time}</div>
-          <div class="logi-timeline-station">${node.station}</div>
+          <div class="logi-timeline-station">${node.station || ''}</div>
           <div class="logi-timeline-desc">${node.description}</div>
         </div>
       </div>
@@ -9628,6 +9965,35 @@ function renderLogisticsTimeline(trackingNo, data, container){
       </div>
     </div>
   `;
+}
+
+// 快递100 返回数据 → 时间线节点
+function normalizeKuaidiData(real){
+  const list = (real && real.data) || [];
+  return list.map(d => ({
+    time: d.ftime || d.time || '',
+    station: '',
+    status: mapKuaidiStatus(d.status, d.context),
+    description: d.context || d.desc || ''
+  }));
+}
+function mapKuaidiStatus(st, ctx){
+  const s = (st || '').toString();
+  if(s.indexOf('签收') >= 0 || s.indexOf('妥投') >= 0) return '已签收';
+  if(s.indexOf('派送') >= 0) return '派送中';
+  if(s.indexOf('揽') >= 0 || s.indexOf('收件') >= 0) return '已揽件';
+  if(s.indexOf('疑难') >= 0 || s.indexOf('问题') >= 0) return '问题件';
+  if(s.indexOf('退') >= 0) return '退签';
+  return '运输中';
+}
+function showLogiError(container, trackingNo, msg){
+  if(!container) container = document.getElementById('logistics-timeline-container');
+  if(!container) return;
+  const safe = (msg || '物流查询失败').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  container.innerHTML = `
+    <div class="detail-note">⚠ ${safe}
+      <button class="btn btn-sm" style="margin-left:8px;padding:2px 8px;font-size:11px;border:1px solid var(--border);background:var(--bg);cursor:pointer" onclick="clearLogisticsCache('${trackingNo}')">清除缓存</button>
+    </div>`;
 }
 
 // 清除物流缓存
@@ -9656,7 +10022,7 @@ function autoShowCachedLogistics(order){
         const data = JSON.parse(cached);
         data.expressCompany = data.expressCompany || it.expressCompany || detectExpressCompany(it.trackingNo);
         data.trackingNo = it.trackingNo;
-        renderLogisticsTimeline(it.trackingNo, data, container);
+        renderLogisticsTimeline(it.trackingNo, data, container, data.expressCompany);
         return; // 只显示第一个有缓存的结果
       }catch(e){
         localStorage.removeItem(cacheKey);
@@ -9687,6 +10053,7 @@ window.onload = async function(){
     await DB.pushToCloud();
   }catch(e){
     console.warn('推送到云端失败:', e.message);
+    showToast('首次同步到云端失败，请检查网络后点“同步到云端”按钮','error');
   }
 
   // 恢复正常登录流程

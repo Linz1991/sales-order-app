@@ -1,0 +1,13 @@
+{
+  "name": "销售订单管理系统",
+  "short_name": "销售管理",
+  "description": "多端销售订单与收款管理系统",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f6fa",
+  "theme_color": "#4f46e5",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }
+  ]
+}
