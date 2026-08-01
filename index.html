@@ -3121,7 +3121,7 @@ function renderOrders(){
         const opBtn = (o.status === 'pending' && canEdit && !hasOrderedItem)
           ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();editOrder('${o.id}')">编辑</button>`
           : (o.status === 'feedback')
-          ? `<button class="btn btn-warning btn-sm" onclick="event.stopPropagation();markOrderFeedbackDone('${o.id}')">反馈</button>`
+          ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewOrder('${o.id}')">查看</button>`
           : `<button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button>`;
         html += `
           <div class="order-card" onclick="viewOrder('${o.id}')">
@@ -3161,7 +3161,7 @@ function renderOrders(){
               const opBtn = (o.status === 'pending' && canEdit && !hasOrderedItem)
                 ? `<button class="btn btn-primary btn-sm" onclick="editOrder('${o.id}')">编辑</button>`
               : (o.status === 'feedback')
-              ? `<button class="btn btn-warning btn-sm" onclick="markOrderFeedbackDone('${o.id}')">反馈</button>`
+              ? `<button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button>`
                 : `<button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button>`;
               const remark = o.remark ? `<span title="${(o.remark||'').replace(/"/g,"'")}" style="display:inline-block;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${o.remark}</span>` : '<span style="color:var(--text-muted)">-</span>';
               return `
@@ -4710,9 +4710,13 @@ function renderOrderDetail(){
         html += `<button class="btn btn-primary" onclick="editOrder('${order.id}')">✏️ 编辑订单</button>`;
       }
 
-      // 普通/留仓订单：待反馈 → 已反馈
+      // 普通/留仓订单：待反馈 → 已反馈（管理员直接确认；销售需点"反馈"并确认）
       if(!isDoor && order.status === 'feedback'){
-        html += `<button class="btn btn-warning" onclick="setOrderFeedback('${order.id}')">确认已反馈</button>`;
+        if(isAdmin){
+          html += `<button class="btn btn-warning" onclick="setOrderFeedback('${order.id}')">确认已反馈</button>`;
+        } else {
+          html += `<button class="btn btn-warning" onclick="salesSubmitFeedback('${order.id}')">反馈</button>`;
+        }
       }
       // 上门订单 → 已完成（仅提交人/管理员可操作）
       if(isDoor && (isAdmin || isOwner) && order.status !== 'completed' && order.status !== 'canceled'){
@@ -5190,6 +5194,25 @@ function editOrder(orderId){
   }
   window._currentOrderId = orderId;
   navigate('order-edit');
+}
+
+// 销售：详情页点击"反馈"→确认提示→转入已完成
+function salesSubmitFeedback(orderId){
+  const orders = DB.get('orders');
+  const idx = orders.findIndex(o => o.id === orderId);
+  if(idx < 0) return;
+  if(orders[idx].status !== 'feedback'){
+    showToast('该订单不是待反馈状态', 'error');
+    return;
+  }
+  showConfirm('确认提交反馈？确认后该订单将转入「已完成」列表。', () => {
+    orders[idx].status = 'feedback_done';
+    orders[idx].feedbackDoneAt = nowStr();
+    DB.set('orders', orders);
+    window._orderTab = 'completed';
+    navigate('orders');
+    showToast('✅ 反馈成功，订单已转入「已完成」列表', 'success');
+  });
 }
 
 // 待反馈 → 已反馈
