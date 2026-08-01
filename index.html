@@ -3035,7 +3035,7 @@ function renderOrders(){
           html += `<td>${orderTypeTag(o.type)}</td>`;
           html += `<td>${statusTag(o.status)}</td>`;
           html += `<td>${o.createdAt||'-'}</td>`;
-          html += `<td>${(activeTab==='feedback' || ['completed','feedback_done'].includes(o.status) || o.type==='warehouse' || o.type==='door') ? `<button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button>` : `<button class="btn-link" onclick="viewOrder('${o.id}')">详情</button> <button class="btn btn-primary btn-sm" onclick="editOrder('${o.id}')">编辑</button>`}</td>`;
+          html += `<td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button></td>`;
           html += `</tr>`;
         });
       } else {
