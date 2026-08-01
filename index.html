@@ -2687,8 +2687,8 @@ function renderDashboard(){
       return `较昨日 ${p>=0?'⬆️':'⬇️'} ${Math.abs(p)}%`;
     }
 
-    // 待下单：pending 订单里的商品件数
-    const pendingItemCount = myOrders.filter(o=>o.status==='pending').reduce((s,o)=>s+((o.items&&o.items.length)||0),0);
+    // 待下单：pending 状态的订单数（以订单为主体）
+    const pendingOrderCount = myOrders.filter(o=>o.status==='pending').length;
     // 待反馈：feedback 状态的订单数（以订单为主体，需全部反馈单号才进入此状态）
     const feedbackOrderCount = myOrders.filter(o=>o.status==='feedback').length;
     // 售后工单
@@ -2724,7 +2724,7 @@ function renderDashboard(){
           <div class="stat-icon blue">📝</div>
           <div class="stat-info">
             <div class="stat-label">待下单</div>
-            <div class="stat-value">${pendingItemCount}</div>
+            <div class="stat-value">${pendingOrderCount}</div>
           </div>
         </div>
         <div class="stat-card" onclick="dashboardJump('feedback')">
