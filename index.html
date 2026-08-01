@@ -5284,6 +5284,8 @@ function toggleEditSelect(pid, e){
     orders[idx].items.push({ productId: product.id, name: product.name, price: product.price, qty: 1, subtotal: product.price, stock: '否' });
     orders[idx].total += product.price;
   }
+  // 全款订单：同步「全款金额」(fullPayment) = 最新订单总额
+  if(orders[idx].fullPayment){ orders[idx].fullPayment = orders[idx].total; }
   DB.set('orders', orders);
   renderOrderDetail();
   window._orderEditMode = true;
@@ -5378,6 +5380,8 @@ function removeEditItem(i){
   if(orders[idx].items.length <= 1){ showToast('至少保留一个商品','error'); return; }
   orders[idx].items.splice(i, 1);
   orders[idx].total = orders[idx].items.reduce((s,it)=>s+it.subtotal,0);
+  // 全款订单：同步「全款金额」(fullPayment) = 最新订单总额
+  if(orders[idx].fullPayment){ orders[idx].fullPayment = orders[idx].total; }
   DB.set('orders', orders);
   renderOrderDetail();
   // 重新进入编辑模式
