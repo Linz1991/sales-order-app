@@ -4338,7 +4338,7 @@ function renderOrderDetail(){
   const isAdminDoorDetail = isAdmin && isDoor && !editMode;
   // 商品明细实际列数（销售仅 名称/数量/售价 3 列；管理员加 成本/损耗/利润）
   const _orderCols = isAdminDoorDetail ? 7
-    : 3 + (isAdmin ? 3 : 0) + (isDoor ? 1 : 0) + (editMode ? 1 : 0) + ((isAdmin && order.type==='warehouse') ? 1 : 0);
+    : 3 + (isAdmin ? 3 : 0) + (isDoor ? 1 : 0) + (editMode ? 1 : 0) + ((isAdmin && order.type==='warehouse') ? 2 : 0);
   const totalColspan = _orderCols - 1;
 
   const payments = DB.get('payments').filter(p => p.orderId === orderId);
@@ -4471,7 +4471,7 @@ function renderOrderDetail(){
               <th>售价</th>
               ${isAdmin ? '<th>成本</th><th>损耗</th><th>利润</th>' : ''}
               ${isDoor ? '<th>是否备货</th>' : ''}
-              ${isAdmin && order.type==='warehouse' ? '<th>下单</th>' : ''}
+              ${isAdmin && order.type==='warehouse' ? '<th>下单</th><th>物流单号</th>' : ''}
               ${editMode ? '<th>操作</th>' : ''}
             `}
           </tr></thead>
@@ -4499,6 +4499,7 @@ function renderOrderDetail(){
                   ${isAdmin ? `<td>${ isAdminOrderView ? `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" id="wasteItem_${i}" oninput="recalcAdminProfit('${order.id}')">` : `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" onchange="saveItemWaste('${order.id}',${i},this.value)">`}</td>` : ''}
                   ${isAdmin ? `<td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}">${money(itemProfit)}</td>` : ''}
                   ${(isAdmin && order.type==='warehouse') ? `<td>${it.ordered ? `<button class="btn-link" style="color:var(--success);white-space:nowrap;font-weight:600" onclick="markItemUnordered('${order.id}',${i})">✓ 已下单（撤销）</button>` : `<button class="btn btn-primary btn-sm" onclick="markItemOrdered('${order.id}',${i})">下单</button>`}</td>` : ''}
+                  ${(isAdmin && order.type==='warehouse') ? `<td><input type="text" class="form-control" id="whTrackItem_${i}" value="${it.trackingNo||''}" placeholder="输入运单号" style="padding:6px 10px;min-width:150px">${it.trackingNo ? `<a class="btn-link" style="margin-left:6px;white-space:nowrap" onclick="queryLogistics('${order.id}', ${i}, document.getElementById('whTrackItem_${i}').value)">查询</a>` : ''}</td>` : ''}
                   ${isDoor ? `<td>${editMode ? `<select class="form-control" id="editItemStock_${i}" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : ((isAdmin || currentUser.role==='sales') ? `<select class="form-control" onchange="saveItemStock('${order.id}',${i},this.value)" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : (it.stock==='是'?'<span class="tag tag-completed">已备货</span>':'<span class="tag tag-pending">未备货</span>'))}</td>` : ''}
                   ${editMode ? `<td><button class="btn-link danger" onclick="removeEditItem(${i})">删除</button></td>` : ''}
                 `}
@@ -4537,7 +4538,7 @@ function renderOrderDetail(){
 
   // 物流信息（已下单/运输中/待反馈/已反馈/已完成均显示，仅管理员可编辑）
   const showLogistics = ['confirmed','shipped','feedback','feedback_done','completed'].includes(order.status);
-  if(showLogistics && isAdminOrderView){
+  if(showLogistics && isAdminOrderView && order.type!=='warehouse'){
     // 管理员查看（已下单/运输中/待反馈/已反馈/已完成）统一物流信息模块界面：
     // 运单号右侧「操作」列提供「查询」按钮实时查询轨迹，并提供「一键复制物流信息」按钮
     html += `
@@ -4686,6 +4687,9 @@ function renderOrderDetail(){
   } else if(isAdminOrderView){
     // 管理员查看（待下单/已下单/待反馈）专用：保存修改（损耗+物流），无其余操作
     html += `<button class="btn btn-success" onclick="saveAdminOrder('${order.id}')">保存修改</button>`;
+    if(order.type==='warehouse'){
+      html += `<button class="btn btn-primary btn-sm" onclick="copyLogisticsInfo('${order.id}')">📋 一键复制物流信息</button>`;
+    }
     html += `<button class="btn btn-secondary" onclick="backToOrders()">返回</button>`;
   } else if(!isAdmin && isOwner && order.status === 'confirmed'){
     // 销售查看「已下单」订单：只读收款信息，底部只提供返回「订单列表-已下单」
@@ -6020,8 +6024,17 @@ function saveAdminOrder(orderId){
     if(wEl !== null) it.waste = parseInt(wEl.value) || 0;
     const tEl = document.getElementById('trackItem_' + i);
     if(tEl !== null) it.trackingNo = (tEl.value || '').trim();
+    const whEl = document.getElementById('whTrackItem_' + i);
+    if(whEl !== null) it.trackingNo = (whEl.value || '').trim();
     if(it.trackingNo) it.expressCompany = detectExpressCompany(it.trackingNo);
   });
+  // 留仓订单：全部商品均填写物流单号则保存后自动转入「待反馈」
+  if(o.type === 'warehouse'){
+    const allTracked = o.items.length > 0 && o.items.every(it => (it.trackingNo||'').trim() !== '');
+    if(allTracked && !['feedback','completed','feedback_done'].includes(o.status)){
+      o.status = 'feedback';
+    }
+  }
   // 留仓/上门订单：一并回存发货日期(备货日期)/上门日期，避免「查看」详情修改后日期丢失
   const dateEl = document.getElementById('detailOrderDate');
   if(dateEl !== null) o.orderDate = dateEl.value;
@@ -6032,7 +6045,7 @@ function saveAdminOrder(orderId){
     showToast('备货日期不能晚于订单上门日期','error'); return;
   }
   DB.set('orders', orders);
-  showToast('修改完成', 'success');
+  showToast(o.status === 'feedback' && o.type === 'warehouse' ? '全部商品物流单号已录入，订单已转入「待反馈」' : '修改完成', 'success');
   // 返回对应列表（confirmed/shipped/received 归入「已下单」Tab；completed/feedback_done 归入「已完成」Tab）
   window._orderTab = (o.status === 'pending') ? 'pending' : (o.status === 'feedback' ? 'feedback' : (['completed','feedback_done'].includes(o.status) ? 'completed' : 'confirmed'));
   renderOrders();
