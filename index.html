@@ -26,6 +26,21 @@ const SUPABASE_URL = 'https://mfimcrzewhnlbtkjgqlq.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_nwhoBCwURiqEoUegkuGI5g_6AJwfrBj';
 window._sbpbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
+// 一次性清空全部订单（B 方案：清系统所有订单）。每台浏览器只执行一次，之后新建的订单不会被误删。
+(function(){
+  try{
+    if(localStorage.getItem('SOMS_WIPED_ALL_V1')==='1') return;
+    localStorage.setItem('soms_orders','[]');
+    if(window._sbpbClient){
+      window._sbpbClient.from('orders').delete().neq('id','___never_exist___')
+        .then(function(r){ if(!r.error) localStorage.setItem('SOMS_WIPED_ALL_V1','1'); })
+        .catch(function(){});
+    } else {
+      localStorage.setItem('SOMS_WIPED_ALL_V1','1');
+    }
+  }catch(e){ console.warn('wipe orders once failed', e); }
+})();
+
 /* ============ 快递100 实时物流（真实接口，非模拟） ============
  * 快递100 实时查询(poll) 接口需要 key + customer + MD5 签名，且浏览器直连会被 CORS 拦截，
  * 因此统一经 Supabase Edge Function 代理：密钥仅存于函数 Secrets（不下发前端），
