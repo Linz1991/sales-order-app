@@ -4594,7 +4594,7 @@ function renderOrderDetail(){
             <div class="info-item"><div class="info-label">尾款状态</div><div class="info-value">${order.deposit ? '有尾款（'+money(Math.max(0,(order.total||0)-(order.deposit||0)))+'）' : '无尾款（全款）'}</div></div>
           </div>
         </div>
-        ${(!isAdmin && isOwner && order.status==='confirmed') ? `<div style="margin-top:14px"><button class="btn btn-secondary" onclick="window._orderTab='confirmed';navigate('orders')">← 返回订单列表-已下单</button></div>` : ''}
+        ${(!isAdmin && isOwner && order.status==='confirmed') ? `<div style="margin-top:14px"><button class="btn btn-secondary" onclick="window._orderTab='confirmed';navigate('orders')">← 返回订单列表</button></div>` : ''}
       </div>`;
     } else {
       html += `
@@ -4674,7 +4674,7 @@ function renderOrderDetail(){
     html += `<button class="btn btn-secondary" onclick="backToOrders()">返回</button>`;
   } else if(!isAdmin && isOwner && order.status === 'confirmed'){
     // 销售查看「已下单」订单：只读收款信息，底部只提供返回「订单列表-已下单」
-    html += `<button class="btn btn-secondary" onclick="window._orderTab='confirmed';navigate('orders')">← 返回订单列表-已下单</button>`;
+    html += `<button class="btn btn-secondary" onclick="window._orderTab='confirmed';navigate('orders')">← 返回订单列表</button>`;
   } else if(viewOnly){
     // 从提交成功页进入的只读模式：仅返回按钮
     html += `<button class="btn btn-secondary" onclick="backToOrders()">← 返回订单列表</button>`;
