@@ -9903,7 +9903,9 @@ function queryLogistics(orderId, itemIndex, trackingNo){
   const order = DB.get('orders').find(o => o.id === orderId);
   const it = order && order.items ? order.items[itemIndex] : null;
   const com = expressCodeOf(it && it.expressCompany) || expressCodeOf(detectExpressCompany(trackingNo)) || 'auto';
-  const url = KUAIDI100_PROXY + '?num=' + encodeURIComponent(trackingNo) + '&com=' + encodeURIComponent(com);
+  // 顺丰/中通等部分快递公司实时查询必填收寄件人手机号，从订单 phone 取（无则不传，由接口决定是否报错）
+  const phone = (order && (order.phone || (order.customerObj && order.customerObj.phone))) || (it && it.phone) || '';
+  const url = KUAIDI100_PROXY + '?num=' + encodeURIComponent(trackingNo) + '&com=' + encodeURIComponent(com) + (phone ? '&phone=' + encodeURIComponent(phone) : '');
 
   fetch(url, { headers: { 'Accept': 'application/json' } })
     .then(r => r.json())
