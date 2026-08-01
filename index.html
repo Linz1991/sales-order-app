@@ -346,6 +346,12 @@ a{text-decoration:none;color:inherit}
 .btn:disabled{opacity:.5;cursor:not-allowed}
 .btn-block{width:100%;justify-content:center}
 
+/* 表格内按钮统一居中：垂直对齐 + 操作列水平居中 */
+.table-wrap td{vertical-align:middle}
+.table-wrap td:has(>.btn),.table-wrap td:has(>button){text-align:center}
+/* 仅含单个按钮的独立操作区块：水平居中 */
+div:has(> .btn):not(:has(> *:not(.btn))):not(.search-box):not(.card-title):not(.filter-bar):not(.btn-block){text-align:center}
+
 .form-group{margin-bottom:16px}
 .form-label{display:block;margin-bottom:6px;font-size:13px;font-weight:500;color:var(--text)}
 .form-label .required{color:var(--danger)}
@@ -2922,7 +2928,7 @@ function renderOrders(){
     html += `<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="${activeTab==='aftersale'?'搜索售后单号/客户/原订单号/商品':'搜索订单号/客户/电话'}" value="${keyword}" oninput="window._orderFilter=this.value;renderOrders()"></div></div>`;
 
     if(activeTab === 'pending'){
-      html += `<button class="btn btn-success btn-sm" onclick="collectPendingOrdersInfo()" style="margin-bottom:14px">📋 一键收集订单信息</button>`;
+      html += `<div style="text-align:center;margin-bottom:14px"><button class="btn btn-success btn-sm" onclick="collectPendingOrdersInfo()">📋 一键收集订单信息</button></div>`;
       html += `<div class="collect-info-box" id="collectInfoBox"></div>`;
     }
 
@@ -2990,7 +2996,7 @@ function renderOrders(){
           });
           html += `</tbody></table></td>`;
           html += `<td style="vertical-align:top;font-size:12px">${o.remark||'-'}</td>`;
-          html += `<td style="vertical-align:top"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button></td></tr>`;
+          html += `<td "><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button></td></tr>`;
         });
       } else {
         html += `<tr><td colspan="4" class="table-empty">暂无待下单订单</td></tr>`;
@@ -3014,7 +3020,7 @@ function renderOrders(){
             html += `</td></tr>`;
           });
           html += `</tbody></table></td>`;
-          html += `<td style="vertical-align:top"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button></td></tr>`;
+          html += `<td "><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button></td></tr>`;
         });
       } else {
         html += `<tr><td colspan="3" class="table-empty">暂无已下单订单</td></tr>`;
