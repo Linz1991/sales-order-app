@@ -1,5 +1,5 @@
 // 销售订单管理系统 Service Worker：网络优先，离线时回退到缓存，保证断网也能打开页面查看历史数据
-const CACHE = 'soms-v25';
+const CACHE = 'soms-v26';
 const ASSETS = [
   './',
   './index.html',
@@ -11,7 +11,13 @@ const ASSETS = [
 
 self.addEventListener('install', e => {
   e.waitUntil(
-    caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())
+    caches.open(CACHE).then(async c => {
+      // 逐条缓存：任一资源失败不影响其余，避免整个 SW 安装失败导致无法更新
+      for (const url of ASSETS) {
+        try { const res = await fetch(url); if (res && res.ok) await c.put(url, res); }
+        catch (_) { /* 忽略单个资源失败，继续缓存其余 */ }
+      }
+    }).then(() => self.skipWaiting())
   );
 });
 
