@@ -4338,7 +4338,7 @@ function renderOrderDetail(){
   const isAdminDoorDetail = isAdmin && isDoor && !editMode;
   // 商品明细实际列数（销售仅 名称/数量/售价 3 列；管理员加 成本/损耗/利润）
   const _orderCols = isAdminDoorDetail ? 7
-    : 3 + (isAdmin ? 3 : 0) + (isDoor ? 1 : 0) + (editMode ? 1 : 0);
+    : 3 + (isAdmin ? 3 : 0) + (isDoor ? 1 : 0) + (editMode ? 1 : 0) + ((isAdmin && order.type==='warehouse') ? 1 : 0);
   const totalColspan = _orderCols - 1;
 
   const payments = DB.get('payments').filter(p => p.orderId === orderId);
@@ -4471,6 +4471,7 @@ function renderOrderDetail(){
               <th>售价</th>
               ${isAdmin ? '<th>成本</th><th>损耗</th><th>利润</th>' : ''}
               ${isDoor ? '<th>是否备货</th>' : ''}
+              ${isAdmin && order.type==='warehouse' ? '<th>下单</th>' : ''}
               ${editMode ? '<th>操作</th>' : ''}
             `}
           </tr></thead>
@@ -4497,6 +4498,7 @@ function renderOrderDetail(){
                   ${isAdmin ? `<td>${money(cost)}</td>` : ''}
                   ${isAdmin ? `<td>${ isAdminOrderView ? `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" id="wasteItem_${i}" oninput="recalcAdminProfit('${order.id}')">` : `<input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px" onchange="saveItemWaste('${order.id}',${i},this.value)">`}</td>` : ''}
                   ${isAdmin ? `<td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}">${money(itemProfit)}</td>` : ''}
+                  ${(isAdmin && order.type==='warehouse') ? `<td>${it.ordered ? `<button class="btn-link" style="color:var(--success);white-space:nowrap;font-weight:600" onclick="markItemUnordered('${order.id}',${i})">✓ 已下单（撤销）</button>` : `<button class="btn btn-primary btn-sm" onclick="markItemOrdered('${order.id}',${i})">下单</button>`}</td>` : ''}
                   ${isDoor ? `<td>${editMode ? `<select class="form-control" id="editItemStock_${i}" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : ((isAdmin || currentUser.role==='sales') ? `<select class="form-control" onchange="saveItemStock('${order.id}',${i},this.value)" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : (it.stock==='是'?'<span class="tag tag-completed">已备货</span>':'<span class="tag tag-pending">未备货</span>'))}</td>` : ''}
                   ${editMode ? `<td><button class="btn-link danger" onclick="removeEditItem(${i})">删除</button></td>` : ''}
                 `}
@@ -5934,6 +5936,49 @@ function saveItemWaste(orderId, itemIndex, value) {
   orders[idx].items[itemIndex].waste = parseInt(value) || 0;
   DB.set('orders', orders);
   renderOrders();
+}
+
+// 管理员对留仓订单逐商品标记“已下单”：点击后该商品 ordered=true；全部商品已下单则订单状态转为“已下单”(confirmed)
+function markItemOrdered(orderId, idx){
+  const orders = DB.get('orders');
+  const oi = orders.findIndex(o => o.id === orderId);
+  if(oi < 0) return;
+  const o = orders[oi];
+  if(!o.items || !o.items[idx]) return;
+  if(o.items[idx].ordered === true) return;
+  if(o.type !== 'warehouse') return;
+  o.items[idx].ordered = true;
+  o.items[idx].orderedAt = new Date().toISOString();
+  const allOrdered = o.items.length > 0 && o.items.every(it => it.ordered === true);
+  if(allOrdered && o.status === 'pending'){
+    o.status = 'confirmed';
+    showToast('全部商品已下单，订单已转为「已下单」', 'success');
+  } else {
+    showToast('已标记「' + (o.items[idx].name || '商品') + '」为已下单', 'success');
+  }
+  DB.set('orders', orders);
+  renderOrderDetail();
+}
+
+// 撤销某商品的“已下单”标记；若订单已因全部下单而转为“已下单”，撤销任一商品后回到“待下单”
+function markItemUnordered(orderId, idx){
+  const orders = DB.get('orders');
+  const oi = orders.findIndex(o => o.id === orderId);
+  if(oi < 0) return;
+  const o = orders[oi];
+  if(!o.items || !o.items[idx]) return;
+  if(o.items[idx].ordered !== true) return;
+  if(o.type !== 'warehouse') return;
+  o.items[idx].ordered = false;
+  o.items[idx].orderedAt = null;
+  if(o.status === 'confirmed' && !o.items.every(it => it.ordered === true)){
+    o.status = 'pending';
+    showToast('已撤销「' + (o.items[idx].name || '商品') + '」的下单，订单回到「待下单」', 'info');
+  } else {
+    showToast('已撤销「' + (o.items[idx].name || '商品') + '」的下单标记', 'info');
+  }
+  DB.set('orders', orders);
+  renderOrderDetail();
 }
 
 // 管理员订单详情（查看）统一实时利润重算：读取未保存的损耗输入，含售后损耗
