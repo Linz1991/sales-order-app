@@ -871,8 +871,16 @@ tbody tr:hover{background:#f3f4f6}
 }
 .order-items-sub-table{
   width:100%;border-collapse:collapse;font-size:12px;
-  margin:4px 0 8px 0;
+  margin:4px 0 8px 0;table-layout:fixed;
 }
+/* 子表固定列宽：商品名称30% | 数量6% | 售价10% | 成本10% | 损耗10% | 利润10% | 操作列(下单/物流)24% */
+.order-items-sub-table col:nth-child(1){width:30%}
+.order-items-sub-table col:nth-child(2){width:6%}
+.order-items-sub-table col:nth-child(3){width:10%}
+.order-items-sub-table col:nth-child(4){width:10%}
+.order-items-sub-table col:nth-child(5){width:10%}
+.order-items-sub-table col:nth-child(6){width:10%}
+.order-items-sub-table col:nth-child(7){width:24%}
 .order-items-sub-table thead th{
   background:#f3f4f6;padding:6px 8px;font-weight:600;color:var(--text-muted);
   border:1px solid var(--border);font-size:12px;
@@ -2964,7 +2972,7 @@ function renderOrders(){
           const itemCols = isAdmin ? 7 : 6;
           html += `<tr>`;
           html += `<td style="vertical-align:top">${o.customerName}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
-          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}${isAdmin?'<th>下单</th>':''}</tr></thead><tbody>`;
+          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col/><col/><col/><col/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}${isAdmin?'<th>下单</th>':''}</tr></thead><tbody>`;
           o.items.forEach((it, idx) => {
             const prod = productList.find(p => p.id === it.productId);
             const cost = prod ? prod.cost : 0;
@@ -2995,7 +3003,7 @@ function renderOrders(){
         filtered.forEach(o => {
           html += `<tr>`;
           html += `<td style="vertical-align:top">${o.customerName}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
-          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th>':''}<th>物流单号</th></tr></thead><tbody>`;
+          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col/><col/><col/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th>':''}<th>物流单号</th></tr></thead><tbody>`;
           o.items.forEach((it, idx) => {
             const prod = (products||[]).find(p => p.id === it.productId);
             const cost = prod ? prod.cost : 0;
