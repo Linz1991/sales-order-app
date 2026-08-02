@@ -4666,7 +4666,7 @@ function renderOrderDetail(){
 
   // 收款信息（仅提交人/管理员可见金额；销售查看已下单/待反馈时隐藏，
   // 但本人（提交人）查看「已下单/已完成」订单时，显示只读收款信息，不再编辑/选择）
-  const isSalesReadOnlyView = !isAdmin && isOwner && (order.status==='completed' || order.status==='confirmed' || order.status==='feedback');
+  const isSalesReadOnlyView = !isAdmin && isOwner && (order.status==='completed' || order.status==='confirmed' || order.status==='feedback' || order.status==='feedback_done');
   const showPaymentReadonly = isSalesReadOnlyView || viewOnly;
   if(canViewFinancials && (!isSalesRestrictedView || isSalesReadOnlyView)){
     if(showPaymentReadonly){
@@ -4819,9 +4819,13 @@ function renderOrderDetail(){
     if(!isAdmin && isOwner && order.status === 'confirmed' && !editMode){
       html += `<button class="btn btn-secondary" onclick="window._orderTab='confirmed';navigate('orders')">← 返回订单列表</button>`;
     }
-    // 售后申请按钮（仅「已完成」状态的订单可申请售后；管理员与销售均可操作）
+    // 销售查看「已完成」订单（只读）：返回已完成列表
+    if(!isAdmin && isOwner && (order.status === 'completed' || order.status === 'feedback_done') && !editMode){
+      html += `<button class="btn btn-secondary" onclick="window._orderTab='completed';navigate('orders')">← 返回订单列表</button>`;
+    }
+    // 售后申请按钮（仅「已完成」状态的订单可申请售后；管理员与销售均可操作）——居中显示
     if(['completed','feedback_done'].includes(order.status)){
-      html += `<button class="btn btn-warning btn-sm" onclick="window._aftersaleOrderId='${order.id}'; openNewAftersaleModal()">申请售后</button>`;
+      html += `<div style="width:100%;display:flex;justify-content:center;margin-top:4px"><button class="btn btn-warning btn-sm" onclick="window._aftersaleOrderId='${order.id}'; openNewAftersaleModal()">申请售后</button></div>`;
     }
   }
   html += `</div>`;
