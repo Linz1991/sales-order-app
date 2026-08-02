@@ -6960,7 +6960,8 @@ function exportCustomers(){
 function exportOrders(){
   const isAdmin = currentUser.role === 'admin';
   if(!isAdmin){ showToast('仅管理员可导出','error'); return; }
-  const orders = DB.get('orders').filter(o => !o._deleted);
+  const deletedIds = (DB.get('_deletedOrderIds') || []);
+  const orders = DB.get('orders').filter(o => deletedIds.indexOf(o.id) < 0);
   const products = DB.get('products');
   // 订单管理页面固定排除上门订单（上门订单在「上门订单」页面导出）
   let activeTab = window._orderTab || 'pending';
@@ -7124,9 +7125,12 @@ function exportAftersales(){
   showToast('售后工单已导出','success');
 }
 
-// 导出上门订单
+// 导出上门订单（与 renderSchedule 使用相同的数据源与筛选逻辑）
 function exportScheduleOrders(){
-  var allDoorOrders = DB.get('orders').filter(function(o){ return o.type === 'door' && !o._deleted; });
+  var isAdmin = currentUser.role === 'admin';
+  var deletedIds = (DB.get('_deletedOrderIds') || []);
+  var allDoorOrders = DB.get('orders').filter(function(o){ return o.type === 'door' && deletedIds.indexOf(o.id) < 0; });
+  if(!isAdmin) allDoorOrders = allDoorOrders.filter(function(o){ return o.salesId === currentUser.id; });
   var statusKey = window._scheduleStatus || '';
   var schKeyword = window._scheduleFilter || '';
   var schDateStart = window._scheduleDateStart || '';
@@ -7199,9 +7203,12 @@ function exportScheduleOrders(){
   showToast('上门订单已导出','success');
 }
 
-// 导出留仓订单
+// 导出留仓订单（与 renderWarehouse 使用相同的数据源与筛选逻辑）
 function exportWarehouseOrders(){
-  var orders = DB.get('orders').filter(function(o){ return o.type === 'warehouse' && !o._deleted; });
+  var isAdmin = currentUser.role === 'admin';
+  var deletedIds = (DB.get('_deletedOrderIds') || []);
+  var orders = DB.get('orders').filter(function(o){ return o.type === 'warehouse' && deletedIds.indexOf(o.id) < 0; });
+  if(!isAdmin) orders = orders.filter(function(o){ return o.salesId === currentUser.id; });
   var statusKey = window._warehouseStatus || '';
   var keyword = window._warehouseFilter || '';
   var whDateStart = window._whDateStart || '';
