@@ -2920,7 +2920,7 @@ function renderOrders(){
   const isAdmin = currentUser.role === 'admin';
   let orders = DB.get('orders').filter(o => !o._deleted);
   const recycleCount = (DB.get('orders') || []).filter(o => o._deleted).length;
-  if(!isAdmin) orders = orders.filter(o => o.salesId === currentUser.id || o.type === 'door'); // 上门订单全员可见（财务仅提交人可见）
+  if(!isAdmin) orders = orders.filter(o => o.salesId === currentUser.id);
 
   const keyword = window._orderFilter || '';
   const status = window._orderStatus || '';
@@ -6364,10 +6364,10 @@ function renderUnshipped() {
   if (!window._unshippedTypeFilter) window._unshippedTypeFilter = '';
   const typeFilter = window._unshippedTypeFilter;
   const isAdmin = currentUser.role === 'admin';
-  // 留仓：仅提交人+管理员可见；上门：全员可见（财务字段仅提交人+管理员可见）
+  // 销售只能看自己的订单，管理员可看全部
   const orders = DB.get('orders').filter(o =>
     (o.type === 'warehouse' || o.type === 'door') && o.status === 'pending' &&
-    (o.type === 'door' || isAdmin || o.salesId === currentUser.id)
+    (isAdmin || o.salesId === currentUser.id)
   );
   let filtered = orders;
   if (typeFilter) filtered = filtered.filter(o => o.type === typeFilter);
@@ -8739,9 +8739,9 @@ function closeAftersale(id){
 /* ============ 上门订单（日历视图） ============ */
 function renderSchedule(){
   var isAdmin = currentUser.role === 'admin';
-  // 上门订单全员可见（便于协作排单），财务字段仅提交人+管理员可见
+  // 销售只能看自己的订单，管理员可看全部
   var allDoorOrders = DB.get('orders').filter(function(o){ return o.type === 'door'; });
-  var orders = allDoorOrders;
+  var orders = isAdmin ? allDoorOrders : allDoorOrders.filter(function(o){ return o.salesId === currentUser.id; });
 
   var statusKey = window._scheduleStatus || '';
   // 上门订单状态组：待下单 / 已下单 / 已完成；其余内部状态归入对应显示组
@@ -8878,8 +8878,8 @@ function renderSchedule(){
 
 function showScheduleDayOrders(dateStr){
   var isAdmin = currentUser.role === 'admin';
-  // 上门订单全员可见（便于协作排单），财务字段仅提交人+管理员可见
-  var orders = DB.get('orders').filter(function(o){ return o.type === 'door'; });
+  // 销售只能看自己的订单，管理员可看全部
+  var orders = isAdmin ? DB.get('orders').filter(function(o){ return o.type === 'door'; }) : DB.get('orders').filter(function(o){ return o.type === 'door' && o.salesId === currentUser.id; });
   var dayOrders = orders.filter(function(o){ return (o.orderDate || (o.createdAt||'').slice(0,10)) === dateStr; });
   var el = document.getElementById('scheduleDayOrders');
   if(!el) return;
