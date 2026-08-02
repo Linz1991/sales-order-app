@@ -1234,7 +1234,7 @@ const DB = {
       // 本地优先合并：避免云端数据（可能为空或滞后）覆盖掉本地刚新增/修改的数据，
       // 导致“刷新后订单丢失 / 销售下的单管理员看不到”等问题。与 syncTable 的合并策略一致。
       const local = this.get(key, []);
-      const merged = this._mergeById(local, cloud);
+      const merged = this._mergeById(local, cloud, key === 'orders' ? this.get('_deletedOrderIds', []) : null);
       localStorage.setItem('soms_'+key, JSON.stringify(merged));
       return merged;
     }catch(e){
@@ -1245,7 +1245,9 @@ const DB = {
 
   // 按 id 合并本地与云端数据：以 updatedAt/createdAt 较新者优先（云端权威、更新覆盖旧本地），
   // 解决多端协作时“一端改动被另一端本地旧版覆盖/订单丢失”的问题。
-  _mergeById(local, cloud){
+  // excludeIds：已在本端删除、但云端可能仍残留的订单 id，合并时强制跳过，避免被同步拉回。
+  _mergeById(local, cloud, excludeIds){
+    const exSet = (excludeIds && excludeIds.length) ? new Set(excludeIds) : null;
     const map = {};
     const ts = r => {
       if(!r) return 0;
@@ -1253,9 +1255,9 @@ const DB = {
       const n = v ? Date.parse((''+v).replace(' ', 'T')) : 0;
       return isNaN(n) ? 0 : n;
     };
-    (local || []).forEach(r => { if(r && r.id != null) map[r.id] = r; });
+    (local || []).forEach(r => { if(r && r.id != null && !(exSet && exSet.has(r.id))) map[r.id] = r; });
     (cloud || []).forEach(r => {
-      if(!r || r.id == null) return;
+      if(!r || r.id == null || (exSet && exSet.has(r.id))) return;
       if(!map[r.id]) map[r.id] = r;                 // 云端独有 → 保留
       else if(ts(r) >= ts(map[r.id])) map[r.id] = r; // 云端更新（或相等）→ 覆盖本地旧版
     });
@@ -1274,7 +1276,7 @@ const DB = {
         const { data: cloudRows, error } = await window._sbpbClient.from(table).select('*');
         if(!error && cloudRows){
           const cloud = this._toCamel(cloudRows);
-          data = this._mergeById(local, cloud);
+          data = this._mergeById(local, cloud, key === 'orders' ? this.get('_deletedOrderIds', []) : null);
           // 写回本地缓存为合并后的全集
           localStorage.setItem('soms_' + key, JSON.stringify(data));
         }
@@ -2665,8 +2667,8 @@ function checkOrderAutoFlow(){
     }
     // 必须有订单日期字段
     if(!o.orderDate) return;
-    // 跳过已处理/终态状态
-    if(['completed','canceled','confirmed'].includes(o.status)) return;
+    // 跳过已处理/终态状态（含运输中/已签收/待反馈/已反馈，避免把已推进的订单按日期误回退为待下单）
+    if(['completed','canceled','confirmed','shipped','received','feedback','feedback_done'].includes(o.status)) return;
     // 今日 >= 订单日期，且状态非终态 → 改为待下单
     if(today >= o.orderDate && o.status !== 'pending'){
       o.status = 'pending';
@@ -3042,7 +3044,7 @@ function renderOrders(){
               html += `<td>${money(cost)}</td>`;
               html += `<td style="color:${profit>=0?'var(--success)':'var(--danger)'};font-weight:600">${money(profit)}</td>`;
             }
-            html += `<td>${isAdmin ? (isOrdered ? '<button class="btn btn-sm" disabled style="opacity:.5;cursor:not-allowed;background:#d1d5db;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:12px">已下单</button>' : '<button class="btn btn-success btn-sm" onclick="markItemOrdered(\''+o.id+'\','+idx+')">下单</button>') : ''}</td>`;
+            html += `<td>${isAdmin ? (isOrdered ? '<button class="btn btn-sm" title="双击撤回下单" ondblclick="markItemUnordered(\''+o.id+'\','+idx+')" style="background:#3b82f6;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer">已下单</button>' : '<button class="btn btn-success btn-sm" onclick="markItemOrdered(\''+o.id+'\','+idx+')">下单</button>') : ''}</td>`;
             html += `</tr>`;
           });
           html += `</tbody></table></td>`;
@@ -3060,13 +3062,14 @@ function renderOrders(){
         filtered.forEach(o => {
           html += `<tr>`;
           html += `<td style="vertical-align:top">${o.customerName}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
-          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th>':''}</tr></thead><tbody>`;
+          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col/><col/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th>':''}${isAdmin?'<th>下单</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const prod = (products||[]).find(p => p.id === it.productId);
             const cost = prod ? prod.cost : 0;
             html += `<tr><td>${it.name}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
             if(isAdmin){
               html += `<td>${money(cost)}</td>`;
+              html += `<td>${it.ordered ? '<button class="btn btn-sm" title="双击撤回下单" ondblclick="markItemUnordered(\''+o.id+'\','+idx+')" style="background:#3b82f6;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer">已下单</button>' : '<button class="btn btn-success btn-sm" onclick="markItemOrdered(\''+o.id+'\','+idx+')">下单</button>'}</td>`;
             }
             html += `</tr>`;
           });
@@ -3089,7 +3092,7 @@ function renderOrders(){
           html += `<td>${orderTypeTag(o.type)}</td>`;
           html += `<td>${statusTag(o.status)}</td>`;
           html += `<td>${o.createdAt||'-'}</td>`;
-          html += `<td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button></td>`;
+          html += `<td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button>${o.status === 'feedback' ? ` <button class="btn btn-warning btn-sm" style="margin-left:4px" onclick="setOrderFeedback('${o.id}')">确认已反馈</button>` : ''}</td>`;
           html += `</tr>`;
         });
       } else {
@@ -3153,7 +3156,10 @@ function renderOrders(){
         <span class="title-text">📦 订单列表</span>
       </div>
       <div class="admin-tab-bar" style="margin-bottom:14px">
-        ${salesStatusTabs.map(t=>`<button class="btn ${status===t.key?'btn-primary':'btn-secondary'} btn-sm" onclick="filterOrders('${t.key}','status')" style="margin-right:6px">${t.label}</button>`).join('')}
+        ${salesStatusTabs.map(t=>{
+          const cnt = t.key === '' ? orders.length : orders.filter(o => salesStatusGroup(t.key).includes(o.status)).length;
+          return `<button class="btn ${status===t.key?'btn-primary':'btn-secondary'} btn-sm" onclick="filterOrders('${t.key}','status')" style="margin-right:6px">${t.label} (${cnt})</button>`;
+        }).join('')}
       </div>
       <div class="date-filter">
         <span class="df-label">📅 下单时间</span>
@@ -3174,7 +3180,7 @@ function renderOrders(){
         const opBtn = (o.status === 'pending' && canEdit && !hasOrderedItem)
           ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();editOrder('${o.id}')">编辑</button>`
           : (o.status === 'feedback')
-          ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewOrder('${o.id}')">查看</button>`
+          ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewOrder('${o.id}')">查看</button><button class="btn btn-warning btn-sm" style="margin-left:8px" onclick="event.stopPropagation();salesSubmitFeedback('${o.id}')">反馈</button>`
           : `<button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button>`;
         html += `
           <div class="order-card" onclick="viewOrder('${o.id}')">
@@ -3214,7 +3220,7 @@ function renderOrders(){
               const opBtn = (o.status === 'pending' && canEdit && !hasOrderedItem)
                 ? `<button class="btn btn-primary btn-sm" onclick="editOrder('${o.id}')">编辑</button>`
               : (o.status === 'feedback')
-              ? `<button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button>`
+              ? `<button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button><button class="btn btn-warning btn-sm" style="margin-left:6px" onclick="salesSubmitFeedback('${o.id}')">反馈</button>`
                 : `<button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button>`;
               const remark = o.remark ? `<span title="${(o.remark||'').replace(/"/g,"'")}" style="display:inline-block;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${o.remark}</span>` : '<span style="color:var(--text-muted)">-</span>';
               return `
@@ -3294,6 +3300,14 @@ function deleteOrder(orderId){
     const li = localOrders.findIndex(o => o.id === orderId);
     if(li >= 0) localOrders.splice(li, 1);
     DB.set('orders', localOrders);
+    // 记录本端已删除的订单 id（直接写 localStorage，避免触发对不存在表的同步），
+    // 让后续云端同步的 _mergeById 跳过这些 id，防止“删了又被同步拉回”的问题。
+    try{
+      const delKey = 'soms__deletedOrderIds';
+      const delSet = JSON.parse(localStorage.getItem(delKey) || '[]');
+      if(!delSet.includes(orderId)) delSet.push(orderId);
+      localStorage.setItem(delKey, JSON.stringify(delSet));
+    }catch(e){ /* 忽略本地标记失败 */ }
 
     if(cloudOk){
       showToast('订单已彻底删除' + refundText, 'success');
@@ -5272,6 +5286,7 @@ function salesSubmitFeedback(orderId){
     orders[idx].feedbackDoneAt = nowStr();
     DB.set('orders', orders);
     window._orderTab = 'completed';
+    window._orderStatus = 'completed';
     navigate('orders');
     showToast('✅ 反馈成功，订单已转入「已完成」列表', 'success');
   });
@@ -6050,6 +6065,7 @@ function markItemOrdered(orderId, idx){
 }
 
 // 撤销某商品的“已下单”标记；若订单已因全部下单而转为“已下单”，撤销任一商品后回到“待下单”
+// 支持所有订单类型（普通/留仓/上门），并在列表与详情视图下都能正确重渲染
 function markItemUnordered(orderId, idx){
   const orders = DB.get('orders');
   const oi = orders.findIndex(o => o.id === orderId);
@@ -6057,7 +6073,6 @@ function markItemUnordered(orderId, idx){
   const o = orders[oi];
   if(!o.items || !o.items[idx]) return;
   if(o.items[idx].ordered !== true) return;
-  if(o.type !== 'warehouse') return;
   o.items[idx].ordered = false;
   o.items[idx].orderedAt = null;
   if(o.status === 'confirmed' && !o.items.every(it => it.ordered === true)){
@@ -6067,7 +6082,8 @@ function markItemUnordered(orderId, idx){
     showToast('已撤销「' + (o.items[idx].name || '商品') + '」的下单标记', 'info');
   }
   DB.set('orders', orders);
-  renderOrderDetail();
+  if(currentRoute === 'order-detail') renderOrderDetail();
+  else renderOrders();
 }
 
 // 管理员订单详情（查看）统一实时利润重算：读取未保存的损耗输入，含售后损耗
@@ -8858,10 +8874,8 @@ function renderSchedule(){
     html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
     if(sorted.length){
       sorted.forEach(function(o){
-        var opHtml = '<button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button>'; if(o.status==='pending' && o.salesId===currentUser.id){ opHtml += ' <button class="btn-link" style="color:var(--danger)" onclick="deleteOrder(\''+o.id+'\')">删除</button>'; } html += '<tr><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+        var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; if(o.status==='pending' && o.salesId===currentUser.id){ opHtml += ' <button class="btn btn-danger btn-sm" onclick="deleteOrder(\''+o.id+'\')">删除</button>'; } html += '<tr><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
       });
-    } else {
-      html += '<tr><td colspan="5" class="table-empty">暂无上门订单</td></tr>';
     }
     html += '</tbody></table></div>';
   }
@@ -8880,7 +8894,7 @@ function showScheduleDayOrders(dateStr){
   if(!dayOrders.length){ el.innerHTML = ''; return; }
   var html = '<div class="detail-section card"><h4 style="margin-bottom:10px">'+dateStr+' 的上门订单</h4><div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
   dayOrders.forEach(function(o){
-    var opHtml = '<button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button>'; if(o.status==='pending' && o.salesId===currentUser.id){ opHtml += ' <button class="btn-link" style="color:var(--danger)" onclick="deleteOrder(\''+o.id+'\')">删除</button>'; } html += '<tr><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+    var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; if(o.status==='pending' && o.salesId===currentUser.id){ opHtml += ' <button class="btn btn-danger btn-sm" onclick="deleteOrder(\''+o.id+'\')">删除</button>'; } html += '<tr><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
   });
   html += '</tbody></table></div></div>';
   el.innerHTML = html;
@@ -8948,7 +8962,7 @@ function renderWarehouse(){
   if(filtered.length){
     html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
     filtered.forEach(function(o){
-      var opHtml = '<button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button>'; if(o.status==='pending' && o.salesId===currentUser.id){ opHtml += ' <button class="btn-link" style="color:var(--danger)" onclick="deleteOrder(\''+o.id+'\')">删除</button>'; } html += '<tr><td>'+o.customerName+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+      var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; if(o.status==='pending' && o.salesId===currentUser.id){ opHtml += ' <button class="btn btn-danger btn-sm" onclick="deleteOrder(\''+o.id+'\')">删除</button>'; } html += '<tr><td>'+o.customerName+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
     });
     html += '</tbody></table></div>';
   } else {
