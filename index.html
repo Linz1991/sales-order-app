@@ -5043,21 +5043,25 @@ function fmtExportDateTime(dtStr){
     String(d.getSeconds()).padStart(2,'0');
 }
 
-// 一键复制当前订单信息（单行格式：客户 电话 地址 商品×数量… 备注：）
+// 一键复制当前订单信息（多行格式：客户行 + 每个商品一行 + 备注行）
 function copySingleOrderInfo(orderId){
   const order = DB.get('orders').find(o => o.id === orderId);
   if(!order){ showToast('订单不存在','error'); return; }
-  let line = (order.customerName || '未知客户');
-  if(order.phone) line += ' ' + order.phone;
+  const lines = [];
+  // 第一行：客户 电话 地址
+  let head = (order.customerName || '未知客户');
+  if(order.phone) head += ' ' + order.phone;
   const addr = formatOrderAddress(order);
-  if(addr) line += addr;
-  else if(order.region || order.address) line += (order.region || '') + (order.address || '');
+  if(addr) head += addr;
+  else if(order.region || order.address) head += (order.region || '') + (order.address || '');
+  lines.push(head);
+  // 每个商品一行：商品名 ×数量
   if(order.items && order.items.length){
-    order.items.forEach(it => { line += ' ' + (it.name || '未命名商品') + ' ×' + (it.qty || 1); });
+    order.items.forEach(it => { lines.push((it.name || '未命名商品') + ' ×' + (it.qty || 1)); });
   }
-  line += ' 备注：';
-  if(order.remark) line += order.remark;
-  copyToClipboardWithMsg(line);
+  // 备注行（始终显示）
+  lines.push('备注：' + (order.remark || ''));
+  copyToClipboardWithMsg(lines.join('\n'));
 }
 
 function copyProductList(orderId){
