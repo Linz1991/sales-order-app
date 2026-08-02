@@ -6044,7 +6044,8 @@ function saveItemWaste(orderId, itemIndex, value) {
   renderOrders();
 }
 
-// 管理员对留仓订单逐商品标记“已下单”：点击后该商品 ordered=true；全部商品已下单则订单状态转为“已下单”(confirmed)
+// 管理员对订单逐商品标记"已下单"：点击后该商品 ordered=true；全部商品已下单则订单状态转为"已下单"(confirmed)
+// 支持所有订单类型（普通/留仓/上门），始终停留在订单详情页不跳转
 function markItemOrdered(orderId, idx){
   const orders = DB.get('orders');
   const oi = orders.findIndex(o => o.id === orderId);
@@ -6052,26 +6053,28 @@ function markItemOrdered(orderId, idx){
   const o = orders[oi];
   if(!o.items || !o.items[idx]) return;
   if(o.items[idx].ordered === true) return;
-  if(o.type !== 'warehouse') return;
   o.items[idx].ordered = true;
   o.items[idx].orderedAt = new Date().toISOString();
   const allOrdered = o.items.length > 0 && o.items.every(it => it.ordered === true);
   if(allOrdered && o.status === 'pending'){
-    // 最后一个商品下单：弹确认框
+    // 最后一个商品下单：弹确认框，确认后状态改为"已下单"
     showConfirm('全部商品已下单，确认将该订单状态改为「已下单」？', function(){
       o.status = 'confirmed';
+      o.updatedAt = new Date().toISOString().slice(0,19).replace('T',' ');
       DB.set('orders', orders);
-      showToast('✅ 全部商品已下单，订单已转为「已下单」','success');
-      renderOrderDetail();
+      showToast('✅ 订单状态已改为「已下单」','success');
+      renderOrderDetail(); // 停留在详情页
     }, function(){
       // 用户取消：撤回最后一个商品的下单标记
       o.items[idx].ordered = false;
       o.items[idx].orderedAt = null;
       DB.set('orders', orders);
-      renderOrderDetail();
+      renderOrderDetail(); // 停留在详情页
     });
-    return; // 不立即保存/渲染，等用户确认或取消
+    return; // 等用户确认或取消后再保存
   }
+  // 非最后商品：直接保存并刷新详情页（不跳转）
+  o.updatedAt = new Date().toISOString().slice(0,19).replace('T',' ');
   DB.set('orders', orders);
   showToast('已标记「' + (o.items[idx].name || '商品') + '」为已下单', 'success');
   renderOrderDetail();
