@@ -1234,7 +1234,7 @@ const DB = {
       // 本地优先合并：避免云端数据（可能为空或滞后）覆盖掉本地刚新增/修改的数据，
       // 导致“刷新后订单丢失 / 销售下的单管理员看不到”等问题。与 syncTable 的合并策略一致。
       const local = this.get(key, []);
-      const merged = this._mergeById(local, cloud, key === 'orders' ? this.get('_deletedOrderIds', []) : null);
+      const merged = this._mergeById(local, cloud, key === 'orders' ? this.get('_deletedOrderIds', []) : (key === 'products' ? this.get('_deletedProductIds', []) : null));
       localStorage.setItem('soms_'+key, JSON.stringify(merged));
       return merged;
     }catch(e){
@@ -1276,7 +1276,7 @@ const DB = {
         const { data: cloudRows, error } = await window._sbpbClient.from(table).select('*');
         if(!error && cloudRows){
           const cloud = this._toCamel(cloudRows);
-          data = this._mergeById(local, cloud, key === 'orders' ? this.get('_deletedOrderIds', []) : null);
+          data = this._mergeById(local, cloud, key === 'orders' ? this.get('_deletedOrderIds', []) : (key === 'products' ? this.get('_deletedProductIds', []) : null));
           // 写回本地缓存为合并后的全集
           localStorage.setItem('soms_' + key, JSON.stringify(data));
         }
@@ -7500,6 +7500,10 @@ function confirmBatchDeleteProducts(){
   showConfirm('确认删除选中的 '+ids.length+' 个商品吗？删除后不可恢复。', () => {
     const products = DB.get('products').filter(p => !selectedIds[p.id]);
     DB.set('products', products);
+    // 记录已删除商品 id 到排除集，防止同步从云端拉回
+    var delIds = JSON.parse(localStorage.getItem('soms__deletedProductIds') || '[]');
+    ids.forEach(function(id){ if(delIds.indexOf(id) < 0) delIds.push(id); });
+    localStorage.setItem('soms__deletedProductIds', JSON.stringify(delIds));
     window._productSelectedIds = {};
     window._productBatchMode = false;
     showToast('已删除 '+ids.length+' 个商品','success');
