@@ -5032,6 +5032,17 @@ function copyFullOrderInfo(orderId){
   copyToClipboardWithMsg(fullText);
 }
 
+// 导出用日期格式化：2026/8/1 19:07:00（斜杠分隔，无前导零，含秒）
+function fmtExportDateTime(dtStr){
+  if(!dtStr) return '';
+  var d = new Date(dtStr);
+  if(isNaN(d.getTime())) return dtStr;
+  return d.getFullYear() + '/' + (d.getMonth()+1) + '/' + d.getDate() + ' ' +
+    String(d.getHours()).padStart(2,'0') + ':' +
+    String(d.getMinutes()).padStart(2,'0') + ':' +
+    String(d.getSeconds()).padStart(2,'0');
+}
+
 // 一键复制当前订单信息（单行格式：客户 电话 地址 商品×数量… 备注：）
 function copySingleOrderInfo(orderId){
   const order = DB.get('orders').find(o => o.id === orderId);
@@ -7052,7 +7063,7 @@ function exportOrders(){
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), subtotal,
         Math.round(o.total||0), itemCost, itemWaste, showAfterSaleLoss, itemProfit,
-        o.createdAt||''
+        fmtExportDateTime(o.createdAt)
       ]);
     });
   });
@@ -7215,7 +7226,7 @@ function exportScheduleOrders(){
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), Math.round(price*qty),
         Math.round(o.total||0), itemCost, Math.round(it.waste||0), itemProfit,
-        o.orderDate||'', o.createdAt||''
+        o.orderDate||'', fmtExportDateTime(o.createdAt)
       ]);
     });
   });
@@ -7294,7 +7305,7 @@ function exportWarehouseOrders(){
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), Math.round(price*qty),
         Math.round(o.total||0), itemCost, Math.round(it.waste||0), itemProfit,
-        o.orderDate||'', o.createdAt||''
+        o.orderDate||'', fmtExportDateTime(o.createdAt)
       ]);
     });
   });
