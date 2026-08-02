@@ -6240,33 +6240,75 @@ function markItemOrdered(orderId, itemIndex) {
   renderOrders();
 }
 
-// 一键收集待下单订单信息
+// 一键收集待下单订单信息（收集所有类型：普通/留仓/上门）
 function collectPendingOrdersInfo() {
-  // 只收集「待下单」状态的普通订单（不含上门/留仓）
-  const orders = DB.get('orders').filter(o => o.status === 'pending' && o.type !== 'warehouse' && o.type !== 'door');
-  if (!orders.length) { showToast('暂无待下单订单', 'info'); return; }
+  const allOrders = DB.get('orders');
+  // 收集当前筛选结果中的待下单订单（与列表显示一致）
+  const search = (document.getElementById('orderSearch') && document.getElementById('orderSearch').value) || '';
+  const dFrom = (document.getElementById('dateFrom') && document.getElementById('dateFrom').value) || '';
+  const dTo = (document.getElementById('dateTo') && document.getElementById('dateTo').value) || '';
+  let orders = allOrders.filter(o => o.status === 'pending');
+  // 应用与列表相同的搜索过滤
+  if(search){
+    const kw = search.toLowerCase();
+    orders = orders.filter(o =>
+      (o.id&&o.id.toLowerCase().includes(kw)) ||
+      (o.customerName&&o.customerName.toLowerCase().includes(kw)) ||
+      (o.phone&&o.phone.includes(kw))
+    );
+  }
+  if(dFrom) orders = orders.filter(o => o.createdAt && o.createdAt >= dFrom);
+  if(dTo) orders = orders.filter(o => o.createdAt && o.createdAt <= dTo+'T23:59:59');
+  if (!orders.length) { showToast('暂无待下单订单可收集','info'); return; }
+  // 按客户分组拼接文本
   let text = '';
-  orders.forEach(o => {
-    // 商品 * 数量
-    o.items.forEach(it => {
-      text += `${it.name} x${it.qty}\n`;
-    });
-    // 客户信息（姓名 + 电话 + 地址）
-    const addr = formatOrderAddress(o);
-    text += `客户：${o.customerName||''} 电话：${o.phone||''}${addr ? ' 地址：'+addr : ''}\n`;
-    // 订单备注
-    if (o.remark) text += `备注：${o.remark}\n`;
+  orders.forEach((o, idx) => {
+    if(idx > 0) text += '\n' + '='.repeat(40) + '\n';
+    // 客户行
+    text += '【' + (o.customerName || '未知客户') + '���';
+    if(o.phone) text += '  ' + o.phone;
     text += '\n';
+    // 商品 * 数量
+    if(o.items && o.items.length){
+      o.items.forEach(it => {
+        text += '  · ' + (it.name || '未命名商品') + ' ×' + (it.qty || 1) + '\n';
+      });
+    }
+    // 地址信息
+    const addr = formatOrderAddress(o);
+    if(addr) text += '  📍 ' + addr + '\n';
+    else if(o.region || o.address) text += '  📍 ' + (o.region||'') + (o.address||'') + '\n';
+    // 订单备注
+    if(o.remark) text += '  📝 ' + o.remark + '\n';
   });
   text = text.trim();
-  // 显示到预览框（如果存在）
+  // 显示预览框 + 复制按钮
   const box = document.getElementById('collectInfoBox');
-  if (box) {
+  if(box){
     box.style.display = 'block';
-    box.textContent = text;
+    box.style.cssText = 'display:block;margin-top:12px;padding:14px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;font-size:13px;line-height:1.8;white-space:pre-wrap;word-break:break-all;user-select:text';
+    box.innerHTML = '<div style="margin-bottom:8px;font-weight:600;color:#166534">📋 待下单订单信息（共'+orders.length+'单）— 已自动复制</div>' +
+      '<div style="color:#374151">' + text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</div>' +
+      '<div style="margin-top:10px;text-align:center"><button class="btn btn-success btn-sm" onclick="navigator.clipboard.writeText(document.querySelector(\'#collectInfoBox div:nth-child(2)\').textContent).then(()=>showToast(\'已复制\',\'success\'))">📋 再复制一次</button></div>';
   }
-  // 使用统一可靠复制函数（含 clipboard API + 完整 fallback：focus/setSelectionRange/样式定位）
-  copyToClipboardWithMsg(text);
+  // 复制到剪贴板
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(()=>{
+      showToast('✅ 已收集 '+orders.length+' 单待下单信息，可直接粘贴','success');
+    }).catch(()=>{ doFallbackCopy(text, orders.length); });
+  } else {
+    doFallbackCopy(text, orders.length);
+  }
+}
+// fallback 复制
+function doFallbackCopy(text, cnt){
+  try{
+    const ta=document.createElement('textarea'); ta.value=text;
+    ta.style.cssText='position:fixed;opacity:0;left:-9999px;top:0;white-space:pre-wrap';
+    document.body.appendChild(ta); ta.focus(); ta.select(); ta.setSelectionRange(0,text.length);
+    document.execCommand('copy'); document.body.removeChild(ta);
+    showToast('✅ 已收集 '+cnt+' 单待下单信息，可直接粘贴','success');
+  }catch(e){ showToast('⚠️ 自动复制失败，请手动复制下方文字','error'); }
 }
 
 // 详情页保存物流单号
