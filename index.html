@@ -4805,6 +4805,10 @@ function renderOrderDetail(){
     if(!isAdmin && isOwner && order.status === 'pending' && !editMode){
       html += `<button class="btn btn-secondary" onclick="window._orderTab='pending';navigate('orders')">← 返回订单</button>`;
     }
+    // 销售查看「已下单」订单（只读）：返回已下单列表
+    if(!isAdmin && isOwner && order.status === 'confirmed' && !editMode){
+      html += `<button class="btn btn-secondary" onclick="window._orderTab='confirmed';navigate('orders')">← 返回订单列表</button>`;
+    }
     // 售后申请按钮（仅「已完成」状态的订单可申请售后；管理员与销售均可操作）
     if(['completed','feedback_done'].includes(order.status)){
       html += `<button class="btn btn-warning btn-sm" onclick="window._aftersaleOrderId='${order.id}'; openNewAftersaleModal()">申请售后</button>`;
