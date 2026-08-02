@@ -6275,27 +6275,21 @@ function collectPendingOrdersInfo() {
   if(dFrom) orders = orders.filter(o => o.createdAt && o.createdAt >= dFrom);
   if(dTo) orders = orders.filter(o => o.createdAt && o.createdAt <= dTo+'T23:59:59');
   if (!orders.length) { showToast('暂无待下单订单可收集','info'); return; }
-  // 按客户分组拼接文本
-  let text = '';
-  orders.forEach((o, idx) => {
-    if(idx > 0) text += '\n' + '='.repeat(40) + '\n';
-    // 客户行
-    text += '【' + (o.customerName || '未知客户') + '���';
-    if(o.phone) text += '  ' + o.phone;
-    text += '\n';
-    // 商品 * 数量
-    if(o.items && o.items.length){
-      o.items.forEach(it => {
-        text += '  · ' + (it.name || '未命名商品') + ' ×' + (it.qty || 1) + '\n';
-      });
-    }
-    // 地址信息
+  // 单行格式拼接：客户 电话 地址 商品 ×数量 … 备注：
+  const lines = orders.map(o => {
+    let line = (o.customerName || '未知客户');
+    if(o.phone) line += ' ' + o.phone;
     const addr = formatOrderAddress(o);
-    if(addr) text += '  📍 ' + addr + '\n';
-    else if(o.region || o.address) text += '  📍 ' + (o.region||'') + (o.address||'') + '\n';
-    // 订单备注
-    if(o.remark) text += '  📝 ' + o.remark + '\n';
+    if(addr) line += addr;
+    else if(o.region || o.address) line += (o.region || '') + (o.address || '');
+    if(o.items && o.items.length){
+      o.items.forEach(it => { line += ' ' + (it.name || '未命名商品') + ' ×' + (it.qty || 1); });
+    }
+    line += ' 备注：';
+    if(o.remark) line += o.remark;
+    return line;
   });
+  let text = lines.join('\n');
   text = text.trim();
   // 显示预览框 + 复制按钮
   const box = document.getElementById('collectInfoBox');
