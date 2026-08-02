@@ -8874,7 +8874,7 @@ function renderSchedule(){
     html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
     if(sorted.length){
       sorted.forEach(function(o){
-        var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; if(o.status==='pending' && o.salesId===currentUser.id){ opHtml += ' <button class="btn btn-danger btn-sm" onclick="deleteOrder(\''+o.id+'\')">删除</button>'; } html += '<tr><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+        var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
       });
     }
     html += '</tbody></table></div>';
@@ -8894,7 +8894,7 @@ function showScheduleDayOrders(dateStr){
   if(!dayOrders.length){ el.innerHTML = ''; return; }
   var html = '<div class="detail-section card"><h4 style="margin-bottom:10px">'+dateStr+' 的上门订单</h4><div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
   dayOrders.forEach(function(o){
-    var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; if(o.status==='pending' && o.salesId===currentUser.id){ opHtml += ' <button class="btn btn-danger btn-sm" onclick="deleteOrder(\''+o.id+'\')">删除</button>'; } html += '<tr><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+    var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
   });
   html += '</tbody></table></div></div>';
   el.innerHTML = html;
@@ -8962,7 +8962,7 @@ function renderWarehouse(){
   if(filtered.length){
     html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
     filtered.forEach(function(o){
-      var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; if(o.status==='pending' && o.salesId===currentUser.id){ opHtml += ' <button class="btn btn-danger btn-sm" onclick="deleteOrder(\''+o.id+'\')">删除</button>'; } html += '<tr><td>'+o.customerName+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+      var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+o.customerName+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
     });
     html += '</tbody></table></div>';
   } else {
