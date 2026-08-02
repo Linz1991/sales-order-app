@@ -2562,6 +2562,11 @@ function navigate(route){
   const t = routeTitles[route] || ['页面',''];
   document.getElementById('pageTitle').textContent = t[0];
   document.getElementById('pageSub').textContent = t[1];
+  // 商品管理页标题显示总数
+  if(route === 'products'){
+    const pc = (DB.get('products')||[]).length;
+    document.getElementById('pageTitle').textContent = t[0] + '（共' + pc + '个）';
+  }
   document.querySelectorAll('.sidebar-nav .nav-item').forEach(item => {
     item.classList.remove('active');
   });
@@ -7344,7 +7349,7 @@ function renderProducts(){
     <div class="card">
       <div class="card-title">
         <div style="display:flex;align-items:center;gap:8px">
-          <span class="title-text">🛒 商品列表</span>
+          <span class="title-text">🛒 商品列表（共${products.length}个）</span>
           ${needCostAlert ? '<span style="background:#f59e0b;color:#fff;font-size:11px;padding:3px 10px;border-radius:4px;font-weight:500">⚠ 存在待校准成本的新品</span>' : ''}
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -7601,15 +7606,16 @@ function saveProduct(){
   if(isNaN(cost) || cost < 0){ showToast('请输入有效成本','error'); return; }
 
   const products = DB.get('products');
+  const nowStr = new Date().toISOString().slice(0,19).replace('T',' ');
   if(id){
     const idx = products.findIndex(p => p.id === id);
     if(idx >= 0){
-      products[idx] = {...products[idx], name, category, price, cost};
+      products[idx] = {...products[idx], name, category, price, cost, updatedAt: nowStr};
       delete products[idx].auto_added;
     }
   }else{
     products.push({
-      id: DB.uid('p_'), name, category, price, cost, status:'on'
+      id: DB.uid('p_'), name, category, price, cost, status:'on', createdAt: nowStr, updatedAt: nowStr
     });
   }
   DB.set('products', products);
