@@ -4787,7 +4787,7 @@ function renderOrderDetail(){
         if(isAdmin){
           html += `<button class="btn btn-warning" onclick="setOrderFeedback('${order.id}')">确认已反馈</button>`;
         } else {
-          html += `<button class="btn btn-warning" onclick="salesSubmitFeedback('${order.id}')">反馈</button>`;
+          html += `<div style="width:100%;display:flex;justify-content:center;margin-top:4px"><button class="btn btn-warning" onclick="salesSubmitFeedback('${order.id}')">反馈</button></div>`;
         }
       }
       // 上门订单 → 已完成（仅提交人/管理员可操作）
