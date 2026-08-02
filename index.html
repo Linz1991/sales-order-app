@@ -3264,34 +3264,42 @@ function viewOrder(orderId, forceViewOnly){
 }
 
 function deleteOrder(orderId){
-  showConfirm('确定删除此订单吗？删除后不可恢复。', () => {
-    const order = DB.get('orders').find(o => o.id === orderId);
-    let refundText = '';
-    if(order){
-      // 撤回该订单关联的微信收款记录
-      const beforePayments = DB.get('payments') || [];
-      const orderPayRefund = beforePayments
-        .filter(p => p.orderId === orderId && p.method === '微信支付')
-        .reduce((s, p) => s + (parseInt(p.amount) || 0), 0);
-      const orderCollected = order.paymentMethod === 'wechat' ? (parseInt(order.collectedAmount) || 0) : 0;
-      const totalRefund = orderCollected + orderPayRefund;
-      if(totalRefund > 0){
-        refundText = '（已撤回微信收款 ' + money(totalRefund) + '）';
-      }
-      // 删除该订单关联的收款记录
-      DB.set('payments', beforePayments.filter(p => p.orderId !== orderId));
-    }
-    // 软删除：标记 _deleted，进入回收站可恢复，避免误删永久丢失
+  showConfirm('确定删除此订单吗？删除后不可恢复。', async () => {
     const orders = DB.get('orders');
     const idx = orders.findIndex(o => o.id === orderId);
-    if(idx >= 0){
-      orders[idx]._deleted = true;
-      orders[idx]._deletedAt = nowStr();
-      orders[idx].updatedAt = nowStr();
-      DB.set('orders', orders);
+    if(idx < 0){ showToast('订单不存在','error'); return; }
+    const order = orders[idx];
+    let refundText = '';
+    // 撤回该订单关联的微信收款记录
+    const beforePayments = DB.get('payments') || [];
+    const orderPayRefund = beforePayments
+      .filter(p => p.orderId === orderId && p.method === '微信支付')
+      .reduce((s, p) => s + (parseInt(p.amount) || 0), 0);
+    const orderCollected = order.paymentMethod === 'wechat' ? (parseInt(order.collectedAmount) || 0) : 0;
+    const totalRefund = orderCollected + orderPayRefund;
+    if(totalRefund > 0){
+      refundText = '（已撤回微信收款 ' + money(totalRefund) + '）';
     }
-    showToast('订单已移到回收站' + refundText,'success');
-    schedulePushToCloud();
+    DB.set('payments', beforePayments.filter(p => p.orderId !== orderId));
+
+    // 物理删除：先真正删云端记录（anon key 已验证具备 DELETE 权限），再删本地，避免被同步拉回
+    let cloudOk = true;
+    if(window._sbpbClient){
+      try{
+        const { error } = await window._sbpbClient.from('orders').delete().eq('id', orderId);
+        if(error){ cloudOk = false; console.warn('云端删除失败:', error.message); }
+      }catch(e){ cloudOk = false; console.warn('云端删除异常:', e.message); }
+    }
+    const localOrders = DB.get('orders');
+    const li = localOrders.findIndex(o => o.id === orderId);
+    if(li >= 0) localOrders.splice(li, 1);
+    DB.set('orders', localOrders);
+
+    if(cloudOk){
+      showToast('订单已彻底删除' + refundText, 'success');
+    } else {
+      showToast('本地已删除，但云端同步失败，请刷新后重试', 'warning');
+    }
     navigate('orders');
   });
 }
