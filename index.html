@@ -3179,8 +3179,6 @@ function renderOrders(){
         const hasOrderedItem = (o.items||[]).some(it => it.ordered === true);
         const opBtn = (o.status === 'pending' && canEdit && !hasOrderedItem)
           ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();editOrder('${o.id}')">编辑</button>`
-          : (o.status === 'feedback')
-          ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewOrder('${o.id}')">查看</button><button class="btn btn-warning btn-sm" style="margin-left:8px" onclick="event.stopPropagation();salesSubmitFeedback('${o.id}')">反馈</button>`
           : `<button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button>`;
         html += `
           <div class="order-card" onclick="viewOrder('${o.id}')">
@@ -3219,8 +3217,6 @@ function renderOrders(){
               const hasOrderedItem = (o.items||[]).some(it => it.ordered === true);
               const opBtn = (o.status === 'pending' && canEdit && !hasOrderedItem)
                 ? `<button class="btn btn-primary btn-sm" onclick="editOrder('${o.id}')">编辑</button>`
-              : (o.status === 'feedback')
-              ? `<button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button><button class="btn btn-warning btn-sm" style="margin-left:6px" onclick="salesSubmitFeedback('${o.id}')">反馈</button>`
                 : `<button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button>`;
               const remark = o.remark ? `<span title="${(o.remark||'').replace(/"/g,"'")}" style="display:inline-block;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${o.remark}</span>` : '<span style="color:var(--text-muted)">-</span>';
               return `
