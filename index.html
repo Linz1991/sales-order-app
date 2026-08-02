@@ -4821,6 +4821,10 @@ function renderOrderDetail(){
     if(!isAdmin && isOwner && (order.status === 'completed' || order.status === 'feedback_done') && !editMode){
       html += `<button class="btn btn-secondary" onclick="window._orderTab='completed';navigate('orders')">← 返回订单列表</button>`;
     }
+    // 管理员查看留仓「已下单」订单：底部居中显示"返回已下单列表"按钮
+    if(isAdmin && order.status === 'confirmed' && order.type === 'warehouse'){
+      html += `<div style="width:100%;display:flex;justify-content:center;margin-top:8px"><button class="btn btn-primary btn-sm" onclick="window._orderTab='confirmed';navigate('orders')">← 返回已下单列表</button></div>`;
+    }
     // 售后申请按钮（仅「已完成」状态的订单可申请售后；管理员与销售均可操作）——居中显示
     if(['completed','feedback_done'].includes(order.status)){
       html += `<div style="width:100%;display:flex;justify-content:center;margin-top:4px"><button class="btn btn-warning btn-sm" onclick="window._aftersaleOrderId='${order.id}'; openNewAftersaleModal()">申请售后</button></div>`;
@@ -6053,12 +6057,23 @@ function markItemOrdered(orderId, idx){
   o.items[idx].orderedAt = new Date().toISOString();
   const allOrdered = o.items.length > 0 && o.items.every(it => it.ordered === true);
   if(allOrdered && o.status === 'pending'){
-    o.status = 'confirmed';
-    showToast('全部商品已下单，订单已转为「已下单」', 'success');
-  } else {
-    showToast('已标记「' + (o.items[idx].name || '商品') + '」为已下单', 'success');
+    // 最后一个商品下单：弹确认框
+    showConfirm('全部商品已下单，确认将该订单状态改为「已下单」？', function(){
+      o.status = 'confirmed';
+      DB.set('orders', orders);
+      showToast('✅ 全部商品已下单，订单已转为「已下单」','success');
+      renderOrderDetail();
+    }, function(){
+      // 用户取消：撤回最后一个商品的下单标记
+      o.items[idx].ordered = false;
+      o.items[idx].orderedAt = null;
+      DB.set('orders', orders);
+      renderOrderDetail();
+    });
+    return; // 不立即保存/渲染，等用户确认或取消
   }
   DB.set('orders', orders);
+  showToast('已标记「' + (o.items[idx].name || '商品') + '」为已下单', 'success');
   renderOrderDetail();
 }
 
