@@ -8749,8 +8749,10 @@ function closeAftersale(id){
 /* ============ 上门订单（日历视图） ============ */
 function renderSchedule(){
   var isAdmin = currentUser.role === 'admin';
+  // 排除本端已删除的订单 id（避免幽灵计数）
+  var deletedIds = (DB.get('_deletedOrderIds') || []);
   // 销售只能看自己的订单，管理员可看全部
-  var allDoorOrders = DB.get('orders').filter(function(o){ return o.type === 'door'; });
+  var allDoorOrders = DB.get('orders').filter(function(o){ return o.type === 'door' && deletedIds.indexOf(o.id) < 0; });
   var orders = isAdmin ? allDoorOrders : allDoorOrders.filter(function(o){ return o.salesId === currentUser.id; });
 
   var statusKey = window._scheduleStatus || '';
@@ -8794,7 +8796,8 @@ function renderSchedule(){
   var html = '<div class="card"><div class="card-title"><span class="title-text">📅 上门订单</span><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="renderOrderNew(\'door\')">+ 新建上门订单</button><button class="btn btn-sm '+(viewMode==='calendar'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'calendar\';renderSchedule()">日历视图</button><button class="btn btn-sm '+(viewMode==='list'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'list\';renderSchedule()">列表视图</button><button class="btn btn-primary btn-sm" onclick="exportScheduleOrders()" style="display:inline-flex;align-items:center;gap:4px">📥 导出</button></div></div>';
   html += '<div class="admin-tab-bar" style="margin-bottom:14px">';
   schTabs.forEach(function(t){
-    var cnt = t.key==='' ? allDoorOrders.length : allDoorOrders.filter(function(o){ return doorStatusMap[t.key].indexOf(o.status) >= 0; }).length;
+    var base = isAdmin ? allDoorOrders : orders;
+    var cnt = t.key==='' ? base.length : base.filter(function(o){ return doorStatusMap[t.key].indexOf(o.status) >= 0; }).length;
     html += '<button class="btn '+(statusKey===t.key?'btn-primary':'btn-secondary')+' btn-sm" onclick="window._scheduleStatus=\''+t.key+'\';renderSchedule()" style="margin-right:6px">'+t.label+' ('+cnt+')</button>';
   });
   html += '</div>';
@@ -8903,7 +8906,8 @@ function showScheduleDayOrders(dateStr){
 /* ============ 留仓订单 ============ */
 function renderWarehouse(){
   var isAdmin = currentUser.role === 'admin';
-  var orders = DB.get('orders').filter(function(o){ return o.type === 'warehouse'; });
+  var deletedIds = (DB.get('_deletedOrderIds') || []);
+  var orders = DB.get('orders').filter(function(o){ return o.type === 'warehouse' && deletedIds.indexOf(o.id) < 0; });
   if(!isAdmin) orders = orders.filter(function(o){ return o.salesId === currentUser.id; });
   var keyword = window._warehouseFilter || '';
   var statusKey = window._warehouseStatus || '';
