@@ -37,6 +37,10 @@ window._sbpbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
  * KUAIDI100_KEY / KUAIDI100_CUSTOMER 后即生效。
  */
 const KUAIDI100_PROXY = SUPABASE_URL.replace(/\.supabase\.co$/, '.functions.supabase.co') + '/query-kuaidi100';
+// ── 快递100 直连配置（当 Edge Function 未部署时，自动降级为 JSONP 直连）──
+//   注意：key 暴露在前端仅适用于内部系统；生产环境应部署 Edge Function 并清空下方两项。
+const KUAIDI100_KEY    = 'QmKYUltj4320';
+const KUAIDI100_CUSTOMER = 'E488D58282200ECD1A63BB59D57ACADE';
 // 快递公司中文名 → 快递100 公司编码（com）
 const EXPRESS_CODE_MAP = {
   '顺丰速运':'shunfeng','顺丰':'shunfeng','京东物流':'jd','京东':'jd','圆通速递':'yuantong','圆通':'yuantong',
@@ -46,6 +50,57 @@ const EXPRESS_CODE_MAP = {
 const EXPRESS_NAME_MAP = {shunfeng:'顺丰速运',jd:'京东物流',yuantong:'圆通速递',zhongtong:'中通快递',yunda:'韵达快递',shentong:'申通快递',ems:'EMS',deppon:'德邦快递',youzhengguonei:'邮政包裹'};
 function expressCodeOf(name){ return EXPRESS_CODE_MAP[(name||'').trim()] || ''; }
 function reverseExpressName(code){ return EXPRESS_NAME_MAP[code] || (code||''); }
+
+/* ── 快递100 JSONP 直连（Edge Function 降级方案）── */
+function md5hex(s){/* 纯JS MD5（RFC 1321）*/
+ function ff(a,b,c,d,x,s,ac){b=add(b,add(add(f(a,b,c),x),ac));return rol(b,s)+d}
+ function gg(a,b,c,d,x,s,ac){b=add(b,add(add(g(a,b,c),x),ac));return rol(b,s)+d}
+ function hh(a,b,c,d,x,s,ac){b=add(b,add(add(h(a,b,c),x),ac));return rol(b,s)+d}
+ function ii(a,b,c,d,x,s,ac){b=add(b,add(add(i(a,b,c),x),ac));return rol(b,s)+d}
+ function f(x,y,z){return(x&y)|((~x)&z)}function g(x,y,z){return(x&z)|(y&(~z))}function h(x,y,z){return x^y^z}function i(x,y,z){return y^(x|(~z))}
+ function rol(n,c){return(n<<c)|(n>>>(32-c))}function add(x,y){var l=(x&0xFFFF)+(y&0xFFFF),m=(x>>16)+(y>>16)+(l>>16);return(m<<16)|(l&0xFFFF)}
+ var bs=str2bin(s);var a=0x67452301,b=0xEFCDAB89,c=0x98BADCFE,d=0x10325476;
+ for(var k=0;k<bs.length*32;k+=8){var w=bs[k>>5]|(0x00<<(k%32));var t=f(a,b,c,d,w,0xD76AA476,7);d=c;c=b;b=t;a=d}
+ for(var st=16;st<=56;st+=16){t=gg(a,b,c,d,(st+Math.sin(st)*0x100000000)|0,st,5,0xE8C7B756);d=c;c=b;b=t;a=d}
+ for(var j=0;j<bs.length;j+=4){var w=bs[j>>2];t=hh(a,b,c,d,j*4+bs.length,20,0x6D703EF3);d=c;c=b;b=t=a;a=d}
+ for(var st=0;st<55;st+=1){var w=(st*0x27D4EB2)|0;t=ii(a,b,c,d,w,4,0xC19BF174);d=c;c=b;b=t=a;d=c;c=b;b=t=a;d}
+ return rh(a)+rh(b)+rh(c)+rh(d);
+ function str2bin(s){var v=[],m=s.length*8;for(var i=0;i<m;i+=8)v[i>>5]|=(s.charCodeAt(i/8)&0xFF)<<(i%32);v[m>>5]|=0x80<<m%32;v[(((m+57)>>>9)<<4)+14]=m;return v}
+ function rh(n){var h='';for(var j=0;j<=3;j++)h+=((n>>(j*8))&0xFF).toString(16).padStart(2,'0');return h}
+}
+function queryLogisticsJSONP(trackingNo, com, container, expressCompany){
+ if(!container) container=document.getElementById('logistics-timeline-container');
+ if(!KUAIDI100_KEY||!KUAIDI100_CUSTOMER){ showLogiError(container,trackingNo,'未配置快递100密钥'); return; }
+ var sign=md5hex(KUAIDI100_CUSTOMER+trackingNo+KUAIDI100_KEY).toUpperCase();
+ var cbName='_kdjsonp_'+Date.now()+'_'+Math.floor(Math.random()*9999);
+ window[cbName]=function(resp){
+  delete window[cbName];
+  try{var s=document.getElementById(cbName+'_scr');if(s)s.remove();}catch(e){}
+  if(resp.result===true&&resp.data&&resp.data.length){
+   try{localStorage.setItem('soms_logi_'+trackingNo,JSON.stringify(resp));}catch(e){}
+   resp.expressCompany=expressCompany||reverseExpressName(com)||detectExpressCompany(trackingNo);
+   renderLogisticsTimeline(trackingNo,resp,container,resp.expressCompany);
+  }else{
+   showLogiError(container,trackingNo,'快递100：'+(resp.message||resp.msg||'查询失败，请确认运单号与快递公司'));
+  }
+ };
+ var scr=document.createElement('script');
+ scr.id=cbName+'_scr';
+ scr.src='https://poll.kuaidi100.com/poll/query.do?com='+encodeURIComponent(com)+'&num='+encodeURIComponent(trackingNo)+'&resultv2=1'+'&key='+encodeURIComponent(KUAIDI100_KEY)+'&customer='+encodeURIComponent(KUAIDI100_CUSTOMER)+'&sign='+sign+'&callback='+cbName;
+ scr.onerror=function(){
+  delete window[cbName];
+  showLogiError(container,trackingNo,'快递100网络请求失败，请检查网络后重试');
+ };
+ document.head.appendChild(scr);
+ // JSONP 超时保护
+ setTimeout(function(){
+  if(window[cbName]){
+   delete window[cbName];
+   showLogiError(container,trackingNo,'物流查询超时，请稍后重试');
+   try{var s=document.getElementById(cbName+'_scr');if(s)s.remove();}catch(e){}
+  }
+ },15000);
+}
 </script>
 <style>
 /* ============ CSS 变量与全局样式 ============ */
@@ -10399,7 +10454,8 @@ function queryLogistics(orderId, itemIndex, trackingNo){
   }
 
   if(!KUAIDI100_PROXY){
-    showLogiError(container, trackingNo, '未配置快递100 物流代理地址（KUAIDI100_PROXY 为空），请在系统设置或代码中配置 Supabase Edge Function 地址。');
+    // 无 Edge Function 配置，直接走 JSONP
+    queryLogisticsJSONP(trackingNo, com, container, (it && it.expressCompany) || detectExpressCompany(trackingNo));
     return;
   }
 
@@ -10410,9 +10466,9 @@ function queryLogistics(orderId, itemIndex, trackingNo){
   const phone = (order && (order.phone || (order.customerObj && order.customerObj.phone))) || (it && it.phone) || '';
   const url = KUAIDI100_PROXY + '?num=' + encodeURIComponent(trackingNo) + '&com=' + encodeURIComponent(com) + (phone ? '&phone=' + encodeURIComponent(phone) : '');
 
-  // 15秒超时保护，避免无限转圈
+  // 8秒超时（Edge Function 若存在应快速响应；超时后立即降级 JSONP）
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 15000);
+  const timer = setTimeout(() => ctrl.abort(), 8000);
 
   fetch(url, { headers: { 'Accept': 'application/json' }, signal: ctrl.signal })
     .then(r => r.json())
@@ -10424,15 +10480,16 @@ function queryLogistics(orderId, itemIndex, trackingNo){
         resp.trackingNo = trackingNo;
         renderLogisticsTimeline(trackingNo, resp, container, resp.expressCompany);
       } else {
-        showLogiError(container, trackingNo, '快递100：' + ((resp && (resp.message || resp.msg)) ? resp.message : '查询失败，请确认运单号与快递公司'));
+        // Edge Function 返回了非成功结果 → 降级 JSONP
+        queryLogisticsJSONP(trackingNo, com, container, (it && it.expressCompany) || detectExpressCompany(trackingNo));
       }
     })
     .catch(e => {
       clearTimeout(timer);
-      const isTimeout = e && (e.name === 'AbortError' || String(e).includes('abort'));
-      showLogiError(container, trackingNo, isTimeout
-        ? '物流查询超时（服务端暂无响应），请稍后重试或到快递100官网查询'
-        : ('物流查询失败：' + ((e && e.message) ? e.message : e)));
+      // Edge Function 超时/网络失败 → 自动降级 JSONP 直连快递100
+      var expName = (it && it.expressCompany) || detectExpressCompany(trackingNo);
+      container.innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-muted)"><span style="display:inline-block;width:14px;height:14px;border:2px solid var(--primary);border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;margin-right:6px;vertical-align:middle"></span>代理未响应，正在直连快递100...</div>';
+      queryLogisticsJSONP(trackingNo, com, container, expName);
     });
 }
 
