@@ -828,6 +828,8 @@ tbody tr:hover{background:#f3f4f6}
   .filter-bar>*{width:100%;margin-bottom:8px}
   .detail-section{padding:12px !important}
   .door-payments{grid-template-columns:1fr !important}
+  .order-cards-h{display:flex;overflow-x:auto;gap:10px;padding-bottom:6px;-webkit-overflow-scrolling:touch}
+  .order-cards-h .order-card{flex:0 0 82%;margin-bottom:0}
 }
 .sidebar-overlay{
   display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);
@@ -3109,7 +3111,7 @@ function renderOrders(){
 
   if(isMobile){
     // 移动端：卡片布局（字段：客户/状态/备注/创建时间/操作）
-    html += `<div style="margin-top:12px">`;
+    html += `<div class="order-cards-h" style="margin-top:12px">`;
     if(filtered.length){
       filtered.forEach(o => {
         const canEdit = isAdmin || o.salesId === currentUser.id;
@@ -3126,10 +3128,10 @@ function renderOrders(){
               ${salesStatusLabel(o.status)}
             </div>
             <div class="card-logistics"><span style="color:var(--text-muted)">备注：</span>${o.remark||'无'}</div>
-            <div class="card-footer" style="display:flex;justify-content:space-between;align-items:center">
-              <span style="font-size:12px;color:var(--text-muted)">${formatOrderDate(o.createdAt)}</span>
-              ${opBtn}
-            </div>
+    <div class="card-time" style="font-size:12px;color:var(--text-muted);margin-bottom:6px">${formatOrderDate(o.createdAt)}</div>
+    <div class="card-footer" style="display:flex;justify-content:center;align-items:center">
+      ${opBtn}
+    </div>
           </div>`;
       });
     } else {
@@ -4687,9 +4689,6 @@ function renderOrderDetail(){
       html += `<button class="btn btn-primary btn-sm" onclick="copyLogisticsInfo('${order.id}')">📋 一键复制物流信息</button>`;
     }
     html += `<button class="btn btn-secondary" onclick="backToOrders()">返回</button>`;
-  } else if(!isAdmin && isOwner && order.status === 'confirmed'){
-    // 销售查看「已下单」订单：只读收款信息，底部只提供返回「订单列表-已下单」
-    html += `<button class="btn btn-secondary" onclick="window._orderTab='confirmed';navigate('orders')">← 返回订单列表</button>`;
   } else if(viewOnly){
     // 从提交成功页进入的只读模式：仅返回按钮
     html += `<button class="btn btn-secondary" onclick="backToOrders()">← 返回订单列表</button>`;
@@ -8799,10 +8798,10 @@ function renderSchedule(){
 
   } else {
     var sorted = orders.slice().sort(function(a,b){ return (b.orderDate||'').localeCompare(a.orderDate||''); });
-    html += '<div class="table-wrap"><table><thead><tr><th>订单号</th><th>客户</th><th>订单日期</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+    html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
     if(sorted.length){
       sorted.forEach(function(o){
-        html += '<tr><td><a class="btn-link" onclick="viewOrder(\''+o.id+'\')">'+o.id+'</a></td><td>'+o.customerName+'</td><td>'+(o.orderDate||'-')+'</td><td>'+statusTag(o.status)+'</td><td style="text-align:center"><button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button></td></tr>';
+        html += '<tr><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center"><button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button></td></tr>';
       });
     } else {
       html += '<tr><td colspan="5" class="table-empty">暂无上门订单</td></tr>';
@@ -8822,9 +8821,9 @@ function showScheduleDayOrders(dateStr){
   var el = document.getElementById('scheduleDayOrders');
   if(!el) return;
   if(!dayOrders.length){ el.innerHTML = ''; return; }
-  var html = '<div class="detail-section card"><h4 style="margin-bottom:10px">'+dateStr+' 的上门订单</h4><div class="table-wrap"><table><thead><tr><th>订单号</th><th>客户</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+  var html = '<div class="detail-section card"><h4 style="margin-bottom:10px">'+dateStr+' 的上门订单</h4><div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
   dayOrders.forEach(function(o){
-    html += '<tr><td>'+o.id+'</td><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td style="text-align:center"><button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button></td></tr>';
+    html += '<tr><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center"><button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button></td></tr>';
   });
   html += '</tbody></table></div></div>';
   el.innerHTML = html;
@@ -8890,9 +8889,9 @@ function renderWarehouse(){
   html += '<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="搜索订单号/客户/电话/商品" value="'+keyword+'" oninput="window._warehouseFilter=this.value;renderWarehouse()"></div></div>';
 
   if(filtered.length){
-    html += '<div class="table-wrap"><table><thead><tr><th>订单号</th><th>客户</th><th>订单日期</th><th>金额</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+    html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
     filtered.forEach(function(o){
-      html += '<tr><td><a class="btn-link" onclick="viewOrder(\''+o.id+'\')">'+o.id+'</a></td><td>'+o.customerName+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+(o.orderDate||'-')+'</td><td style="font-weight:600">'+money(o.total)+'</td><td>'+statusTag(o.status)+'</td><td style="text-align:center"><button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button></td></tr>';
+      html += '<tr><td>'+o.customerName+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center"><button class="btn-link" onclick="viewOrder(\''+o.id+'\')">详情</button></td></tr>';
     });
     html += '</tbody></table></div>';
   } else {
