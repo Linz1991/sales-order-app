@@ -3019,11 +3019,6 @@ function renderOrders(){
     // Search bar
     html += `<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="搜索订单号/客户/电话" value="${keyword}" oninput="window._orderFilter=this.value;renderOrders()"></div></div>`;
 
-    if(activeTab === 'pending'){
-      html += `<div style="text-align:center;margin-bottom:14px"><button class="btn btn-success btn-sm" onclick="collectPendingOrdersInfo()">📋 一键收集订单信息</button></div>`;
-      html += `<div class="collect-info-box" id="collectInfoBox"></div>`;
-    }
-
     // ===== 订单Tab内容 =====
     if(activeTab === 'pending'){
       // 待下单Tab：展开商品明细 + 损耗输入 + 利润计算
@@ -4514,6 +4509,7 @@ function renderOrderDetail(){
     <div class="detail-section card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
         <h4 style="margin:0">🛒 商品明细 ${editMode ? '<span style="font-size:12px;color:var(--success);font-weight:normal">（编辑模式）</span>' : ''}</h4>
+        <button class="btn btn-secondary btn-sm" onclick="copySingleOrderInfo('${order.id}')" title="复制当前订单的客户、商品、备注信息">📋 一键复制订单信息</button>
       </div>
       ${editMode ? `
       <div class="product-search-wrap" style="margin-bottom:12px">
@@ -4941,6 +4937,7 @@ function renderOrderEdit(){
     <div class="detail-section card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
         <h4 style="margin:0">🛒 商品明细</h4>
+        <button class="btn btn-secondary btn-sm" onclick="copySingleOrderInfo('${order.id}')" title="复制当前订单的客户、商品、备注信息">📋 一键复制订单信息</button>
       </div>
       <div class="table-wrap">
         <table>
@@ -5033,6 +5030,23 @@ function copyFullOrderInfo(orderId){
     fullText += '\n\n' + '订单备注：' + order.remark.trim();
   }
   copyToClipboardWithMsg(fullText);
+}
+
+// 一键复制当前订单信息（单行格式：客户 电话 地址 商品×数量… 备注：）
+function copySingleOrderInfo(orderId){
+  const order = DB.get('orders').find(o => o.id === orderId);
+  if(!order){ showToast('订单不存在','error'); return; }
+  let line = (order.customerName || '未知客户');
+  if(order.phone) line += ' ' + order.phone;
+  const addr = formatOrderAddress(order);
+  if(addr) line += addr;
+  else if(order.region || order.address) line += (order.region || '') + (order.address || '');
+  if(order.items && order.items.length){
+    order.items.forEach(it => { line += ' ' + (it.name || '未命名商品') + ' ×' + (it.qty || 1); });
+  }
+  line += ' 备注：';
+  if(order.remark) line += order.remark;
+  copyToClipboardWithMsg(line);
 }
 
 function copyProductList(orderId){
