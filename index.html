@@ -6241,24 +6241,14 @@ function collectPendingOrdersInfo() {
     text += '\n';
   });
   text = text.trim();
+  // 显示到预览框（如果存在）
   const box = document.getElementById('collectInfoBox');
   if (box) {
     box.style.display = 'block';
     box.textContent = text;
   }
-  // 自动复制到剪贴板，可直接粘贴到微信 / txt 等
-  navigator.clipboard.writeText(text).then(() => {
-    showToast('订单信息已收集并复制到剪贴板，可直接粘贴', 'success');
-  }).catch(() => {
-    // 降级方案
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    showToast('订单信息已收集并复制到剪贴板', 'success');
-  });
+  // 使用统一可靠复制函数（含 clipboard API + 完整 fallback：focus/setSelectionRange/样式定位）
+  copyToClipboardWithMsg(text);
 }
 
 // 详情页保存物流单号
@@ -9995,18 +9985,8 @@ function copyOrderInfo(orderId){
     }
     text += '\n';
   });
-  navigator.clipboard.writeText(text).then(() => {
-    showToast('订单信息已复制到剪贴板','success');
-  }).catch(() => {
-    // 降级方案
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    showToast('订单信息已复制','success');
-  });
+  // 使用统一可靠复制函数（含 clipboard API + 完整 fallback）
+  copyToClipboard(text, '订单信息');
 }
 
 // 销售端「一键收集物流信息」：经快递100 实时接口批量查询并汇总
