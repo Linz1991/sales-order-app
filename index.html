@@ -2271,6 +2271,7 @@ function parseOrderText(text){
           productId: matched.id,
           name: matched.name,
           price: matched.price,
+          cost: matched.cost,
           qty: 1,
           subtotal: matched.price,
           inputName: nline,
@@ -2293,6 +2294,7 @@ function parseOrderText(text){
           productId: matched2.id,
           name: matched2.name,
           price: matched2.price,
+          cost: matched2.cost,
           qty: 1,
           subtotal: matched2.price,
           inputName: nline,
@@ -3035,7 +3037,7 @@ function renderOrders(){
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col/><col/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>利润</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const prod = productList.find(p => p.id === it.productId);
-            const cost = prod ? prod.cost : 0;
+            const cost = (it.cost != null) ? it.cost : (prod ? prod.cost : 0);
             const waste = it.waste || 0;
             const profit = it.price * it.qty - cost * it.qty - waste;
             html += `<tr><td>${it.name}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
@@ -3063,7 +3065,7 @@ function renderOrders(){
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const prod = (products||[]).find(p => p.id === it.productId);
-            const cost = prod ? prod.cost : 0;
+            const cost = (it.cost != null) ? it.cost : (prod ? prod.cost : 0);
             html += `<tr><td>${it.name}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
             if(isAdmin){
               html += `<td>${money(cost)}</td>`;
@@ -3765,7 +3767,7 @@ function toggleSearchSelect(productId, e){
       existing.qty += 1;
       existing.subtotal = existing.price * existing.qty;
     }else{
-      cart.push({ productId: product.id, name: product.name, price: product.price, qty: 1, subtotal: product.price, stock: '否' });
+      cart.push({ productId: product.id, name: product.name, price: product.price, cost: product.cost, qty: 1, subtotal: product.price, stock: '否' });
     }
   }
   renderCart();
@@ -3797,6 +3799,7 @@ function confirmAddProducts(){
         productId: product.id,
         name: product.name,
         price: product.price,
+        cost: product.cost,
         qty: 1,
         subtotal: product.price,
         stock: '否'
@@ -4548,7 +4551,8 @@ function renderOrderDetail(){
           <tbody>
             ${order.items.map((it,i) => {
               const prod = products.find(p => p.id === it.productId);
-              const cost = prod ? (prod.cost || 0) : 0;
+              // 成本优先用下单时快照(it.cost)，保证改商品库不影响已下单订单利润；旧订单无快照时回退商品库
+              const cost = (it.cost != null) ? it.cost : (prod ? (prod.cost || 0) : 0);
               const waste = it.waste || 0;
               const itemProfit = (it.price || 0) * (it.qty || 0) - cost * (it.qty || 0) - waste;
               return `
@@ -5420,7 +5424,7 @@ function toggleEditSelect(pid, e){
   }else{
     // 勾选 → 立即加入订单
     _editSearchSelected.add(pid);
-    orders[idx].items.push({ productId: product.id, name: product.name, price: product.price, qty: 1, subtotal: product.price, stock: '否' });
+    orders[idx].items.push({ productId: product.id, name: product.name, price: product.price, cost: product.cost, qty: 1, subtotal: product.price, stock: '否' });
     orders[idx].total += product.price;
   }
   // 全款订单：同步「全款金额」(fullPayment) = 最新订单总额
@@ -5498,7 +5502,7 @@ function confirmEditAddProducts(){
     const product = products.find(p => p.id === pid);
     if(!product) return;
     orders[idx].items.push({
-      productId: product.id, name: product.name, price: product.price,
+      productId: product.id, name: product.name, price: product.price, cost: product.cost,
       qty: 1, subtotal: product.price, stock: '否'
     });
     orders[idx].total += product.price;
@@ -6011,7 +6015,7 @@ function calcOrderProfit(order) {
   const products = DB.get('products');
   const grossProfit = order.items.reduce((total, it) => {
     const prod = products.find(p => p.id === it.productId);
-    const cost = prod ? prod.cost : 0;
+    const cost = (it.cost != null) ? it.cost : (prod ? prod.cost : 0);
     const itemProfit = it.price * it.qty - cost * it.qty - (it.waste || 0);
     return total + itemProfit;
   }, 0);
@@ -6112,7 +6116,7 @@ function recalcAdminProfit(orderId){
     const wEl = document.getElementById('wasteItem_' + i);
     const waste = wEl ? (parseInt(wEl.value) || 0) : (it.waste || 0);
     const prod = products.find(p => p.id === it.productId);
-    const cost = prod ? prod.cost : 0;
+    const cost = (it.cost != null) ? it.cost : (prod ? prod.cost : 0);
     const itemProfit = it.price * it.qty - cost * it.qty - waste;
     profit += itemProfit;
     // 同步更新逐行利润单元格（管理员端上门订单明细布局）
@@ -7025,7 +7029,7 @@ function exportOrders(){
       // 损耗跟着商品走：每个商品单独显示自己的损耗（单个商品单个计算）
       const itemWaste = Math.round(it.waste || 0);
       // 成本和利润按每个商品单独计算
-      const itemCost = p ? Math.round(p.cost * qty) : 0;
+      const itemCost = (it.cost != null) ? Math.round(it.cost * qty) : (p ? Math.round(p.cost * qty) : 0);
       const itemProfit = Math.round(subtotal - itemCost - itemWaste);
       // 售后损耗跟订单走：仅在订单首行展示，避免重复计入
       const showAfterSaleLoss = (idx === 0) ? Math.round(afterSaleLoss) : '';
@@ -7190,7 +7194,7 @@ function exportScheduleOrders(){
       var p = products.find(function(x){return x.id===it.productId});
       var qty = it.qty||0;
       var price = it.price||0;
-      var itemCost = p ? Math.round(p.cost * qty) : 0;
+      var itemCost = (it.cost != null) ? Math.round(it.cost * qty) : (p ? Math.round(p.cost * qty) : 0);
       var itemProfit = Math.round(price * qty - itemCost - (it.waste||0));
       rows.push([
         o.id, statusLabel[o.status]||o.status,
@@ -7269,7 +7273,7 @@ function exportWarehouseOrders(){
       var p = products.find(function(x){return x.id===it.productId});
       var qty = it.qty||0;
       var price = it.price||0;
-      var itemCost = p ? Math.round(p.cost * qty) : 0;
+      var itemCost = (it.cost != null) ? Math.round(it.cost * qty) : (p ? Math.round(p.cost * qty) : 0);
       var itemProfit = Math.round(price * qty - itemCost - (it.waste||0));
       rows.push([
         o.id, statusLabel[o.status]||o.status,
@@ -9443,7 +9447,7 @@ function renderDashboard2(){
     totalOrders++;
     (o.items||[]).forEach(it => {
       const prod = products.find(p => p.id === it.productId);
-      const cost = prod ? (prod.cost||0) : 0;
+      const cost = (it.cost != null) ? it.cost : (prod ? (prod.cost||0) : 0);
       const rev = it.price * it.qty;
       const prof = rev - cost * it.qty;
       s.revenue += rev;
@@ -9576,7 +9580,7 @@ function renderProfitReport(){
       s.orderList.push(o);
       (o.items||[]).forEach(function(it){
         var prod = products.find(function(p){ return p.id === it.productId; });
-        var cost = prod ? (prod.cost||0) : 0;
+        var cost = (it.cost != null) ? it.cost : (prod ? (prod.cost||0) : 0);
         s.revenue += it.price * it.qty;
         s.cost += cost * it.qty;
         s.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
@@ -9735,7 +9739,7 @@ function renderProfitReport(){
       d.orderList.push(o);
       (o.items||[]).forEach(function(it){
         var prod = products.find(function(p){ return p.id === it.productId; });
-        var cost = prod ? (prod.cost||0) : 0;
+        var cost = (it.cost != null) ? it.cost : (prod ? (prod.cost||0) : 0);
         d.revenue += it.price * it.qty;
         d.cost += cost * it.qty;
         d.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
@@ -9907,7 +9911,8 @@ function showProfitDrillDown(idx){
                     var profit = calcOrderProfit(o);
                     var cost = (o.items||[]).reduce(function(s,it){
                       var prod = products.find(function(p){ return p.id === it.productId; });
-                      return s + (prod?(prod.cost||0):0) * it.qty;
+                      var c = (it.cost != null) ? it.cost : (prod ? prod.cost : 0);
+                      return s + c * it.qty;
                     }, 0);
                     return '<tr>' +
                       '<td><a class="btn-link" onclick="closeModal();viewOrder(\''+o.id+'\')">'+o.id+'</a></td>' +
@@ -9993,7 +9998,7 @@ function exportProfitCSV(){
       s.orderList.push(o);
       (o.items||[]).forEach(function(it){
         var prod = products.find(function(p){ return p.id === it.productId; });
-        var cost = prod ? (prod.cost||0) : 0;
+        var cost = (it.cost != null) ? it.cost : (prod ? (prod.cost||0) : 0);
         s.revenue += it.price * it.qty;
         s.cost += cost * it.qty;
         s.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
@@ -10046,7 +10051,7 @@ function exportProfitCSV(){
       d.count++;
       (o.items||[]).forEach(function(it){
         var prod = products.find(function(p){ return p.id === it.productId; });
-        var cost = prod ? (prod.cost||0) : 0;
+        var cost = (it.cost != null) ? it.cost : (prod ? (prod.cost||0) : 0);
         d.revenue += it.price * it.qty;
         d.cost += cost * it.qty;
         d.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
