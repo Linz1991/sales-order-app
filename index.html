@@ -2712,11 +2712,11 @@ function renderDashboard(){
             <div class="stat-value">${num(todayOrderCount)}</div>
           </div>
         </div>
-        <div class="stat-card" onclick="navigate('profit-report')">
+        <div class="stat-card" onclick="showPendingFinalPayments()">
           <div class="stat-icon green">📈</div>
           <div class="stat-info">
-            <div class="stat-label">今日利润</div>
-            <div class="stat-value">${money(todayProfit)}</div>
+            <div class="stat-label">待收尾款</div>
+            <div class="stat-value">${money(calcAllPendingFinalPayments(orders))}</div>
           </div>
         </div>
         <div class="stat-card" onclick="window._aftersaleTab='open';navigate('aftersales')">
@@ -2729,26 +2729,26 @@ function renderDashboard(){
       </div>
     `;
 
-    const recentOrders = [...orders].sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,5);
+    const recentOrders = [...orders].filter(o => o.status === 'pending').sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,10);
 
     html += `
       <div class="card">
         <div class="card-title">
           <span class="title-text">🕐 最新订单</span>
-          <button class="btn-link" onclick="navigate('orders')">查看全部 →</button>
+          <button class="btn-link" onclick="window._orderStatus='pending';navigate('orders')">查看全部 →</button>
         </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>订单号</th><th>客户</th><th>金额</th><th>状态</th></tr></thead>
+              <thead><tr><th>客户</th><th>金额</th><th>状态</th><th>操作</th></tr></thead>
               <tbody>
                 ${recentOrders.length ? recentOrders.map(o=>`
                   <tr>
-                    <td><a class="btn-link" onclick="viewOrder('${o.id}')">${o.id}</a></td>
-                    <td>${o.customerName}</td>
+                    <td>${o.customerName || '-'}</td>
                     <td>${money(o.total)}</td>
                     <td>${statusTag(o.status)}</td>
+                    <td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button></td>
                   </tr>
-                `).join('') : '<tr><td colspan="4" class="table-empty">暂无订单</td></tr>'}
+                `).join('') : '<tr><td colspan="4" class="table-empty">暂无待下单订单</td></tr>'}
               </tbody>
             </table>
           </div>
@@ -7605,6 +7605,65 @@ function getOrderRemaining(order){
   const paidRecords = (DB.get('payments') || []).filter(p => p.orderId === order.id && p.status === 'paid');
   const paidSum = paidRecords.reduce((s, p) => s + (parseInt(p.amount) || 0), 0);
   return Math.max(0, (parseInt(order.total) || 0) - initPaid - paidSum);
+}
+
+// 计算所有销售待收尾款总额（有定金且未结清的订单）
+function calcAllPendingFinalPayments(orders){
+  return (orders || []).reduce(function(s, o){
+    if(o.status === 'canceled') return s;
+    const deposit = parseInt(o.deposit) || 0;
+    if(deposit <= 0) return s; // 无尾款
+    return s + getOrderRemaining(o);
+  }, 0);
+}
+
+// 弹出所有销售待收尾款列表
+function showPendingFinalPayments(){
+  var orders = DB.get('orders') || [];
+  var balanceOrders = orders.filter(function(o){
+    if(o.status === 'canceled') return false;
+    var deposit = parseInt(o.deposit) || 0;
+    if(deposit <= 0) return false;
+    return getOrderRemaining(o) > 0;
+  }).sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
+
+  var total = calcAllPendingFinalPayments(orders);
+  var html = '<div class="modal-overlay" onclick="closeModal(\'pendingFinalPaymentsModal\')" style="z-index:10000">';
+  html += '<div class="modal" style="max-width:900px;width:90%;max-height:80vh;overflow-y:auto" onclick="event.stopPropagation()">';
+  html += '<div class="modal-header"><h3>📋 待收尾款清单</h3><button class="modal-close" onclick="closeModal(\'pendingFinalPaymentsModal\')">✕</button></div>';
+  html += '<div class="modal-body">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding:12px 16px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px">';
+  html += '<span style="font-size:15px;font-weight:600;color:var(--text)">待收尾款合计</span>';
+  html += '<span style="font-size:22px;font-weight:700;color:var(--danger)">' + money(total) + '</span>';
+  html += '</div>';
+
+  if(!balanceOrders.length){
+    html += '<div class="table-empty" style="padding:40px">暂无待收尾款订单 ✅</div>';
+  } else {
+    html += '<div class="table-wrap"><table>';
+    html += '<thead><tr><th>客户</th><th>销售</th><th>订单总额</th><th>已收款</th><th>待收尾款</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+    balanceOrders.forEach(function(o){
+      var rem = getOrderRemaining(o);
+      var salesName = o.salesName || '-';
+      html += '<tr>';
+      html += '<td>' + (o.customerName || '-') + '</td>';
+      html += '<td>' + salesName + '</td>';
+      html += '<td>' + money(o.total || 0) + '</td>';
+      html += '<td style="color:var(--success)">' + money(Math.max(0,(o.total||0)-rem)) + '</td>';
+      html += '<td style="color:var(--danger);font-weight:600">' + money(rem) + '</td>';
+      html += '<td>' + statusTag(o.status) + '</td>';
+      html += '<td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="closeModal(\'pendingFinalPaymentsModal\');viewOrder(\'' + o.id + '\')">查看</button></td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+  html += '</div></div></div>';
+
+  var wrap = document.getElementById('modalWrap') || document.body;
+  var div = document.createElement('div');
+  div.id = 'pendingFinalPaymentsModal';
+  div.innerHTML = html;
+  wrap.appendChild(div);
 }
 
 function openAddPayment(orderId, forceBalance){
