@@ -4670,7 +4670,7 @@ function renderOrderDetail(){
 
   // 收款信息（仅提交人/管理员可见金额；销售查看已下单/待反馈时隐藏，
   // 但本人（提交人）查看「已下单/已完成」订单时，显示只读收款信息，不再编辑/选择）
-  const isSalesReadOnlyView = !isAdmin && isOwner && (order.status==='completed' || order.status==='confirmed');
+  const isSalesReadOnlyView = !isAdmin && isOwner && (order.status==='completed' || order.status==='confirmed' || order.status==='feedback');
   const showPaymentReadonly = isSalesReadOnlyView || viewOnly;
   if(canViewFinancials && (!isSalesRestrictedView || isSalesReadOnlyView)){
     if(showPaymentReadonly){
