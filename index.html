@@ -7003,9 +7003,7 @@ function exportOrders(){
   const header = ['订单号','订单类型','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','利润','创建时间'];
   const rows = [];
   filtered.forEach(o => {
-    const cost = o.items.reduce((s,it)=>{ const p = products.find(x=>x.id===it.productId); return s + (p?p.cost:0)*it.qty; }, 0);
     const afterSaleLoss = o.afterSaleLoss || 0;
-    const profit = calcOrderProfit(o);
     const address = [o.province,o.city,o.district,o.region,o.address].filter(Boolean).join(' ');
     const items = (o.items&&o.items.length) ? o.items : [{ name:'(无商品)', price:0, qty:0, productId:null, waste:0 }];
     items.forEach((it, idx) => {
@@ -7015,13 +7013,16 @@ function exportOrders(){
       const subtotal = Math.round(price*qty);
       // 损耗跟着商品走：每个商品单独显示自己的损耗（单个商品单个计算）
       const itemWaste = Math.round(it.waste || 0);
+      // 成本和利润按每个商品单独计算
+      const itemCost = p ? Math.round(p.cost * qty) : 0;
+      const itemProfit = Math.round(subtotal - itemCost - itemWaste);
       // 售后损耗跟订单走：仅在订单首行展示，避免重复计入
       const showAfterSaleLoss = (idx === 0) ? Math.round(afterSaleLoss) : '';
       rows.push([
         o.id, typeLabel[o.type||'normal']||o.type, statusLabel[o.status]||o.status,
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), subtotal,
-        Math.round(o.total||0), Math.round(cost), itemWaste, showAfterSaleLoss, Math.round(profit),
+        Math.round(o.total||0), itemCost, itemWaste, showAfterSaleLoss, itemProfit,
         o.createdAt||''
       ]);
     });
@@ -7172,19 +7173,19 @@ function exportScheduleOrders(){
   var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','利润','订单日期','创建时间'];
   var rows = [];
   filtered.forEach(function(o){
-    var cost = o.items.reduce(function(s,it){ var p = products.find(function(x){return x.id===it.productId}); return s + (p?p.cost:0)*it.qty; }, 0);
-    var profit = (parseInt(o.total)||0) - cost - (o.wasteLoss||0);
     var address = [o.province,o.city,o.district,o.region,o.address].filter(Boolean).join(' ');
     var items = (o.items&&o.items.length) ? o.items : [{ name:'(无商品)', price:0, qty:0, productId:null, waste:0 }];
     items.forEach(function(it, idx){
       var p = products.find(function(x){return x.id===it.productId});
       var qty = it.qty||0;
       var price = it.price||0;
+      var itemCost = p ? Math.round(p.cost * qty) : 0;
+      var itemProfit = Math.round(price * qty - itemCost - (it.waste||0));
       rows.push([
         o.id, statusLabel[o.status]||o.status,
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), Math.round(price*qty),
-        Math.round(o.total||0), Math.round(cost), Math.round(it.waste||0), Math.round(profit),
+        Math.round(o.total||0), itemCost, Math.round(it.waste||0), itemProfit,
         o.orderDate||'', o.createdAt||''
       ]);
     });
@@ -7252,19 +7253,19 @@ function exportWarehouseOrders(){
   var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','利润','订单日期','创建时间'];
   var rows = [];
   filtered.forEach(function(o){
-    var cost = o.items.reduce(function(s,it){ var p = products.find(function(x){return x.id===it.productId}); return s + (p?p.cost:0)*it.qty; }, 0);
-    var profit = (parseInt(o.total)||0) - cost - (o.wasteLoss||0);
     var address = [o.province,o.city,o.district,o.region,o.address].filter(Boolean).join(' ');
     var items = (o.items&&o.items.length) ? o.items : [{ name:'(无商品)', price:0, qty:0, productId:null, waste:0 }];
     items.forEach(function(it){
       var p = products.find(function(x){return x.id===it.productId});
       var qty = it.qty||0;
       var price = it.price||0;
+      var itemCost = p ? Math.round(p.cost * qty) : 0;
+      var itemProfit = Math.round(price * qty - itemCost - (it.waste||0));
       rows.push([
         o.id, statusLabel[o.status]||o.status,
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), Math.round(price*qty),
-        Math.round(o.total||0), Math.round(cost), Math.round(it.waste||0), Math.round(profit),
+        Math.round(o.total||0), itemCost, Math.round(it.waste||0), itemProfit,
         o.orderDate||'', o.createdAt||''
       ]);
     });
