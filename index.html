@@ -471,6 +471,18 @@ tbody tr:nth-child(even){background:#fafafa}
 tbody tr:hover{background:#f3f4f6}
 .table-empty{text-align:center;padding:40px;color:var(--text-muted)}
 
+/* 销售端订单列表：状态分段控件（替代原细按钮） */
+.sales-tab-seg{display:flex;gap:4px;background:#f1f5f9;padding:4px;border-radius:12px;margin-bottom:14px;overflow-x:auto}
+.sales-tab-seg .seg-item{flex:1 1 0;min-width:64px;border:none;background:transparent;color:var(--text-muted);font-size:13px;padding:8px 4px;border-radius:9px;cursor:pointer;white-space:nowrap;transition:all .15s;font-weight:500}
+.sales-tab-seg .seg-item:hover{color:var(--text)}
+.sales-tab-seg .seg-item.active{background:#fff;color:var(--primary);box-shadow:0 1px 4px rgba(0,0,0,.1);font-weight:600}
+.sales-tab-seg .seg-count{display:inline-block;margin-left:2px;font-size:11px;opacity:.7}
+
+/* 销售端订单列表：空状态引导 */
+.sales-empty{display:flex;flex-direction:column;align-items:center;gap:12px;padding:48px 16px;color:var(--text-muted)}
+.sales-empty .empty-icon{font-size:40px}
+.sales-empty .empty-text{font-size:14px}
+
 /* 状态标签 */
 .tag{
   display:inline-block;padding:4px 12px;border-radius:12px;
@@ -3305,8 +3317,16 @@ async function renderOrders(){
   }
 
   filtered = [...filtered].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
-  // 默认（含筛选后）最多显示最近 10 条记录
-  filtered = filtered.slice(0, 10);
+  // 加载更多：筛选条件变化时重置页数；点「加载更多」只增加页数、不重置
+  const _salesListSig = [status, keyword, salesDateStart, salesDateEnd, typeFilter].join('|');
+  if(window._salesListSig !== _salesListSig){
+    window._salesPageSize = 20;
+    window._salesListSig = _salesListSig;
+  }
+  const _pageSize = window._salesPageSize || 20;
+  const _totalMatched = filtered.length;
+  // 默认显示最近 _pageSize 条，点「加载更多」可继续展开（突破原 10 条上限）
+  filtered = filtered.slice(0, _pageSize);
 
   // 销售端状态筛选标签：全部 / 待下单 / 已下单 / 待反馈 / 已完成
   const salesStatusTabs = [
@@ -3322,10 +3342,10 @@ async function renderOrders(){
       <div class="card-title">
         <span class="title-text">📦 订单列表</span>
       </div>
-      <div class="admin-tab-bar" style="margin-bottom:14px">
+      <div class="sales-tab-seg">
         ${salesStatusTabs.map(t=>{
           const cnt = t.key === '' ? orders.length : orders.filter(o => salesStatusGroup(t.key).includes(o.status)).length;
-          return `<button class="btn ${status===t.key?'btn-primary':'btn-secondary'} btn-sm" onclick="filterOrders('${t.key}','status')" style="margin-right:6px">${t.label} (${cnt})</button>`;
+          return `<button class="seg-item ${status===t.key?'active':''}" onclick="filterOrders('${t.key}','status')">${t.label} <span class="seg-count">${cnt}</span></button>`;
         }).join('')}
       </div>
       <div class="date-filter">
@@ -3338,7 +3358,7 @@ async function renderOrders(){
       <div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="orderSearchInput" placeholder="搜索姓名/电话/商品" value="${keyword}" onkeydown="if(event.key==='Enter')doOrderSearch()" oninput="window._orderFilter=this.value;renderOrders()"></div><button class="btn btn-primary btn-sm" onclick="doOrderSearch()">搜索</button></div>`;
 
   if(isMobile){
-    // 移动端：卡片布局（字段：客户/状态/备注/创建时间/操作）
+    // 移动端：卡片布局（字段：客户/电话/状态/备注/创建时间/操作）
     html += `<div class="order-cards-h" style="margin-top:12px">`;
     if(filtered.length){
       filtered.forEach(o => {
@@ -3355,6 +3375,7 @@ async function renderOrders(){
             </div>
             <div class="card-row"><span class="card-label">类型</span>${orderTypeTag(o.type)}</div>
             <div class="card-row"><span class="card-label">金额</span><b style="color:var(--text)">${money(o.total)}</b></div>
+            <div class="card-row"><span class="card-label">电话</span><span style="color:var(--text)">${o.phone||'未填写'}</span></div>
             <div class="card-logistics"><span style="color:var(--text-muted)">备注：</span>${o.remark||'无'}</div>
     <div class="card-time" style="font-size:12px;color:var(--text-muted);margin-bottom:6px">${formatOrderDateTime(o.createdAt)}</div>
     <div class="card-footer" style="display:flex;justify-content:center;align-items:center">
@@ -3363,17 +3384,22 @@ async function renderOrders(){
           </div>`;
       });
     } else {
-      html += `<div class="table-empty">暂无符合条件的订单</div>`;
+      html += `<div class="sales-empty">
+        <div class="empty-icon">📦</div>
+        <div class="empty-text">${keyword||status||salesDateStart||salesDateEnd ? '暂无符合条件的订单' : '还没有订单'}</div>
+        ${keyword||status||salesDateStart||salesDateEnd ? '' : `<button class="btn btn-primary" onclick="navigate('order-new')">➕ 去新建订单</button>`}
+      </div>`;
     }
     html += `</div>`;
   } else {
-    // 桌面端：表格布局（字段：客户/状态/备注/创建时间/操作）
+    // 桌面端：表格布局（字段：客户/电话/状态/备注/创建时间/操作）
     html += `
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
               <th>客户</th>
+              <th>电话</th>
               <th>状态</th>
               <th>备注</th>
               <th>创建时间</th>
@@ -3391,15 +3417,29 @@ async function renderOrders(){
               return `
               <tr>
                 <td>${o.customerName||'-'}</td>
+                <td>${o.phone||'<span style="color:var(--text-muted)">未填写</span>'}</td>
                 <td>${salesStatusLabel(o.status)}</td>
                 <td style="font-size:12px">${remark}</td>
                 <td>${formatOrderDateTime(o.createdAt)}</td>
                 <td style="text-align:center">${opBtn}</td>
               </tr>`;
-            }).join('') : '<tr><td colspan="5" class="table-empty">暂无符合条件的订单</td></tr>'}
+            }).join('') : `<tr><td colspan="6">
+              <div class="sales-empty">
+                <div class="empty-icon">📦</div>
+                <div class="empty-text">${keyword||status||salesDateStart||salesDateEnd ? '暂无符合条件的订单' : '还没有订单'}</div>
+                ${keyword||status||salesDateStart||salesDateEnd ? '' : `<button class="btn btn-primary" onclick="navigate('order-new')">➕ 去新建订单</button>`}
+              </div>
+            </td></tr>`}
           </tbody>
         </table>
       </div>`;
+  }
+
+  // 加载更多：当匹配总数超出当前显示数量时显示（突破原 10 条上限）
+  if(_totalMatched > filtered.length){
+    html += `<div style="display:flex;justify-content:center;margin-top:14px">
+      <button class="btn btn-secondary" onclick="loadMoreSalesOrders()">加载更多（已显示 ${filtered.length} / 共 ${_totalMatched} 条）</button>
+    </div>`;
   }
 
   html += `
@@ -3424,6 +3464,13 @@ function filterOrders(value, type){
   if(type === 'keyword') window._orderFilter = value;
   else if(type === 'status') window._orderStatus = value;
   else if(type === 'type') window._orderType = value;
+  renderOrders();
+}
+
+// 销售端订单列表「加载更多」：只增加页数、不重置筛选
+function loadMoreSalesOrders(){
+  if(!window._salesPageSize) window._salesPageSize = 20;
+  window._salesPageSize += 20;
   renderOrders();
 }
 
