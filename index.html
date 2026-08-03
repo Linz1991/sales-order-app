@@ -904,6 +904,15 @@ tbody tr:hover{background:#f3f4f6}
   /* 表格 */
   .card{padding:16px}
   table{font-size:13px}
+
+  /* 订单管理 Pad 适配：统一各状态 Tab（参考「待下单」页面），表格可横向滚动且紧凑可读 */
+  .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px}
+  tbody td, thead th{padding:10px 12px}
+  .order-items-sub-table{font-size:12px}
+  .order-items-sub-table th, .order-items-sub-table td{padding:6px 8px}
+  .order-items-sub-table col:nth-child(1){width:auto}
+  .admin-tab-bar{margin-bottom:12px}
+  .date-filter{flex-wrap:wrap}
 }
 
 /* 手机（≤768px） */
@@ -1088,6 +1097,12 @@ html{scroll-behavior:smooth}
 .order-card .card-tag{font-size:11px;padding:2px 8px;border-radius:4px}
 .order-card .card-logistics{font-size:12px;color:var(--text-muted);margin-bottom:8px}
 .order-card .card-footer{display:flex;justify-content:flex-end}
+/* 管理端手机卡片容器（纵向堆叠，区别于销售端横向滑动的 .order-cards-h） */
+.order-cards-v{display:block}
+.order-card .card-row{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:13px;padding:5px 0;border-bottom:1px dashed var(--border)}
+.order-card .card-row:last-of-type{border-bottom:none}
+.order-card .card-label{color:var(--text-muted);font-size:12px;flex-shrink:0}
+.order-card .card-row>span:last-child{text-align:right;min-width:0;overflow:hidden;text-overflow:ellipsis}
 
 /* ============ 提交订单成功页 ============ */
 .order-success-wrap{max-width:640px;margin:0 auto;padding:16px 0 32px}
@@ -1810,8 +1825,10 @@ function fuzzyMatchProduct(inputName, products){
     }
   });
 
-  // 阈值 > 0.3
-  return bestScore > 0.3 ? best : null;
+  // 阈值 > 0.6：提高匹配门槛，避免仅靠字符重叠（最高 0.5）把无关商品误匹配进来。
+  // 显式子串包含仍记 0.8，可靠的完全/部分包含匹配不受影响；低置信度（仅零散字符重叠）不再匹配，
+  // 识别不到商品库内商品时退回"未匹配"，由用户手动确认，避免"识别出商品库里没有的商品"。
+  return bestScore > 0.6 ? best : null;
 }
 
 /* ============ 省市区数据 + 地址结构化解析/补全（京东式） ============ */
@@ -3018,6 +3035,26 @@ function formatOrderDate(d){
   }
   return d;
 }
+// 订单创建时间统一格式：2026-08-02 19:30（YYYY-MM-DD HH:mm，两位、无秒）
+function formatOrderDateTime(d){
+  if(!d) return '-';
+  let s = ('' + d).trim().replace('T', ' ').replace(/\+.*$/, '');
+  // 去掉秒
+  s = s.replace(/:\d{1,2}$/, '');
+  const parts = s.split(' ');
+  let datePart = parts[0] || '';
+  let timePart = parts[1] || '';
+  const dp = datePart.split('-');
+  if(dp.length === 3){
+    datePart = dp[0] + '-' + String(parseInt(dp[1],10)||0).padStart(2,'0') + '-' + String(parseInt(dp[2],10)||0).padStart(2,'0');
+  }
+  if(timePart){
+    const tp = timePart.split(':');
+    timePart = String(parseInt(tp[0],10)||0).padStart(2,'0') + ':' + String(parseInt(tp[1],10)||0).padStart(2,'0');
+  }
+  const out = timePart ? (datePart + ' ' + timePart) : datePart;
+  return out || ('' + d);
+}
 // 点击"搜索"按钮触发搜索（姓名/电话/商品）
 function doOrderSearch(){
   const inp = document.getElementById('orderSearchInput');
@@ -3025,9 +3062,14 @@ function doOrderSearch(){
   renderOrders();
 }
 
-function renderOrders(){
+async function renderOrders(){
  try {
+  // 渲染前先从云端拉取最新订单，保证管理端/销售端订单与状态实时一致
+  // （修复：管理员看不到销售新提交的订单、销售看不到管理员改后的状态）
+  try { await DB.syncTable('orders'); } catch(e) { console.warn('sync orders before render failed:', e); }
   const isAdmin = currentUser.role === 'admin';
+  // 是否移动端（手机 ≤768px）：管理端与销售端列表统一用它切换「表格/卡片」布局
+  const isMobile = window.innerWidth <= 768 || /Mobile|Android|iPhone/.test(navigator.userAgent);
   let orders = DB.get('orders').filter(o => !o._deleted);
   const recycleCount = (DB.get('orders') || []).filter(o => o._deleted).length;
   if(!isAdmin) orders = orders.filter(o => o.salesId === currentUser.id);
@@ -3126,6 +3168,30 @@ function renderOrders(){
     html += `<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="搜索订单号/客户/电话" value="${keyword}" oninput="window._orderFilter=this.value;renderOrders()"></div></div>`;
 
     // ===== 订单Tab内容 =====
+    if(isMobile){
+      // 手机端：卡片布局（参考「全部」表格列与销售端卡片样式，避免窄屏横向滚动）
+      html += `<div class="order-cards-v" style="margin-top:12px">`;
+      if(filtered.length){
+        filtered.forEach(o => {
+          html += `
+            <div class="order-card" onclick="viewOrder('${o.id}', true)">
+              <div class="card-customer">${o.customerName||'-'}</div>
+              <div class="card-row"><span class="card-label">类型</span>${orderTypeTag(o.type)}</div>
+              <div class="card-row"><span class="card-label">状态</span>${statusTag(o.status)}</div>
+              <div class="card-row"><span class="card-label">金额</span><b style="color:var(--text)">${money(o.total)}</b></div>
+              ${o.remark ? `<div class="card-row"><span class="card-label">备注</span><span style="text-align:right">${o.remark}</span></div>` : ''}
+              <div class="card-time" style="font-size:12px;color:var(--text-muted);margin:6px 0">${formatOrderDateTime(o.createdAt)}</div>
+              <div class="card-footer" style="justify-content:center;gap:8px">
+                <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewOrder('${o.id}', true)">查看</button>
+                ${o.status === 'feedback' ? `<button class="btn btn-warning btn-sm" onclick="event.stopPropagation();setOrderFeedback('${o.id}')">确认已反馈</button>` : ''}
+              </div>
+            </div>`;
+        });
+      } else {
+        html += `<div class="table-empty">暂无订单</div>`;
+      }
+      html += `</div>`;
+    } else {
     if(activeTab === 'pending'){
       // 待下单Tab：展开商品明细 + 损耗输入 + 利润计算
       html += `<div class="table-wrap"><table><thead><tr><th>客户</th><th>商品明细</th><th>订单备注</th><th>操作</th></tr></thead><tbody>`;
@@ -3191,7 +3257,7 @@ function renderOrders(){
           html += `<td style="font-weight:600">${money(o.total)}</td>`;
           html += `<td>${orderTypeTag(o.type)}</td>`;
           html += `<td>${statusTag(o.status)}</td>`;
-          html += `<td>${o.createdAt||'-'}</td>`;
+          html += `<td>${formatOrderDateTime(o.createdAt)}</td>`;
           html += `<td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button>${o.status === 'feedback' ? ` <button class="btn btn-warning btn-sm" style="margin-left:4px" onclick="setOrderFeedback('${o.id}')">确认已反馈</button>` : ''}</td>`;
           html += `</tr>`;
         });
@@ -3199,6 +3265,7 @@ function renderOrders(){
         html += `<tr><td colspan="${colCount}" class="table-empty">暂无订单</td></tr>`;
       }
       html += `</tbody></table></div>`;
+    }
     }
     html += `</div>`;
     document.getElementById('mainContent').innerHTML = html;
@@ -3208,7 +3275,7 @@ function renderOrders(){
   }
 
   // === 销售端 ===
-  const isMobile = window.innerWidth <= 768 || /Mobile|Android|iPhone/.test(navigator.userAgent);
+  // isMobile 已在函数顶部统一定义，销售端卡片布局直接复用
   let filtered = orders;
   if(keyword){
     const kw = keyword.toLowerCase();
@@ -3286,8 +3353,10 @@ function renderOrders(){
             <div class="card-tags">
               ${salesStatusLabel(o.status)}
             </div>
+            <div class="card-row"><span class="card-label">类型</span>${orderTypeTag(o.type)}</div>
+            <div class="card-row"><span class="card-label">金额</span><b style="color:var(--text)">${money(o.total)}</b></div>
             <div class="card-logistics"><span style="color:var(--text-muted)">备注：</span>${o.remark||'无'}</div>
-    <div class="card-time" style="font-size:12px;color:var(--text-muted);margin-bottom:6px">${formatOrderDate(o.createdAt)}</div>
+    <div class="card-time" style="font-size:12px;color:var(--text-muted);margin-bottom:6px">${formatOrderDateTime(o.createdAt)}</div>
     <div class="card-footer" style="display:flex;justify-content:center;align-items:center">
       ${opBtn}
     </div>
@@ -3324,7 +3393,7 @@ function renderOrders(){
                 <td>${o.customerName||'-'}</td>
                 <td>${salesStatusLabel(o.status)}</td>
                 <td style="font-size:12px">${remark}</td>
-                <td>${formatOrderDate(o.createdAt)}</td>
+                <td>${formatOrderDateTime(o.createdAt)}</td>
                 <td style="text-align:center">${opBtn}</td>
               </tr>`;
             }).join('') : '<tr><td colspan="5" class="table-empty">暂无符合条件的订单</td></tr>'}
@@ -4356,26 +4425,9 @@ function submitOrder(){
   orders.push(newOrder);
   DB.set('orders', orders);
 
-  // 自动添加新品到商品库
-  const _products = DB.get('products');
-  let _newProdCount = 0;
-  newOrder.items.forEach(item => {
-    if(item.productId && !_products.find(p => p.id === item.productId)){
-      _products.push({
-        id: item.productId,
-        name: item.name,
-        price: item.price,
-        cost: item.price,
-        status: 'on',
-        category: '其他',
-        auto_added: true
-      });
-      _newProdCount++;
-    }
-  });
-  if(_newProdCount > 0){
-    DB.set('products', _products);
-  }
+  // 注意：提交订单时不再把库中不存在的商品自动写入商品库。
+  // 识别到的商品若未匹配到商品库，仅作为订单行（自带名称/价格）保存，避免污染商品库。
+  // 用户确需新增商品时，请使用"手动添加商品"（confirmManualAddProduct），它会显式写入商品库。
 
   window._currentOrderId = orderId;
   window._orderFilter = '';
@@ -4534,13 +4586,23 @@ function renderOrderDetail(){
     <div class="detail-section card">
       ${isAdminOrderView ? '' : '<h4>📋 订单信息</h4>'}
       ${isPending && editMode ? `
-        <div class="form-group">
-          <label class="form-label">客户信息（姓名 电话 地址）</label>
-          <textarea class="form-control" id="editCustInfo" rows="2" style="resize:vertical;min-height:40px" onblur="parseCustInfo(this.value)">${custInfoText}</textarea>
-          <input type="hidden" id="custContact" value="${order.contact||order.customerName}">
-          <input type="hidden" id="custPhone" value="${order.phone||''}">
-          <input type="hidden" id="custRegion" value="${order.region||''}">
-          <input type="hidden" id="custAddress" value="${order.address||''}">
+        <div class="edit-customer-block">
+          <div class="form-group">
+            <label class="form-label">客户姓名 <span class="required">*</span></label>
+            <input type="text" class="form-control" id="custContact" value="${(order.contact||order.customerName||'').replace(/"/g,'&quot;')}" placeholder="收件人姓名">
+          </div>
+          <div class="form-group">
+            <label class="form-label">联系电话 <span class="required">*</span></label>
+            <input type="tel" class="form-control" id="custPhone" value="${order.phone||''}" placeholder="手机号码">
+          </div>
+          <div class="form-group">
+            <label class="form-label">所在地区</label>
+            <input type="text" class="form-control" id="custRegion" value="${(order.region||'').replace(/"/g,'&quot;')}" placeholder="省 市 区">
+          </div>
+          <div class="form-group">
+            <label class="form-label">详细地址</label>
+            <textarea class="form-control" id="custAddress" rows="2" style="resize:vertical;min-height:40px">${(order.address||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+          </div>
         </div>
         ${(order.type==='warehouse'||order.type==='door') ? `
         <div class="form-group">
@@ -4569,7 +4631,7 @@ function renderOrderDetail(){
             <div class="info-item"><div class="info-label">订单类型</div><div class="info-value">${orderTypeTag(order.type)}</div></div>
             <div class="info-item"><div class="info-label">下单人</div><div class="info-value">${order.salesName||'-'}</div></div>
             ${isAdmin ? `<div class="info-item"><div class="info-label">订单金额</div><div class="info-value" style="color:var(--primary);font-size:18px">${money(order.total)}</div></div>` : ''}
-            <div class="info-item"><div class="info-label">创建时间</div><div class="info-value">${order.createdAt||'-'}</div></div>
+            <div class="info-item"><div class="info-label">创建时间</div><div class="info-value">${formatOrderDateTime(order.createdAt)}</div></div>
             ${(order.type==='warehouse'||order.type==='door') ? `
             <div class="info-item"><div class="info-label">${dateLabel1}</div><div class="info-value"><input type="date" class="form-control" id="detailOrderDate" value="${order.orderDate||''}" style="max-width:200px" onchange="var c=document.getElementById('detailCompletionDate');if(c)c.min=this.value;">${order.orderDate && todayStr()>order.orderDate ? '<div style="font-size:11px;color:var(--danger);margin-top:2px">已到期</div>' : ''}</div></div>
             ${isDoor ? `<div class="info-item"><div class="info-label">订单上门日期</div><div class="info-value"><input type="date" class="form-control" id="detailCompletionDate" value="${order.completionDate||''}" style="max-width:200px" onchange="var c=document.getElementById('detailOrderDate');if(c)c.max=this.value;"></div></div>` : ''}
@@ -4591,7 +4653,7 @@ function renderOrderDetail(){
           <div class="info-item"><div class="info-label">订单类型</div><div class="info-value">${orderTypeTag(order.type)}</div></div>
           <div class="info-item"><div class="info-label">下单人</div><div class="info-value">${order.salesName||'-'}</div></div>
           ${isAdmin ? `<div class="info-item"><div class="info-label">订单金额</div><div class="info-value" style="color:var(--primary);font-size:18px">${money(order.total)}</div></div>` : ''}
-          <div class="info-item"><div class="info-label">创建时间</div><div class="info-value">${order.createdAt||'-'}</div></div>
+          <div class="info-item"><div class="info-label">创建时间</div><div class="info-value">${formatOrderDateTime(order.createdAt)}</div></div>
           ${(order.type==='warehouse'||order.type==='door') ? `
           <div class="info-item"><div class="info-label">${dateLabel1}</div><div class="info-value"><input type="date" class="form-control" id="detailOrderDate" value="${order.orderDate||''}" style="max-width:200px" onchange="var c=document.getElementById('detailCompletionDate');if(c)c.min=this.value;">${order.orderDate && todayStr()>order.orderDate ? '<div style="font-size:11px;color:var(--danger);margin-top:2px">已到期</div>' : ''}</div></div>
           ${isDoor ? `<div class="info-item"><div class="info-label">订单上门日期</div><div class="info-value"><input type="date" class="form-control" id="detailCompletionDate" value="${order.completionDate||''}" style="max-width:200px" onchange="var c=document.getElementById('detailOrderDate');if(c)c.max=this.value;"></div></div>` : ''}
@@ -5748,26 +5810,8 @@ function saveEditOrder(orderId){
   orders[idx] = order;
   DB.set('orders', orders);
 
-  // 自动添加新品到商品库
-  const _products = DB.get('products');
-  let _newProdCount = 0;
-  order.items.forEach(item => {
-    if(item.productId && !_products.find(p => p.id === item.productId)){
-      _products.push({
-        id: item.productId,
-        name: item.name,
-        price: item.price,
-        cost: item.price,
-        status: 'on',
-        category: '其他',
-        auto_added: true
-      });
-      _newProdCount++;
-    }
-  });
-  if(_newProdCount > 0){
-    DB.set('products', _products);
-  }
+  // 注意：保存编辑订单时同样不再把库中不存在的商品自动写入商品库，避免污染商品库。
+  // 订单行始终保留自带名称/价格，未匹配商品库的商品不影响订单展示与流转。
 
   window._orderEditMode = false;
   showToast('订单已保存','success');
@@ -6362,41 +6406,6 @@ function adminConfirmOrder(orderId) {
 }
 
 // 管理员单品标记已下单
-function markItemOrdered(orderId, itemIndex) {
-  if(currentUser.role !== 'admin'){ showToast('仅管理员可操作','error'); return; }
-  const orders = DB.get('orders');
-  const idx = orders.findIndex(o => o.id === orderId);
-  if(idx < 0){ showToast('订单不存在','error'); return; }
-  const order = orders[idx];
-  const item = order.items[itemIndex];
-  if(!item){ showToast('商品不存在','error'); return; }
-  if(item.ordered){ showToast('该商品已下单','info'); return; }
-
-  // 标记单品已下单
-  item.ordered = true;
-  item.orderedAt = nowStr();
-
-  // 检查是否全部商品都已下单
-  const allOrdered = order.items.every(it => it.ordered);
-  if(allOrdered){
-    order.status = 'confirmed';
-    order.confirmedAt = nowStr();
-    order.syncedAt = nowStr();
-    order.updatedAt = nowStr();
-    showToast('全部商品已下单，订单状态已更新为「已下单」','success');
-  } else {
-    order.updatedAt = nowStr();
-    order.syncedAt = nowStr();
-    showToast(item.name + ' 已标记为已下单','success');
-  }
-
-  // 保存并同步
-  DB.set('orders', orders);
-
-  // 刷新页面展示最新状态
-  renderOrders();
-}
-
 // 一键收集待下单订单信息（收集所有类型：普通/留仓/上门）
 function collectPendingOrdersInfo() {
   const allOrders = DB.get('orders');
@@ -9149,7 +9158,7 @@ function renderSchedule(){
     html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
     if(sorted.length){
       sorted.forEach(function(o){
-        var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+        var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDateTime(o.createdAt)+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
       });
     }
     html += '</tbody></table></div>';
@@ -9169,7 +9178,7 @@ function showScheduleDayOrders(dateStr){
   if(!dayOrders.length){ el.innerHTML = ''; return; }
   var html = '<div class="detail-section card"><h4 style="margin-bottom:10px">'+dateStr+' 的上门订单</h4><div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
   dayOrders.forEach(function(o){
-    var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+    var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDateTime(o.createdAt)+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
   });
   html += '</tbody></table></div></div>';
   el.innerHTML = html;
@@ -9238,7 +9247,7 @@ function renderWarehouse(){
   if(filtered.length){
     html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
     filtered.forEach(function(o){
-      var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+o.customerName+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+((o.createdAt||'').slice(0,10)||'-')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+      var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+o.customerName+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDateTime(o.createdAt)+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
     });
     html += '</tbody></table></div>';
   } else {
