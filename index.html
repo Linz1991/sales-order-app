@@ -3183,7 +3183,7 @@ async function renderOrders(){
               <div class="card-time" style="font-size:12px;color:var(--text-muted);margin:6px 0">${formatOrderDateTime(o.createdAt)}</div>
               <div class="card-footer" style="justify-content:center;gap:8px">
                 <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewOrder('${o.id}', true)">查看</button>
-                ${o.status === 'feedback' ? `<button class="btn btn-warning btn-sm" onclick="event.stopPropagation();setOrderFeedback('${o.id}')">确认已反馈</button>` : ''}
+                ${o.status === 'feedback' ? `<button class="btn btn-warning btn-sm" onclick="event.stopPropagation();markOrderFeedbackDone('${o.id}')">确认已反馈</button>` : ''}
               </div>
             </div>`;
         });
@@ -3258,7 +3258,7 @@ async function renderOrders(){
           html += `<td>${orderTypeTag(o.type)}</td>`;
           html += `<td>${statusTag(o.status)}</td>`;
           html += `<td>${formatOrderDateTime(o.createdAt)}</td>`;
-          html += `<td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button>${o.status === 'feedback' ? ` <button class="btn btn-warning btn-sm" style="margin-left:4px" onclick="setOrderFeedback('${o.id}')">确认已反馈</button>` : ''}</td>`;
+          html += `<td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button>${o.status === 'feedback' ? ` <button class="btn btn-warning btn-sm" style="margin-left:4px" onclick="markOrderFeedbackDone('${o.id}')">确认已反馈</button>` : ''}</td>`;
           html += `</tr>`;
         });
       } else {
@@ -4779,9 +4779,15 @@ function renderOrderDetail(){
   if(showLogistics && isAdminOrderView && order.type!=='warehouse'){
     // 管理员查看（已下单/运输中/待反馈/已反馈/已完成）统一物流信息模块界面：
     // 运单号右侧「操作」列提供「查询」按钮实时查询轨迹，并提供「一键复制物流信息」按钮
+    const noTrackingChecked = order.noTracking ? 'checked' : '';
     html += `
       <div class="detail-section card">
         <h4>🚚 物流信息 <span style="font-size:12px;color:var(--text-muted);font-weight:normal">（填写运单号后点击下方「保存修改」）</span><button class="btn btn-primary btn-sm" style="margin-left:12px" onclick="copyLogisticsInfo('${order.id}')">📋 一键复制物流信息</button></h4>
+        <div style="margin:4px 0 10px;display:flex;align-items:center;gap:8px">
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+            <input type="checkbox" id="noTrackingToggle" ${noTrackingChecked} onchange="toggleNoTracking('${order.id}', this.checked)"> 无需物流（自提 / 赠品 / 本地，勾选后可不填运单号直接推进）
+          </label>
+        </div>
         <div class="table-wrap">
           <table>
             <thead><tr><th>商品名称</th><th>数量</th><th>快递公司</th><th>运单号</th><th>操作</th></tr></thead>
@@ -4804,7 +4810,7 @@ function renderOrderDetail(){
     const canEditLogistics = isAdmin;
     html += `
       <div class="detail-section card">
-        <h4>🚚 物流信息 ${!isAdmin ? '<button class="btn btn-primary btn-sm" style="margin-left:12px" onclick="copyLogisticsInfo(\''+order.id+'\')">📋 一键复制物流信息</button>' : ''}</h4>
+        <h4>🚚 物流信息 ${order.noTracking ? '<span style="font-size:12px;color:var(--success);font-weight:normal">（已标记无需物流）</span>' : ''} ${!isAdmin ? '<button class="btn btn-primary btn-sm" style="margin-left:12px" onclick="copyLogisticsInfo(\''+order.id+'\')">📋 一键复制物流信息</button>' : ''}</h4>
         <table>
           <thead><tr><th>商品名称</th><th>数量</th><th>快递公司</th><th>运单号</th><th>当前状态</th><th>操作</th></tr></thead>
           <tbody>
@@ -4947,13 +4953,13 @@ function renderOrderDetail(){
       // 普通/留仓订单：待反馈 → 已反馈（管理员直接确认；销售需点"反馈"并确认）
       if(!isDoor && order.status === 'feedback'){
         if(isAdmin){
-          html += `<button class="btn btn-warning" onclick="setOrderFeedback('${order.id}')">确认已反馈</button>`;
+          html += `<button class="btn btn-warning" onclick="markOrderFeedbackDone('${order.id}')">确认已反馈</button>`;
         } else {
           html += `<div style="width:100%;display:flex;justify-content:center;margin-top:4px"><button class="btn btn-warning" onclick="salesSubmitFeedback('${order.id}')">反馈</button></div>`;
         }
       }
-      // 上门订单 → 已完成（仅提交人/管理员可操作）
-      if(isDoor && (isAdmin || isOwner) && order.status !== 'completed' && order.status !== 'canceled'){
+      // 上门订单 → 已完成（仅提交人/管理员可操作；必须已下单/运输中/已签收/待反馈/已反馈，禁止 pending 直接完成）
+      if(isDoor && (isAdmin || isOwner) && ['confirmed','shipped','received','feedback','feedback_done'].includes(order.status)){
         html += `<button class="btn btn-success" onclick="setOrderCompleted('${order.id}')">确认已完成</button>`;
       }
       // 留仓/待下单订单：销售编辑按钮
@@ -5525,9 +5531,30 @@ function markOrderFeedbackDone(orderId){
     showToast('已反馈，订单已转入「已完成」列表', 'success');
   });
 }
-// 已完成（上门）
+// 已完成（上门）：必须已下单/运输中/已签收/待反馈/已反馈 才能确认完成，禁止从待下单(pending)直接完成
 function setOrderCompleted(orderId){
+  const orders = DB.get('orders');
+  const idx = orders.findIndex(o => o.id === orderId);
+  if(idx < 0) return;
+  const allowed = ['confirmed','shipped','received','feedback','feedback_done'];
+  if(!allowed.includes(orders[idx].status)){
+    showToast('上门订单需先「已下单」后才能确认完成，不可从待下单直接完成', 'error');
+    return;
+  }
   updateOrderStatus(orderId, 'completed');
+}
+
+// 普通/留仓订单「无需物流」开关：勾选后标记 noTracking，可跳过"全部填物流单号"硬卡直接推进待反馈
+function toggleNoTracking(orderId, checked){
+  const orders = DB.get('orders');
+  const idx = orders.findIndex(o => o.id === orderId);
+  if(idx < 0) return;
+  orders[idx].noTracking = checked;
+  orders[idx].updatedAt = nowStr();
+  DB.set('orders', orders);
+  schedulePushToCloud();
+  showToast(checked ? '已标记为「无需物流」，可跳过运单号直接推进' : '已取消「无需物流」标记', 'info');
+  renderOrderDetail();
 }
 
 // 进入编辑模式
@@ -6343,18 +6370,20 @@ function saveAdminOrder(orderId){
     if(whEl !== null) it.trackingNo = (whEl.value || '').trim();
     if(it.trackingNo) it.expressCompany = detectExpressCompany(it.trackingNo);
   });
-  // 普通已下单(confirmed)订单：全部商品均填写物流单号则保存后自动转入「待反馈」（留仓订单单独处理）
+  // 普通已下单(confirmed)订单：全部商品均填写物流单号、或标记为「无需物流」则保存后自动转入「待反馈」（留仓订单单独处理）
   const isNormalConfirmed = o.type !== 'warehouse' && o.type !== 'door' && o.status === 'confirmed';
   if(isNormalConfirmed){
     const allTracked = o.items.length > 0 && o.items.every(it => (it.trackingNo||'').trim() !== '');
-    if(allTracked && !['feedback','completed','feedback_done'].includes(o.status)){
+    const noTracking = !!o.noTracking;
+    if((allTracked || noTracking) && !['feedback','completed','feedback_done'].includes(o.status)){
       o.status = 'feedback';
     }
   }
-  // 留仓订单：全部商品均填写物流单号则保存后自动转入「待反馈」
+  // 留仓订单：全部商品均填写物流单号、或标记为「无需物流」则保存后自动转入「待反馈」
   if(o.type === 'warehouse'){
     const allTracked = o.items.length > 0 && o.items.every(it => (it.trackingNo||'').trim() !== '');
-    if(allTracked && !['feedback','completed','feedback_done'].includes(o.status)){
+    const noTracking = !!o.noTracking;
+    if((allTracked || noTracking) && !['feedback','completed','feedback_done'].includes(o.status)){
       o.status = 'feedback';
     }
   }
@@ -6369,7 +6398,7 @@ function saveAdminOrder(orderId){
   }
   DB.set('orders', orders);
   schedulePushToCloud();
-  showToast(o.status === 'feedback' ? '全部商品物流单号已录入，订单已转入「待反馈」' : '修改完成', 'success');
+  showToast(o.status === 'feedback' ? (o.noTracking ? '已标记为无需物流，订单已转入「待反馈」' : '全部商品物流单号已录入，订单已转入「待反馈」') : '修改完成', 'success');
   // 返回对应列表（confirmed/shipped/received 归入「已下单」Tab；completed/feedback_done 归入「已完成」Tab）
   window._orderTab = (o.status === 'pending') ? 'pending' : (o.status === 'feedback' ? 'feedback' : (['completed','feedback_done'].includes(o.status) ? 'completed' : 'confirmed'));
   renderOrders();
