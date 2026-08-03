@@ -5487,7 +5487,9 @@ function salesSubmitFeedback(orderId){
   showConfirm('确认提交反馈？确认后该订单将转入「已完成」列表。', () => {
     orders[idx].status = 'feedback_done';
     orders[idx].feedbackDoneAt = nowStr();
+    orders[idx].updatedAt = nowStr();
     DB.set('orders', orders);
+    schedulePushToCloud();
     window._orderTab = 'completed';
     window._orderStatus = 'completed';
     navigate('orders');
@@ -5515,7 +5517,9 @@ function markOrderFeedbackDone(orderId){
   showConfirm('确认将该订单标记为「已反馈」？确认后订单将转入「已完成」列表。', () => {
     orders[idx].status = 'feedback_done';
     orders[idx].feedbackDoneAt = nowStr();
+    orders[idx].updatedAt = nowStr();
     DB.set('orders', orders);
+    schedulePushToCloud();
     window._orderTab = 'completed';
     renderOrders();
     showToast('已反馈，订单已转入「已完成」列表', 'success');
@@ -5567,7 +5571,9 @@ function recalcEditItem(i){
     orders[idx].total = total;
     // 全款订单：同步「全款金额」(fullPayment) = 最新订单总额
     if(orders[idx].fullPayment){ orders[idx].fullPayment = total; }
+    orders[idx].updatedAt = nowStr();
     DB.set('orders', orders);
+    schedulePushToCloud();
     // 实时刷新收款信息里的「全款金额」（readonly 输入框）
     const fp = document.getElementById('doorFullPay');
     if(fp) fp.value = (orders[idx].fullPayment || orders[idx].total || '');
@@ -6163,7 +6169,9 @@ function updateOrderStatus(orderId, status){
       orders[idx].completedAt = nowStr();
     }
     if(status === 'shipped') orders[idx].shippedAt = nowStr();
+    orders[idx].updatedAt = nowStr();
     DB.set('orders', orders);
+    schedulePushToCloud();
     showToast('订单状态已更新','success');
     window._orderEditMode = false;
     renderOrderDetail();
@@ -6223,7 +6231,9 @@ function saveItemWaste(orderId, itemIndex, value) {
   const idx = orders.findIndex(o => o.id === orderId);
   if (idx < 0) return;
   orders[idx].items[itemIndex].waste = parseInt(value) || 0;
+  orders[idx].updatedAt = nowStr();
   DB.set('orders', orders);
+  schedulePushToCloud();
   renderOrders();
 }
 
@@ -6245,13 +6255,16 @@ function markItemOrdered(orderId, idx){
       o.status = 'confirmed';
       o.updatedAt = new Date().toISOString().slice(0,19).replace('T',' ');
       DB.set('orders', orders);
+      schedulePushToCloud();
       showToast('✅ 订单状态已改为「已下单」','success');
       renderOrderDetail(); // 停留在详情页
     }, function(){
       // 用户取消：撤回最后一个商品的下单标记
       o.items[idx].ordered = false;
       o.items[idx].orderedAt = null;
+      o.updatedAt = new Date().toISOString().slice(0,19).replace('T',' ');
       DB.set('orders', orders);
+      schedulePushToCloud();
       renderOrderDetail(); // 停留在详情页
     });
     return; // 等用户确认或取消后再保存
@@ -6259,6 +6272,7 @@ function markItemOrdered(orderId, idx){
   // 非最后商品：直接保存并刷新详情页（不跳转）
   o.updatedAt = new Date().toISOString().slice(0,19).replace('T',' ');
   DB.set('orders', orders);
+  schedulePushToCloud();
   showToast('已标记「' + (o.items[idx].name || '商品') + '」为已下单', 'success');
   renderOrderDetail();
 }
@@ -6281,6 +6295,7 @@ function markItemUnordered(orderId, idx){
     showToast('已撤销「' + (o.items[idx].name || '商品') + '」的下单标记', 'info');
   }
   DB.set('orders', orders);
+  schedulePushToCloud();
   if(currentRoute === 'order-detail') renderOrderDetail();
   else renderOrders();
 }
@@ -6353,6 +6368,7 @@ function saveAdminOrder(orderId){
     showToast('备货日期不能晚于订单上门日期','error'); return;
   }
   DB.set('orders', orders);
+  schedulePushToCloud();
   showToast(o.status === 'feedback' ? '全部商品物流单号已录入，订单已转入「待反馈」' : '修改完成', 'success');
   // 返回对应列表（confirmed/shipped/received 归入「已下单」Tab；completed/feedback_done 归入「已完成」Tab）
   window._orderTab = (o.status === 'pending') ? 'pending' : (o.status === 'feedback' ? 'feedback' : (['completed','feedback_done'].includes(o.status) ? 'completed' : 'confirmed'));
@@ -6369,7 +6385,9 @@ function saveItemStock(orderId, itemIndex, value) {
     return;
   }
   orders[idx].items[itemIndex].stock = (value === '是' ? '是' : '否');
+  orders[idx].updatedAt = nowStr();
   DB.set('orders', orders);
+  schedulePushToCloud();
   renderOrderDetail();
   showToast('备货状态已更新', 'success');
 }
@@ -6396,6 +6414,7 @@ function saveDoorDetail(orderId){
     showToast('备货日期不能晚于订单上门日期','error'); return;
   }
   DB.set('orders', orders);
+  schedulePushToCloud();
   showToast('修改已保存','success');
   renderOrderDetail();
 }
