@@ -139,7 +139,7 @@ button{font-family:inherit;cursor:pointer;border:none;outline:none}
 input,select,textarea{font-family:inherit;outline:none;-webkit-user-select:text;user-select:text}
 a{text-decoration:none;color:inherit}
 
-/* ============ 登录页（商务 · 深藏青专业风） ============ */
+/* ============ 登录页（商务 · 明亮通透风） ============ */
 .login-page{
   min-height:100vh;
   position:relative;
@@ -148,23 +148,39 @@ a{text-decoration:none;color:inherit}
   justify-content:center;
   padding:40px;
   overflow:hidden;
-  background:linear-gradient(135deg,#0f172a 0%,#1e293b 50%,#0f172a 100%);
+  background:linear-gradient(135deg,#eef2ff 0%,#f5f3ff 45%,#ecfeff 100%);
 }
-/* 极简背景纹理 */
+/* 多彩柔光斑：轻快不死板 */
 .login-page::before{
   content:"";
   position:absolute;
-  width:600px;height:600px;border-radius:50%;
-  background:radial-gradient(circle, rgba(79,70,229,.18), transparent 70%);
-  top:-200px;right:-150px;
+  width:620px;height:620px;border-radius:50%;
+  background:radial-gradient(circle, rgba(99,102,241,.22), transparent 68%);
+  top:-220px;right:-160px;
 }
 .login-page::after{
   content:"";
   position:absolute;
-  width:500px;height:500px;border-radius:50%;
-  background:radial-gradient(circle, rgba(99,102,241,.12), transparent 70%);
-  bottom:-180px;left:-160px;
+  width:520px;height:520px;border-radius:50%;
+  background:radial-gradient(circle, rgba(34,211,238,.18), transparent 68%);
+  bottom:-200px;left:-160px;
 }
+/* 漂浮几何装饰：让画面更有呼吸感 */
+.login-page .deco-ring{
+  position:absolute;
+  border:2px dashed rgba(99,102,241,.18);
+  border-radius:50%;
+  z-index:0;
+}
+.login-page .deco-ring.r1{width:160px;height:160px;top:14%;left:8%;animation:logFloat 9s ease-in-out infinite}
+.login-page .deco-ring.r2{width:90px;height:90px;bottom:18%;right:12%;border-color:rgba(34,211,238,.2);animation:logFloat 7s ease-in-out infinite reverse}
+.login-page .deco-dot{
+  position:absolute;width:12px;height:12px;border-radius:50%;z-index:0;
+  background:linear-gradient(135deg,#818cf8,#22d3ee);
+}
+.login-page .deco-dot.d1{top:22%;right:22%;animation:logFloat 6s ease-in-out infinite}
+.login-page .deco-dot.d2{bottom:24%;left:20%;animation:logFloat 8s ease-in-out infinite reverse}
+@keyframes logFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-14px)}}
 
 /* ===== 登录卡片 ===== */
 .login-card{
@@ -173,55 +189,64 @@ a{text-decoration:none;color:inherit}
   width:100%;
   max-width:900px;
   background:#fff;
-  border-radius:18px;
+  border-radius:22px;
   overflow:hidden;
   display:flex;
-  box-shadow:0 30px 80px rgba(0,0,0,.4);
+  box-shadow:0 24px 60px rgba(79,70,229,.16);
+  border:1px solid rgba(255,255,255,.7);
 }
 
-/* ===== 左侧：品牌展示区 ===== */
+/* ===== 左侧：品牌展示区（明亮渐变） ===== */
 .login-left{
   flex:.95;
   padding:52px 46px;
-  color:#e2e8f0;
+  color:#fff;
   display:flex;
   flex-direction:column;
   justify-content:space-between;
-  background:linear-gradient(145deg,#1e293b 0%,#0f172a 100%);
+  background:linear-gradient(150deg,#6366f1 0%,#7c3aed 48%,#0ea5e9 100%);
   position:relative;
   overflow:hidden;
+}
+.login-left::before{
+  content:"";
+  position:absolute;top:-80px;right:-80px;width:260px;height:260px;border-radius:50%;
+  background:radial-gradient(circle, rgba(255,255,255,.22), transparent 70%);
 }
 .login-left::after{
   content:"";
   position:absolute;
-  bottom:-60px;right:-60px;
-  width:200px;height:200px;
+  bottom:-70px;left:-70px;
+  width:230px;height:230px;
   border-radius:50%;
-  background:radial-gradient(circle, rgba(79,70,229,.25), transparent 70%);
+  background:radial-gradient(circle, rgba(255,255,255,.16), transparent 70%);
 }
 .login-left .logo{display:flex;align-items:center;gap:12px;position:relative;z-index:2}
 .login-left .mark{
-  width:44px;height:44px;border-radius:12px;
-  background:linear-gradient(135deg,#818cf8,#4f46e5);
+  width:46px;height:46px;border-radius:13px;
+  background:rgba(255,255,255,.18);
+  backdrop-filter:blur(6px);
   display:flex;align-items:center;justify-content:center;
-  font-weight:800;color:#fff;font-size:18px;
-  box-shadow:0 4px 16px rgba(79,70,229,.4);
+  font-weight:800;color:#fff;font-size:19px;
+  box-shadow:0 6px 18px rgba(0,0,0,.12);
+  border:1px solid rgba(255,255,255,.35);
 }
-.login-left .name{font-size:18px;font-weight:700;letter-spacing:.5px;color:#f8fafc}
+.login-left .name{font-size:18px;font-weight:700;letter-spacing:.5px;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.1)}
 
 /* 文案区 */
 .login-pitch{position:relative;z-index:2}
 .login-pitch h2{
   font-size:30px;line-height:1.4;font-weight:700;margin-bottom:16px;
-  color:#f8fafc;
+  color:#fff;
+  text-shadow:0 1px 3px rgba(0,0,0,.12);
 }
-.login-pitch p{font-size:14px;line-height:1.9;color:#94a3b8}
+.login-pitch p{font-size:14px;line-height:1.9;color:rgba(255,255,255,.85)}
 .login-stats{display:flex;gap:28px;margin-top:32px}
-.login-stats .st .num{font-size:26px;font-weight:800;color:#818cf8}
-.login-stats .st .lbl{font-size:12px;color:#94a3b8;margin-top:4px}
-.login-foot{font-size:12px;color:#64748b;position:relative;z-index:2}
+.login-stats .st .num{font-size:26px;font-weight:800;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.15)}
+.login-stats .st .lbl{font-size:12px;color:rgba(255,255,255,.8);margin-top:4px}
+.login-foot{font-size:12px;color:rgba(255,255,255,.7);position:relative;z-index:2}
 
-/* ===== 右侧：登录表单 ===== */
+/* ===== 右侧：登录表单（明亮清爽） ===== */
 .login-right{
   flex:1;
   padding:54px 46px;
@@ -230,42 +255,42 @@ a{text-decoration:none;color:inherit}
   justify-content:center;
   background:#fff;
 }
-.login-right h3{font-size:24px;font-weight:700;color:#0f172a;margin-bottom:6px}
+.login-right h3{font-size:24px;font-weight:700;color:#1e293b;margin-bottom:6px}
 .login-right .sub{font-size:14px;color:#64748b;margin-bottom:32px}
 .login-right .form-group{margin-bottom:20px}
-.login-right label{display:block;font-size:13px;font-weight:600;color:#334155;margin-bottom:8px}
+.login-right label{display:block;font-size:13px;font-weight:600;color:#475569;margin-bottom:8px}
 .login-right input{
   width:100%;
   padding:13px 15px;
   border:1.5px solid #e2e8f0;
   border-radius:10px;
   font-size:14px;
-  background:#f8fafc;
+  background:#fff;
   transition:.2s;
   color:#1f2937;
 }
 .login-right input:focus{
   outline:none;
-  border-color:#4f46e5;
+  border-color:#6366f1;
   background:#fff;
-  box-shadow:0 0 0 3px rgba(79,70,229,.12);
+  box-shadow:0 0 0 4px rgba(99,102,241,.14);
 }
 .btn-login{
   width:100%;
   padding:14px;
   border:none;
   border-radius:10px;
-  background:linear-gradient(135deg,#6366f1,#4f46e5);
+  background:linear-gradient(135deg,#0ea5e9 0%,#6366f1 100%);
   color:#fff;
   font-size:15px;
   font-weight:600;
   cursor:pointer;
   transition:.2s;
   margin-top:8px;
-  box-shadow:0 4px 16px rgba(79,70,229,.25);
+  box-shadow:0 6px 18px rgba(99,102,241,.28);
 }
 .btn-login:hover{
-  box-shadow:0 10px 26px rgba(79,70,229,.4);
+  box-shadow:0 12px 28px rgba(99,102,241,.4);
   transform:translateY(-1px);
 }
 .login-extra{
@@ -275,7 +300,8 @@ a{text-decoration:none;color:inherit}
   margin-top:18px;
   font-size:13px;
 }
-.login-extra a{color:#4f46e5;text-decoration:none;font-weight:500}
+.login-extra a{color:#6366f1;text-decoration:none;font-weight:500}
+.login-extra a:hover{text-decoration:underline}
 .login-foot2{
   margin-top:28px;
   text-align:center;
@@ -1151,6 +1177,10 @@ html{scroll-behavior:smooth}
 
 <!-- 登录页 -->
 <div id="loginPage" class="login-page">
+  <div class="deco-ring r1"></div>
+  <div class="deco-ring r2"></div>
+  <div class="deco-dot d1"></div>
+  <div class="deco-dot d2"></div>
   <div class="login-card">
     <div class="login-left">
       <div class="logo">
