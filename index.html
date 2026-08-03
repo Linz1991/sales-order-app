@@ -6276,32 +6276,41 @@ function markItemOrdered(orderId, idx){
   o.items[idx].ordered = true;
   o.items[idx].orderedAt = new Date().toISOString();
   const allOrdered = o.items.length > 0 && o.items.every(it => it.ordered === true);
-  if(allOrdered && o.status === 'pending'){
+  const wasPending = o.status === 'pending';
+  // 关键修复：每次点击立即落库（不只改内存），并刷新为全精度 updatedAt（含毫秒），
+  // 避免防抖推送/15秒定时拉取期间用云端旧值（同秒、毫秒更旧）覆盖本地刚点的「已下单」。
+  o.updatedAt = new Date().toISOString();
+  DB.set('orders', orders);
+  schedulePushToCloud();
+  renderOrderDetail();
+  if(allOrdered && wasPending){
     // 最后一个商品下单：弹确认框，确认后状态改为"已下单"
     showConfirm('全部商品已下单，确认将该订单状态改为「已下单」？', function(){
-      o.status = 'confirmed';
-      o.updatedAt = new Date().toISOString().slice(0,19).replace('T',' ');
-      DB.set('orders', orders);
+      const orders2 = DB.get('orders');
+      const o2 = orders2.find(x => x.id === orderId);
+      if(!o2) return;
+      o2.status = 'confirmed';
+      o2.updatedAt = new Date().toISOString();
+      DB.set('orders', orders2);
       schedulePushToCloud();
       showToast('✅ 订单状态已改为「已下单」','success');
       renderOrderDetail(); // 停留在详情页
     }, function(){
       // 用户取消：撤回最后一个商品的下单标记
-      o.items[idx].ordered = false;
-      o.items[idx].orderedAt = null;
-      o.updatedAt = new Date().toISOString().slice(0,19).replace('T',' ');
-      DB.set('orders', orders);
-      schedulePushToCloud();
-      renderOrderDetail(); // 停留在详情页
+      const orders2 = DB.get('orders');
+      const o2 = orders2.find(x => x.id === orderId);
+      if(o2 && o2.items[idx]){
+        o2.items[idx].ordered = false;
+        o2.items[idx].orderedAt = null;
+        o2.updatedAt = new Date().toISOString();
+        DB.set('orders', orders2);
+        schedulePushToCloud();
+        renderOrderDetail(); // 停留在详情页
+      }
     });
-    return; // 等用户确认或取消后再保存
+  } else {
+    showToast('已标记「' + (o.items[idx].name || '商品') + '」为已下单', 'success');
   }
-  // 非最后商品：直接保存并刷新详情页（不跳转）
-  o.updatedAt = new Date().toISOString().slice(0,19).replace('T',' ');
-  DB.set('orders', orders);
-  schedulePushToCloud();
-  showToast('已标记「' + (o.items[idx].name || '商品') + '」为已下单', 'success');
-  renderOrderDetail();
 }
 
 // 撤销某商品的“已下单”标记；若订单已因全部下单而转为“已下单”，撤销任一商品后回到“待下单”
@@ -6315,6 +6324,7 @@ function markItemUnordered(orderId, idx){
   if(o.items[idx].ordered !== true) return;
   o.items[idx].ordered = false;
   o.items[idx].orderedAt = null;
+  o.updatedAt = new Date().toISOString();
   if(o.status === 'confirmed' && !o.items.every(it => it.ordered === true)){
     o.status = 'pending';
     showToast('已撤销「' + (o.items[idx].name || '商品') + '」的下单，订单回到「待下单」', 'info');
