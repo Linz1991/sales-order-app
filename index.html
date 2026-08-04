@@ -7305,7 +7305,7 @@ function exportOrders(){
   };
 
   // 表头：每个商品一行；新增「地址」「数量」列
-  const header = ['订单号','订单类型','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','物流单号','损耗','售后损耗','利润','创建时间'];
+  const header = ['订单号','订单类型','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','利润','创建时间'];
   const rows = [];
   filtered.forEach(o => {
     const afterSaleLoss = o.afterSaleLoss || 0;
@@ -7327,7 +7327,7 @@ function exportOrders(){
         o.id, typeLabel[o.type||'normal']||o.type, statusLabel[o.status]||o.status,
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), subtotal,
-        Math.round(o.total||0), itemCost, it.trackingNo||'', itemWaste, showAfterSaleLoss, itemProfit,
+        Math.round(o.total||0), itemCost, itemWaste, showAfterSaleLoss, itemProfit,
         fmtExportDateTime(o.createdAt)
       ]);
     });
@@ -7475,7 +7475,7 @@ function exportScheduleOrders(){
     var s = String(cell == null ? '' : cell).replace(/"/g,'""');
     return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
   };
-  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','物流单号','损耗','利润','订单日期','创建时间'];
+  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','利润','订单日期','创建时间'];
   var rows = [];
   filtered.forEach(function(o){
     var address = [o.province,o.city,o.district,o.region,o.address].filter(Boolean).join(' ');
@@ -7490,7 +7490,7 @@ function exportScheduleOrders(){
         o.id, statusLabel[o.status]||o.status,
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), Math.round(price*qty),
-        Math.round(o.total||0), itemCost, it.trackingNo||'', Math.round(it.waste||0), itemProfit,
+        Math.round(o.total||0), itemCost, Math.round(it.waste||0), itemProfit,
         o.orderDate||'', fmtExportDateTime(o.createdAt)
       ]);
     });
@@ -7554,7 +7554,7 @@ function exportWarehouseOrders(){
     var s = String(cell == null ? '' : cell).replace(/"/g,'""');
     return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
   };
-  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','物流单号','损耗','利润','订单日期','创建时间'];
+  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','利润','订单日期','创建时间'];
   var rows = [];
   filtered.forEach(function(o){
     var address = [o.province,o.city,o.district,o.region,o.address].filter(Boolean).join(' ');
@@ -7569,7 +7569,7 @@ function exportWarehouseOrders(){
         o.id, statusLabel[o.status]||o.status,
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), Math.round(price*qty),
-        Math.round(o.total||0), itemCost, it.trackingNo||'', Math.round(it.waste||0), itemProfit,
+        Math.round(o.total||0), itemCost, Math.round(it.waste||0), itemProfit,
         o.orderDate||'', fmtExportDateTime(o.createdAt)
       ]);
     });
