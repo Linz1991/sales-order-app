@@ -4909,7 +4909,7 @@ function renderOrderDetail(){
                   <td>${it.qty}</td>
                   <td>${it.expressCompany || '<span style="color:var(--text-muted)">-</span>'}</td>
                 <td>${canEditLogistics ? `
-                  <input type="text" class="form-control" value="${it.trackingNo||''}" 
+                  <input type="text" class="form-control" id="${order.type==='warehouse'?'whTrackItem_':'trackItem_'}${i}" value="${it.trackingNo||''}" 
                     placeholder="输入运单号" style="padding:6px 10px;min-width:160px"
                     onchange="saveTrackingNo('${order.id}', ${i}, this.value)">
                 ` : (it.trackingNo ? `<span class="mono" style="font-size:13px">${it.trackingNo}</span>` : '<span style="color:var(--text-muted)">-</span>')}
@@ -5873,6 +5873,12 @@ function saveEditOrder(orderId){
     total += it.subtotal;
     const stockEl = document.getElementById('editItemStock_'+i);
     if(stockEl) it.stock = stockEl.value;
+    // 同时回读物流单号（管理员可在编辑态直接改运单号；分支2输入框现已带 id，避免保存时丢失）
+    const tEl = document.getElementById('trackItem_'+i);
+    if(tEl !== null) it.trackingNo = (tEl.value || '').trim();
+    const whEl = document.getElementById('whTrackItem_'+i);
+    if(whEl !== null) it.trackingNo = (whEl.value || '').trim();
+    if(it.trackingNo) it.expressCompany = detectExpressCompany(it.trackingNo);
   });
   order.total = total;
 
