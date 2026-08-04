@@ -2457,6 +2457,7 @@ async function handleLogin(){
   const users = DB.get('users');
   const target = users.find(u => u.username === user);
   if(!target){ showToast('用户名或密码错误','error'); return; }
+  if(target.disabled){ showToast('该账号已被禁用，无法登录','error'); return; }
   let ok = false;
   try{
     const h = await hashPassword(pass);
@@ -3626,7 +3627,7 @@ function renderOrderNew(defaultType){
   // 默认类型：从「留仓订单」入口进=留仓，从「上门订单」入口进=上门，否则普通
   newOrderType = (defaultType === 'warehouse' || defaultType === 'door') ? defaultType : 'normal';
 
-  const salesUsers = DB.get('users').filter(u => u.role === 'sales');
+  const salesUsers = DB.get('users').filter(u => u.role === 'sales' && !u.disabled);
 
   let html = `
     <div class="back-link" onclick="backToOrders()">← 返回订单列表</div>
@@ -7115,7 +7116,7 @@ function filterCustomers(value){
 function openCustomerModal(customerId){
   const isAdmin = currentUser.role === 'admin';
   const users = DB.get('users');
-  const salesUsers = users.filter(u => u.role === 'sales');
+  const salesUsers = users.filter(u => u.role === 'sales' && !u.disabled);
   const customer = customerId ? DB.get('customers').find(c => c.id === customerId) : null;
   const modalHtml = `
     <div class="modal-mask" onclick="if(event.target===this)closeModal()">
@@ -8166,7 +8167,7 @@ function calcCommission(order, salesRate){
 function renderCommissions(){
   var isAdmin = currentUser.role === 'admin';
   var users = DB.get('users');
-  var salesUsers = users.filter(function(u){ return u.role === 'sales'; });
+  var salesUsers = users.filter(function(u){ return u.role === 'sales' && !u.disabled; });
   var orders = DB.get('orders');
 
   if(!window._comStart) window._comStart = todayStr().slice(0,7)+'-01';
@@ -8387,7 +8388,7 @@ function exportCommissionCSV(){
 function openCommissionModal(){
   const orders = DB.get('orders');
   const users = DB.get('users');
-  const salesUsers = users.filter(u => u.role === 'sales');
+  const salesUsers = users.filter(u => u.role === 'sales' && !u.disabled);
   const existingCommissions = DB.get('commissions');
   const completedOrders = orders.filter(o => o.status === 'completed' &&
     !existingCommissions.find(c => c.orderId === o.id));
@@ -9525,7 +9526,7 @@ function getProfitDate(order){
 }
 /* ============ 人员管理 ============ */
 function renderUsers(){
-  const users = DB.get('users');
+  const users = DB.get('users').filter(u => !u.disabled);
   let html = `<div class="card"><div class="card-title"><span class="title-text">👥 人员管理</span><button class="btn btn-primary btn-sm" onclick="toggleUserForm()">+ 新增人员</button></div>`;
   html += `<div id="userFormArea" style="display:none;margin-bottom:16px">`;
   html += `<div class="detail-section card"><h4 style="margin-bottom:12px">新增人员</h4>`;
@@ -9680,13 +9681,15 @@ function saveUserWechat(id){
 
 function deleteUser(id){
   if(id === currentUser.id){ showToast('不能删除自己的账号','error'); return; }
-  showConfirm('确定删除此人员吗？', () => {
+  showConfirm('确定删除此人员吗？\n（该账号将被禁用无法再登录，但其历史订单数据会完整保留）', () => {
     const users = DB.get('users');
     const idx = users.findIndex(u => u.id === id);
     if(idx >= 0){
-      users.splice(idx, 1);
+      // 标记禁用而非物理删除：保证订单数据中 salesId 仍可关联、云端同步不会把人拉回来
+      users[idx].disabled = true;
+      users[idx].disabledAt = nowStr();
       DB.set('users', users);
-      showToast('人员已删除','success');
+      showToast('账号已禁用，该人员无法再登录','success');
       renderUsers();
     }
   });
@@ -9712,7 +9715,7 @@ function renderDashboard2(){
     return;
   }
   const today = todayStr();
-  const users = DB.get('users').filter(u => u.role === 'sales');
+  const users = DB.get('users').filter(u => u.role === 'sales' && !u.disabled);
   const orders = DB.get('orders');
   const products = DB.get('products');
 
@@ -9786,7 +9789,7 @@ function renderDashboard2(){
 function renderProfitReport(){
   var isAdmin = currentUser.role === 'admin';
   var users = DB.get('users');
-  var salesUsers = users.filter(function(u){ return u.role === 'sales'; });
+  var salesUsers = users.filter(function(u){ return u.role === 'sales' && !u.disabled; });
   var orders = DB.get('orders');
   var products = DB.get('products');
 
