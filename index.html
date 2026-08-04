@@ -520,7 +520,6 @@ tbody tr:hover{background:#f3f4f6}
 .tag-feedback{background:#fef3c7;color:#92400e}
 .tag-feedback-done{background:#f3e8ff;color:#6b21a8}
 .tag-completed{background:#d1fae5;color:#065f46}
-.tag-canceled{background:#fee2e2;color:#991b1b}
 .tag-paid{background:#d1fae5;color:#065f46}
 .tag-unpaid{background:#fee2e2;color:#991b1b}
 .tag-pending-pay{background:#fef3c7;color:#92400e}
@@ -1402,7 +1401,7 @@ const DB = {
     (cloud || []).forEach(r => {
       if(!r || r.id == null || (exSet && exSet.has(r.id))) return;
       if(!map[r.id]) map[r.id] = r;                 // 云端独有 → 保留
-      else if(ts(r) >= ts(map[r.id])) map[r.id] = r; // 云端更新（或相等）→ 覆盖本地旧版
+      else if(ts(r) > ts(map[r.id])) map[r.id] = r; // 仅当云端严格更新才覆盖本地（相等时保留本地，避免刚保存的修改被旧云端数据冲掉）
     });
     return Object.keys(map).map(id => map[id]);
   },
@@ -2580,6 +2579,12 @@ function startAutoSync(){
         const t = routeTable[currentRoute];
         if(before[t] !== after[t]) routeRenderers[currentRoute]();
       }
+      // 详情页实时刷新：正在查看某订单详情（非编辑模式）且订单表有变化时，重渲染详情，
+      // 让销售在详情页也能看到管理员刚填的物流单号/状态（编辑模式不刷新，避免丢失未保存输入）
+      if(window._currentOrderId && !window._orderEditMode && document.getElementById('orderDetailPanel') && before['orders'] !== after['orders']){
+        const _od = DB.get('orders').find(o => o.id === window._currentOrderId);
+        if(_od) renderOrderDetail();
+      }
     }catch(e){
       // 同步失败不频繁打扰：每 60 秒最多提示一次
       window._autoSyncErrAt = window._autoSyncErrAt || 0;
@@ -2598,7 +2603,17 @@ function snapshotSyncTables(){
   const out = {};
   keys.forEach(k => {
     const rows = DB.get(k) || [];
-    out[k] = rows.map(r => r.id || '').join('|') + '#' + rows.length;
+    // 内容感知签名：除 id 外，纳入会变化的字段（订单的状态/物流单号等），
+    // 否则"同一批 id、数量不变但内容被改（如填物流单号、状态转待反馈）"时，
+    // 自动同步会因快照相等而不刷新列表，导致销售端看不到最新数据。
+    const sig = rows.map(r => {
+      if(k === 'orders'){
+        const tk = (r.items || []).map(it => it.trackingNo || '').join(',');
+        return (r.id || '') + '|' + (r.status || '') + '|' + tk;
+      }
+      return (r.id || '') + '|' + JSON.stringify(r);
+    }).join('||');
+    out[k] = sig;
   });
   return out;
 }
@@ -2825,7 +2840,7 @@ function checkOrderAutoFlow(){
     // 仅处理留仓/上门订单
     if(o.type !== 'warehouse' && o.type !== 'door') return;
     // 上门订单：订单上门日期到达次日 → 自动置为已完成
-    if(o.type === 'door' && o.completionDate && !['completed','canceled'].includes(o.status)){
+    if(o.type === 'door' && o.completionDate && !['completed'].includes(o.status)){
       if(today > o.completionDate){
         o.status = 'completed';
         changed = true;
@@ -2835,7 +2850,7 @@ function checkOrderAutoFlow(){
     // 必须有订单日期字段
     if(!o.orderDate) return;
     // 跳过已处理/终态状态（含运输中/已签收/待反馈/已反馈，避免把已推进的订单按日期误回退为待下单）
-    if(['completed','canceled','confirmed','shipped','received','feedback','feedback_done'].includes(o.status)) return;
+    if(['completed','confirmed','shipped','feedback','feedback_done'].includes(o.status)) return;
     // 今日 >= 订单日期，且状态非终态 → 改为待下单
     if(today >= o.orderDate && o.status !== 'pending'){
       o.status = 'pending';
@@ -2948,7 +2963,7 @@ function renderDashboard(){
     // 售后工单
     const myAftersalesCount = aftersales.filter(a => a.salesId === currentUser.id).length;
     // 待收尾款：本人（管理员为全部）名下有未结清尾款的订单数
-    const balanceOrders = myOrders.filter(o => o.status !== 'canceled' && getOrderRemaining(o) > 0);
+    const balanceOrders = myOrders.filter(o => getOrderRemaining(o) > 0);
     const myBalanceCount = balanceOrders.length;
 
     html += `
@@ -3029,13 +3044,9 @@ function dashboardJump(type){
     window._orderType = '';
     window._orderDateFilter = '';
   }else if(type==='shipped'){
-    if(currentUser.role === 'admin'){
-      // 管理员：运输中订单归入「已下单」Tab（与销售端分组一致），避免点击后找不到
-      window._orderTab = 'confirmed';
-      window._orderStatus = '';
-    }else{
-      window._orderStatus = 'shipped';
-    }
+    // 运输中已并入「已下单」：统一归入已下单 Tab，不再出现独立「运输中」视图（销售端/管理员端一致）
+    window._orderTab = 'confirmed';
+    window._orderStatus = '';
     window._orderType = '';
     window._orderDateFilter = '';
   }
@@ -3055,16 +3066,16 @@ function switchOrderTab(tab){
 // 销售端状态分组：内部状态 -> 列表显示的4个状态
 function salesStatusLabel(status){
   if(status === 'pending') return '<span class="tag tag-pending">待下单</span>';
-  if(status === 'confirmed' || status === 'shipped' || status === 'received') return '<span class="tag tag-confirmed">已下单</span>';
+  if(status === 'confirmed' || status === 'shipped') return '<span class="tag tag-confirmed">已下单</span>';
   if(status === 'feedback') return '<span class="tag tag-feedback">待反馈</span>';
-  return '<span class="tag tag-completed">已完成</span>'; // completed / feedback_done / canceled
+  return '<span class="tag tag-completed">已完成</span>'; // completed / feedback_done
 }
 // 销售端状态筛选分组（内部状态数组）
 function salesStatusGroup(key){
   if(key === 'pending') return ['pending'];
-  if(key === 'confirmed') return ['confirmed','shipped','received'];
+  if(key === 'confirmed') return ['confirmed','shipped'];
   if(key === 'feedback') return ['feedback'];
-  if(key === 'completed') return ['completed','feedback_done','canceled'];
+  if(key === 'completed') return ['completed','feedback_done'];
   return [];
 }
 // 创建时间格式化为 2026-7-30（去掉前导零）
@@ -3140,7 +3151,7 @@ async function renderOrders(){
     const tabCount = {
       all: statusOrders.length,
       pending: statusOrders.filter(o=>o.status==='pending').length,
-      confirmed: statusOrders.filter(o=>['confirmed','shipped','received'].includes(o.status)).length,
+      confirmed: statusOrders.filter(o=>['confirmed','shipped'].includes(o.status)).length,
       feedback: statusOrders.filter(o=>o.status==='feedback').length,
       completed: statusOrders.filter(o=>['completed','feedback_done'].includes(o.status)).length
     };
@@ -3150,8 +3161,8 @@ async function renderOrders(){
     if(activeTab === 'pending'){
       filtered = filtered.filter(o => o.status === 'pending');
     } else if(activeTab === 'confirmed'){
-      // 已下单：含 运输中(shipped)/已签收(received)，与销售端分组一致，避免维护物流单号后订单“丢失”
-      filtered = filtered.filter(o => ['confirmed','shipped','received'].includes(o.status));
+      // 已下单：含 运输中(shipped)，与销售端分组一致，避免维护物流单号后订单“丢失”
+      filtered = filtered.filter(o => ['confirmed','shipped'].includes(o.status));
     } else if(activeTab === 'feedback'){
       filtered = filtered.filter(o => o.status === 'feedback');
     } else if(activeTab === 'completed'){
@@ -3658,7 +3669,7 @@ function renderOrderNew(defaultType){
       ${(newOrderType==='warehouse'||newOrderType==='door') ? `
         <div class="form-group">
           <label class="form-label">${newOrderType==='door'?'备货日期':'发货日期（到期自动流转为待下单）'}</label>
-          <input type="date" class="form-control" id="newOrderDate" style="max-width:200px" onchange="var c=document.getElementById('newCompletionDate');if(c)c.min=this.value;">
+          <input type="date" class="form-control" id="newOrderDate" style="max-width:200px" value="${todayStr()}" onchange="var c=document.getElementById('newCompletionDate');if(c)c.min=this.value;">
           ${newOrderType==='warehouse' ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">设置后，到达该日期时订单将自动变为待下单状态</div>` : ''}
         </div>
       ` : ''}
@@ -4659,6 +4670,7 @@ function renderOrderDetail(){
   const custInfoText = formatOrderAddress(order);
 
   let html = `
+    <div id="orderDetailPanel" hidden></div>
     <div class="back-link" onclick="backToOrders()">← 返回订单列表</div>
     <div class="detail-section card">
       ${isAdminOrderView ? '' : '<h4>📋 订单信息</h4>'}
@@ -5036,7 +5048,7 @@ function renderOrderDetail(){
         }
       }
       // 上门订单 → 已完成（仅提交人/管理员可操作；必须已下单/运输中/已签收/待反馈/已反馈，禁止 pending 直接完成）
-      if(isDoor && (isAdmin || isOwner) && ['confirmed','shipped','received','feedback','feedback_done'].includes(order.status)){
+      if(isDoor && (isAdmin || isOwner) && ['confirmed','shipped','feedback','feedback_done'].includes(order.status)){
         html += `<button class="btn btn-success" onclick="setOrderCompleted('${order.id}')">确认已完成</button>`;
       }
       // 留仓/待下单订单：销售编辑按钮
@@ -5055,7 +5067,7 @@ function renderOrderDetail(){
       html += `
         <span style="font-size:13px;color:var(--text-muted);align-self:center">修改状态：</span>
         <select class="form-control" id="detailStatus" style="width:auto;padding:6px 10px" onchange="updateOrderStatus('${order.id}',this.value)">
-          ${statusOptions.map(s=>`<option value="${s[0]}" ${order.status===s[0]?'selected':''}>${s[1]}</option>`).join('')}
+          ${statusOptions.map(s=>`<option value="${s[0]}" ${(order.status===s[0] || (order.status==='shipped'&&s[0]==='confirmed'))?'selected':''}>${s[1]}</option>`).join('')}
         </select>
         ${!isFullyPaid ? `<button class="btn btn-success btn-sm" onclick="openAddPayment('${order.id}')">+ 记录收款</button>` : ''}
       `;
@@ -5550,7 +5562,7 @@ function queryLogisticsFromEdit(orderId, itemIndex, btn){
 // 编辑订单入口
 function editOrder(orderId){
   var _o = DB.get('orders').find(function(o){ return o.id === orderId; });
-  if(_o && currentUser.role !== 'admin' && (_o.status === 'completed' || _o.status === 'canceled')){
+  if(_o && currentUser.role !== 'admin' && (_o.status === 'completed')){
     showToast('该订单已完结，无法修改','error');
     return;
   }
@@ -5613,7 +5625,7 @@ function setOrderCompleted(orderId){
   const orders = DB.get('orders');
   const idx = orders.findIndex(o => o.id === orderId);
   if(idx < 0) return;
-  const allowed = ['confirmed','shipped','received','feedback','feedback_done'];
+  const allowed = ['confirmed','shipped','feedback','feedback_done'];
   if(!allowed.includes(orders[idx].status)){
     showToast('上门订单需先「已下单」后才能确认完成，不可从待下单直接完成', 'error');
     return;
@@ -5637,7 +5649,7 @@ function toggleNoTracking(orderId, checked){
 // 进入编辑模式
 function enterEditMode(){
   var _o = DB.get('orders').find(function(o){ return o.id === window._currentOrderId; });
-  if(_o && currentUser.role !== 'admin' && (_o.status === 'completed' || _o.status === 'canceled')){
+  if(_o && currentUser.role !== 'admin' && (_o.status === 'completed')){
     showToast('该订单已完结，无法修改','error');
     return;
   }
@@ -5844,7 +5856,7 @@ function saveEditOrder(orderId){
   const orders = DB.get('orders');
   const idx = orders.findIndex(o => o.id === orderId);
   if(idx < 0) return;
-  if(orders[idx] && currentUser.role !== 'admin' && (orders[idx].status === 'completed' || orders[idx].status === 'canceled')){
+  if(orders[idx] && currentUser.role !== 'admin' && (orders[idx].status === 'completed')){
     showToast('该订单已完结，无法修改','error');
     return;
   }
@@ -5939,7 +5951,7 @@ function saveOrderDates(orderId){
   const isOwner = order.salesId === currentUser.id;
   const canEdit = isAdmin || isOwner || order.type === 'door';
   if(!canEdit){ showToast('无权修改此订单日期','error'); return; }
-  if(order.status === 'canceled'){ showToast('已取消订单不可修改','error'); return; }
+  
   const orderDateEl = document.getElementById('detailOrderDate');
   const completionDateEl = document.getElementById('detailCompletionDate');
   if(orderDateEl) order.orderDate = orderDateEl.value;
@@ -6448,6 +6460,7 @@ function saveAdminOrder(orderId){
   const idx = orders.findIndex(o => o.id === orderId);
   if(idx < 0) return;
   const o = orders[idx];
+  o.updatedAt = nowStr(); // 关键：刷新时间戳，使云端合并以"本地新版"为准，避免刚填的物流单号/状态被旧云端数据覆盖
   o.items.forEach((it, i) => {
     const wEl = document.getElementById('wasteItem_' + i);
     if(wEl !== null) it.waste = parseInt(wEl.value) || 0;
@@ -6457,8 +6470,9 @@ function saveAdminOrder(orderId){
     if(whEl !== null) it.trackingNo = (whEl.value || '').trim();
     if(it.trackingNo) it.expressCompany = detectExpressCompany(it.trackingNo);
   });
-  // 普通已下单(confirmed)订单：全部商品均填写物流单号、或标记为「无需物流」则保存后自动转入「待反馈」（留仓订单单独处理）
-  const isNormalConfirmed = o.type !== 'warehouse' && o.type !== 'door' && o.status === 'confirmed';
+  // 普通订单（已下单/运输中）：全部商品均填写物流单号、或标记为「无需物流」则保存后自动转入「待反馈」
+  // （含 shipped：修复"运输中订单在详情页点保存修改后卡死、无法推进到待反馈"的死结；留仓订单单独处理）
+  const isNormalConfirmed = o.type !== 'warehouse' && o.type !== 'door' && ['confirmed','shipped'].includes(o.status);
   if(isNormalConfirmed){
     const allTracked = o.items.length > 0 && o.items.every(it => (it.trackingNo||'').trim() !== '');
     const noTracking = !!o.noTracking;
@@ -6486,7 +6500,7 @@ function saveAdminOrder(orderId){
   DB.set('orders', orders);
   schedulePushToCloud();
   showToast(o.status === 'feedback' ? (o.noTracking ? '已标记为无需物流，订单已转入「待反馈」' : '全部商品物流单号已录入，订单已转入「待反馈」') : '修改完成', 'success');
-  // 返回对应列表（confirmed/shipped/received 归入「已下单」Tab；completed/feedback_done 归入「已完成」Tab）
+  // 返回对应列表（confirmed/shipped 归入「已下单」Tab；completed/feedback_done 归入「已完成」Tab）
   window._orderTab = (o.status === 'pending') ? 'pending' : (o.status === 'feedback' ? 'feedback' : (['completed','feedback_done'].includes(o.status) ? 'completed' : 'confirmed'));
   renderOrders();
 }
@@ -6514,6 +6528,7 @@ function saveDoorDetail(orderId){
   const idx = orders.findIndex(o => o.id === orderId);
   if(idx < 0) return;
   const o = orders[idx];
+  o.updatedAt = nowStr(); // 关键：刷新时间戳，确保上门订单的备货/损耗/日期改动能同步到云端并被其它端识别为最新
   o.items.forEach((it, i) => {
     const sEl = document.getElementById('doorStockItem_' + i);
     if(sEl !== null) it.stock = (sEl.value === '是' ? '是' : '否');
@@ -6615,6 +6630,7 @@ function saveTrackingNo(orderId, itemIndex, value) {
   item.trackingNo = value.trim();
   item.expressCompany = value.trim() ? detectExpressCompany(value.trim()) : '';
   const order = orders[idx];
+  order.updatedAt = nowStr(); // 关键：刷新时间戳，使云端合并以"本地新版"为准
   const allTracking = order.items.every(it => it.trackingNo);
   const isAdmin = currentUser.role === 'admin';
   // 管理员填完最后一个物流单号：待下单/运输中状态弹确认框确认后转入待反馈；已下单(confirmed)不弹框，走下方自动流转直接转待反馈
@@ -6643,7 +6659,7 @@ function saveTrackingNo(orderId, itemIndex, value) {
     }else if(hasTracking){
       order.status = 'shipped';
       order.shippedAt = nowStr();
-      showToast('已填写物流单号，订单状态已更新为"运输中"', 'success');
+      showToast('已保存物流单号', 'success');
     }
   }else if(order.status === 'shipped'){
     if(allTracking){
@@ -6662,6 +6678,7 @@ function saveTrackingNoFromList(orderId, itemIndex, value) {
   const idx = orders.findIndex(o => o.id === orderId);
   if (idx < 0) return;
   const order = orders[idx];
+  order.updatedAt = nowStr(); // 关键：刷新时间戳，使云端合并以"本地新版"为准
   order.items[itemIndex].trackingNo = value.trim();
   order.items[itemIndex].expressCompany = value.trim() ? detectExpressCompany(value.trim()) : '';
   const hasTracking = order.items.some(it => it.trackingNo);
@@ -6693,7 +6710,7 @@ function saveTrackingNoFromList(orderId, itemIndex, value) {
     }else{
       order.status = 'shipped';
       order.shippedAt = nowStr();
-      showToast('订单 ' + orderId + ' 已更新为"运输中"', 'success');
+      showToast('订单 ' + orderId + ' 物流单号已保存', 'success');
     }
   }else if(order.status === 'shipped' && allTracking){
     order.status = 'feedback';
@@ -7287,7 +7304,7 @@ function exportOrders(){
   }
 
   const typeLabel = { normal:'普通', warehouse:'留仓', door:'上门' };
-  const statusLabel = { pending:'待下单', confirmed:'已下单', feedback:'待反馈', feedback_done:'已完成', completed:'已完成', received:'已签收', canceled:'已取消', shipped:'运输中' };
+  const statusLabel = { pending:'待下单', confirmed:'已下单', feedback:'待反馈', feedback_done:'已完成', completed:'已完成',  shipped:'已下单' };
   const escapeCell = (cell) => {
     const s = String(cell == null ? '' : cell).replace(/"/g,'""');
     return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
@@ -7433,8 +7450,8 @@ function exportScheduleOrders(){
 
   var doorStatusMap = {
     'pending': ['pending'],
-    'confirmed': ['confirmed','shipped','received'],
-    'completed': ['completed','canceled']
+    'confirmed': ['confirmed','shipped'],
+    'completed': ['completed']
   };
 
   var filtered = allDoorOrders;
@@ -7459,7 +7476,7 @@ function exportScheduleOrders(){
   if(!filtered.length){ showToast('当前筛选无上门订单可导出','error'); return; }
 
   var products = DB.get('products');
-  var statusLabel = { pending:'待下单', confirmed:'已下单', completed:'已完成', received:'已签收', canceled:'已取消', shipped:'运输中' };
+  var statusLabel = { pending:'待下单', confirmed:'已下单', completed:'已完成',  shipped:'已下单' };
   var escapeCell = function(cell){
     var s = String(cell == null ? '' : cell).replace(/"/g,'""');
     return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
@@ -7510,9 +7527,9 @@ function exportWarehouseOrders(){
 
   var statusMap = {
     'pending': ['pending'],
-    'confirmed': ['confirmed','shipped','received'],
+    'confirmed': ['confirmed','shipped'],
     'feedback': ['feedback','feedback_done'],
-    'completed': ['completed','canceled']
+    'completed': ['completed']
   };
 
   var filtered = orders;
@@ -7538,7 +7555,7 @@ function exportWarehouseOrders(){
   if(!filtered.length){ showToast('当前筛选无留仓订单可导出','error'); return; }
 
   var products = DB.get('products');
-  var statusLabel = { pending:'待下单', confirmed:'已下单', feedback:'待反馈', feedback_done:'已完成', completed:'已完成', received:'已签收', canceled:'已取消', shipped:'运输中' };
+  var statusLabel = { pending:'待下单', confirmed:'已下单', feedback:'待反馈', feedback_done:'已完成', completed:'已完成',  shipped:'已下单' };
   var escapeCell = function(cell){
     var s = String(cell == null ? '' : cell).replace(/"/g,'""');
     return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
@@ -7967,7 +7984,7 @@ function getOrderRemaining(order){
 // 计算所有销售待收尾款总额（有定金且未结清的订单）
 function calcAllPendingFinalPayments(orders){
   return (orders || []).reduce(function(s, o){
-    if(o.status === 'canceled') return s;
+    
     const deposit = parseInt(o.deposit) || 0;
     if(deposit <= 0) return s; // 无尾款
     return s + getOrderRemaining(o);
@@ -7978,7 +7995,7 @@ function calcAllPendingFinalPayments(orders){
 function showPendingFinalPayments(){
   var orders = DB.get('orders') || [];
   var balanceOrders = orders.filter(function(o){
-    if(o.status === 'canceled') return false;
+    
     var deposit = parseInt(o.deposit) || 0;
     if(deposit <= 0) return false;
     return getOrderRemaining(o) > 0;
@@ -9175,8 +9192,8 @@ function renderSchedule(){
   // 上门订单状态组：待下单 / 已下单 / 已完成；其余内部状态归入对应显示组
   var doorStatusMap = {
     'pending': ['pending'],
-    'confirmed': ['confirmed','shipped','received'],
-    'completed': ['completed','canceled']
+    'confirmed': ['confirmed','shipped'],
+    'completed': ['completed']
   };
   if(statusKey && doorStatusMap[statusKey]){
     orders = orders.filter(function(o){ return doorStatusMap[statusKey].indexOf(o.status) >= 0; });
@@ -9332,9 +9349,9 @@ function renderWarehouse(){
   // 状态映射：待下单/已下单/待反馈/已完成；其余内部状态归入对应显示组
   var statusMap = {
     'pending': ['pending'],
-    'confirmed': ['confirmed','shipped','received'],
+    'confirmed': ['confirmed','shipped'],
     'feedback': ['feedback','feedback_done'],
-    'completed': ['completed','canceled']
+    'completed': ['completed']
   };
   var filtered = orders;
   if(statusKey && statusMap[statusKey]){
@@ -9400,7 +9417,7 @@ function renderCollectBalance(){
   var orders = DB.get('orders');
   if(!isAdmin) orders = orders.filter(function(o){ return o.salesId === currentUser.id; });
   var list = orders.filter(function(o){
-    if(o.status === 'canceled') return false;
+    
     return getOrderRemaining(o) > 0;
   });
   if(keyword){
@@ -10591,12 +10608,12 @@ function submitChangePassword(){
 /* ============ 通用：状态选项（按订单类型） ============ */
 // 普通/留仓订单：终态为「已反馈」；上门订单：终态为「已完成」
 function getStatusOptionsByType(type){
-  const common = [['pending','待下单'],['confirmed','已下单'],['canceled','已取消']];
+  const common = [['pending','待下单'],['confirmed','已下单']];
   if(type === 'door'){
     return [...common, ['completed','已完成']];
   }
   // 普通/留仓：有物流相关状态，终态为已反馈
-  return [...common, ['shipped','运输中'],['received','已签收'],['feedback','待反馈'],['feedback_done','已反馈']];
+  return [...common, ['feedback','待反馈'],['feedback_done','已反馈']];
 }
 
 /* ============ 通用：状态标签 ============ */
@@ -10604,12 +10621,11 @@ function statusTag(status){
   const map = {
     pending: '<span class="tag tag-pending">待下单</span>',
     confirmed: '<span class="tag tag-confirmed">已下单</span>',
-    shipped: '<span class="tag" style="background:#dbeafe;color:#1d4ed8">运输中</span>',
-    received: '<span class="tag tag-completed">已签收</span>',
+    shipped: '<span class="tag tag-confirmed">已下单</span>',
+    
     feedback: '<span class="tag tag-feedback">待反馈</span>',
     feedback_done: '<span class="tag tag-feedback-done">已反馈</span>',
-    completed: '<span class="tag tag-completed">已完成</span>',
-    canceled: '<span class="tag tag-canceled">已取消</span>'
+    completed: '<span class="tag tag-completed">已完成</span>'
   };
   return map[status] || status;
 }
