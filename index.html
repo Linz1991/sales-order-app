@@ -39,8 +39,8 @@ window._sbpbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const KUAIDI100_PROXY = SUPABASE_URL.replace(/\.supabase\.co$/, '.functions.supabase.co') + '/query-kuaidi100';
 // ── 快递100 直连配置（当 Edge Function 未部署时，自动降级为 JSONP 直连）──
 //   注意：key 暴露在前端仅适用于内部系统；生产环境应部署 Edge Function 并清空下方两项。
-const KUAIDI100_KEY    = 'QmKYUltj4320';
-const KUAIDI100_CUSTOMER = 'E488D58282200ECD1A63BB59D57ACADE';
+const KUAIDI100_KEY    = 'E488D58282200ECD1A63BB59D57ACADE';
+const KUAIDI100_CUSTOMER = 'QmKYUltj4320';
 // 快递公司中文名 → 快递100 公司编码（com）
 const EXPRESS_CODE_MAP = {
   '顺丰速运':'shunfeng','顺丰':'shunfeng','京东物流':'jd','京东':'jd','圆通速递':'yuantong','圆通':'yuantong',
@@ -71,7 +71,9 @@ function md5hex(s){/* 纯JS MD5（RFC 1321）*/
 function queryLogisticsJSONP(trackingNo, com, container, expressCompany){
  if(!container) container=document.getElementById('logistics-timeline-container');
  if(!KUAIDI100_KEY||!KUAIDI100_CUSTOMER){ showLogiError(container,trackingNo,'未配置快递100密钥'); return; }
- var sign=md5hex(KUAIDI100_CUSTOMER+trackingNo+KUAIDI100_KEY).toUpperCase();
+ // 快递100 官方 poll 签名：sign = md5(param + customer)，param 为 {com,num,resultv2} 的 JSON 字符串
+ var param = JSON.stringify({com:com, num:trackingNo, resultv2:1});
+ var sign=md5hex(param+KUAIDI100_CUSTOMER).toUpperCase();
  var cbName='_kdjsonp_'+Date.now()+'_'+Math.floor(Math.random()*9999);
  window[cbName]=function(resp){
   delete window[cbName];
@@ -86,7 +88,7 @@ function queryLogisticsJSONP(trackingNo, com, container, expressCompany){
  };
  var scr=document.createElement('script');
  scr.id=cbName+'_scr';
- scr.src='https://poll.kuaidi100.com/poll/query.do?com='+encodeURIComponent(com)+'&num='+encodeURIComponent(trackingNo)+'&resultv2=1'+'&key='+encodeURIComponent(KUAIDI100_KEY)+'&customer='+encodeURIComponent(KUAIDI100_CUSTOMER)+'&sign='+sign+'&callback='+cbName;
+ scr.src='https://poll.kuaidi100.com/poll/query.do?param='+encodeURIComponent(param)+'&customer='+encodeURIComponent(KUAIDI100_CUSTOMER)+'&sign='+sign+'&callback='+cbName;
  scr.onerror=function(){
   delete window[cbName];
   renderLogisticsTimeline(trackingNo, generateSimulatedLogistics(trackingNo, expressCompany), container, expressCompany, true);
