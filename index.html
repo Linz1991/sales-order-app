@@ -3146,14 +3146,28 @@ async function renderOrders(){
     let activeTab = window._orderTab || 'pending';
     if(!tabs.some(t => t.key === activeTab)) activeTab = 'pending';
 
-    // 当前类型下的订单与计数（固定排除上门订单，上门在「上门订单」页面管理）
+    // 当前类型下的订单（固定排除上门订单，上门在「上门订单」页面管理）
     const statusOrders = orders.filter(o => o.type !== 'door');
+    // tabCount 延迟到 filtered 构建后计算，确保计数与列表筛选条件完全一致（含关键词+日期）
+    let countBase = statusOrders;
+    if(keyword){
+      const kw = keyword.toLowerCase();
+      countBase = countBase.filter(o =>
+        o.id.toLowerCase().includes(kw) ||
+        (o.customerName||'').includes(keyword) ||
+        (o.contact||'').includes(keyword) ||
+        (o.phone||'').includes(keyword)
+      );
+    }
+    { const _s = window._expStart, _e = window._expEnd;
+      if(_s||_e) countBase = countBase.filter(o => { const d = (o.createdAt||'').slice(0,10); return d && (!_s || d >= _s) && (!_e || d <= _e); });
+    }
     const tabCount = {
-      all: statusOrders.length,
-      pending: statusOrders.filter(o=>o.status==='pending').length,
-      confirmed: statusOrders.filter(o=>['confirmed','shipped'].includes(o.status)).length,
-      feedback: statusOrders.filter(o=>o.status==='feedback').length,
-      completed: statusOrders.filter(o=>['completed','feedback_done'].includes(o.status)).length
+      all: countBase.length,
+      pending: countBase.filter(o=>o.status==='pending').length,
+      confirmed: countBase.filter(o=>['confirmed','shipped'].includes(o.status)).length,
+      feedback: countBase.filter(o=>o.status==='feedback').length,
+      completed: countBase.filter(o=>['completed','feedback_done'].includes(o.status)).length
     };
 
     // 订单过滤（售后Tab单独处理）
@@ -3385,7 +3399,26 @@ async function renderOrders(){
       </div>
       <div class="sales-tab-seg">
         ${salesStatusTabs.map(t=>{
-          const cnt = t.key === '' ? orders.length : orders.filter(o => salesStatusGroup(t.key).includes(o.status)).length;
+          // 计数必须与列表过滤完全一致：纳入日期范围、关键词、类型等所有当前筛选条件
+          let base = orders;
+          if(keyword){
+            const kw = keyword.toLowerCase();
+            base = base.filter(o =>
+              o.id.toLowerCase().includes(kw) ||
+              (o.customerName||'').toLowerCase().includes(kw) ||
+              (o.contact||'').toLowerCase().includes(kw) ||
+              (o.phone||'').includes(kw) ||
+              (o.items||[]).some(it => (it.name||'').toLowerCase().includes(kw))
+            );
+          }
+          if(t.key){
+            const g = salesStatusGroup(t.key);
+            if(g.length) base = base.filter(o => g.includes(o.status));
+          }
+          if(typeFilter === 'whdoor') base = base.filter(o => o.type==='warehouse' || o.type==='door');
+          if(salesDateStart) base = base.filter(o => { var d = (o.createdAt||'').slice(0,10); return d >= salesDateStart; });
+          if(salesDateEnd) base = base.filter(o => { var d = (o.createdAt||'').slice(0,10); return d <= salesDateEnd; });
+          const cnt = base.length;
           return `<button class="seg-item ${status===t.key?'active':''}" onclick="filterOrders('${t.key}','status')">${t.label} <span class="seg-count">${cnt}</span></button>`;
         }).join('')}
       </div>
