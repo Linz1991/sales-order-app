@@ -3200,6 +3200,7 @@ async function renderOrders(){
       <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
         <span class="title-text">📦 订单管理</span>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${isAdmin ? `<button class="btn btn-danger btn-sm" onclick="openCleanupPanel()">🧹 清理订单</button>` : ''}
           <button class="btn btn-secondary btn-sm" onclick="renderRecycleBin()">🗑️ 回收站(${recycleCount})</button>
           <button class="btn btn-primary btn-sm" onclick="exportOrders()" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;box-shadow:0 2px 6px rgba(59,130,246,0.25)">
             <span>📥</span><span>${hasDateRange || activeTab==='all' ? '导出全部订单' : '导出订单'}</span>
@@ -3599,6 +3600,98 @@ function deleteOrder(orderId){
       showToast('本地已删除，但云端同步失败，请刷新后重试', 'warning');
     }
     navigate('orders');
+  });
+}
+
+// ============ 清理订单：admin 批量删除指定账号名下所有订单 ============
+// 目标账号（按 username 匹配，兼容动态 id 与软删除重影）
+const CLEANUP_TARGETS = ['admin','lichao','xiaoxing','jiahui','daxian'];
+
+// 物理删除指定 salesId 集合名下的全部订单（云端 + 本地 + 排除集，与 deleteOrder 一致）
+async function purgeOrdersForSales(salesIds){
+  const orders = DB.get('orders');
+  const toDelete = orders.filter(o => salesIds.includes(o.salesId));
+  if(!toDelete.length){ showToast('没有匹配的订单','info'); closeModal(); return; }
+  const delIds = toDelete.map(o => o.id);
+  // 撤回关联的微信收款记录（与单条 deleteOrder 行为一致）
+  const payments = DB.get('payments') || [];
+  DB.set('payments', payments.filter(p => !delIds.includes(p.orderId)));
+  // 云端批量删除（逐条记录，id 为主键）
+  let cloudOk = true;
+  if(window._sbpbClient){
+    try{
+      const { error } = await window._sbpbClient.from('orders').delete().in('id', delIds);
+      if(error){ cloudOk = false; console.warn('云端批量删除失败:', error.message); }
+    }catch(e){ cloudOk = false; console.warn('云端批量删除异常:', e.message); }
+  }
+  // 本地删除
+  DB.set('orders', orders.filter(o => !delIds.includes(o.id)));
+  // 记录已删除订单 id（防云端同步拉回）
+  try{
+    const delKey = 'soms__deletedOrderIds';
+    const set = JSON.parse(localStorage.getItem(delKey) || '[]');
+    delIds.forEach(id => { if(!set.includes(id)) set.push(id); });
+    localStorage.setItem(delKey, JSON.stringify(set));
+  }catch(e){ /* 忽略本地标记失败 */ }
+  schedulePushToCloud();
+  showToast('已删除 ' + delIds.length + ' 条订单' + (cloudOk ? '' : '（云端同步异常，请刷新重试）'), 'success');
+  closeModal();
+  renderOrders();
+}
+
+// 打开清理面板：列出目标账号及其订单数，可勾选
+function openCleanupPanel(){
+  const users = DB.get('users') || [];
+  const orders = DB.get('orders');
+  const stats = CLEANUP_TARGETS.map(un => {
+    const ids = users.filter(u => u.username === un).map(u => u.id);
+    const cnt = orders.filter(o => ids.includes(o.salesId)).length;
+    return { username: un, count: cnt, ids: ids };
+  });
+  const total = stats.reduce((s, x) => s + x.count, 0);
+  const rows = stats.map((s, i) => `
+    <tr>
+      <td style="text-align:center"><input type="checkbox" id="cleanupChk_${i}" ${s.count>0?'checked':''} ${s.count===0?'disabled':''}></td>
+      <td>${s.username}</td>
+      <td style="color:var(--text-muted)">${s.ids.length ? s.ids.length+' 个账号匹配' : '未找到账号'}</td>
+      <td style="text-align:right;font-weight:600">${s.count}</td>
+    </tr>`).join('');
+  const modalHtml = `
+    <div class="modal-mask" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:520px">
+        <div class="modal-header"><h3>🧹 清理订单数据</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+        <div class="modal-body">
+          <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:10px;color:#b91c1c;font-size:13px;margin-bottom:12px">
+            ⚠ 此操作<b>不可恢复</b>：将永久删除下列账号名下的<b>所有状态</b>订单（云端 + 本地），并从所有导出中排除。请确认无误后执行。
+          </div>
+          <table style="width:100%;font-size:13px;border-collapse:collapse">
+            <thead><tr style="background:#f8fafc"><th style="padding:6px">选择</th><th style="padding:6px;text-align:left">账号</th><th style="padding:6px;text-align:left">匹配</th><th style="padding:6px;text-align:right">订单数</th></tr></thead>
+            <tbody>${rows}</tbody>
+            <tfoot><tr style="border-top:2px solid var(--border)"><td colspan="3" style="padding:8px;font-weight:600">合计</td><td style="padding:8px;text-align:right;font-weight:700;color:var(--danger)">${total}</td></tr></tfoot>
+          </table>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+          <button class="btn btn-danger" onclick="confirmCleanupOrders()">执行删除（不可恢复）</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('modalContainer').innerHTML = modalHtml;
+  window._cleanupStats = stats;
+}
+
+// 确认清理：收集勾选账号的 id，二次确认后执行
+function confirmCleanupOrders(){
+  const stats = window._cleanupStats || [];
+  const salesIds = new Set();
+  stats.forEach((s, i) => {
+    const chk = document.getElementById('cleanupChk_'+i);
+    if(chk && chk.checked){ s.ids.forEach(id => salesIds.add(id)); }
+  });
+  const idArr = Array.from(salesIds);
+  if(!idArr.length){ showToast('请至少选择一个账号','error'); return; }
+  showConfirm('确定永久删除所选账号的全部订单吗？此操作不可恢复！', () => {
+    purgeOrdersForSales(idArr);
   });
 }
 
