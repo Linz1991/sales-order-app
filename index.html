@@ -1085,6 +1085,11 @@ html{scroll-behavior:smooth}
 .order-card{background:var(--card);border-radius:8px;padding:14px;margin-bottom:10px;box-shadow:var(--shadow);cursor:pointer;transition:.2s}
 .order-card:hover{box-shadow:var(--shadow-lg)}
 .order-card .card-customer{font-weight:600;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:8px}
+/* 订单号 + 复制按钮（所有订单列表复用） */
+.oid-box{display:inline-flex;align-items:center;gap:4px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:2px 6px;max-width:100%}
+.oid-text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.oid-copy{border:none;background:transparent;cursor:pointer;font-size:13px;line-height:1;padding:2px 3px;border-radius:4px;flex:0 0 auto}
+.oid-copy:hover{background:#e2e8f0}
 .order-card .card-tags{display:flex;gap:6px;margin-bottom:8px}
 .order-card .card-tag{font-size:11px;padding:2px 8px;border-radius:4px}
 .order-card .card-logistics{font-size:12px;color:var(--text-muted);margin-bottom:8px}
@@ -2910,7 +2915,7 @@ function renderDashboard(){
               <tbody>
                 ${recentOrders.length ? recentOrders.map(o=>`
                   <tr>
-                    <td>${o.customerName || '-'}</td>
+                    <td>${orderIdCell(o.id)}<br>${o.customerName || '-'}</td>
                     <td>${money(o.total)}</td>
                     <td>${statusTag(o.status)}</td>
                     <td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button></td>
@@ -3227,6 +3232,7 @@ async function renderOrders(){
         filtered.forEach(o => {
           html += `
             <div class="order-card" onclick="viewOrder('${o.id}', true)">
+              <div class="card-row" style="margin-bottom:6px"><span class="card-label">订单号</span>${orderIdCell(o.id)}</div>
               <div class="card-customer">${o.customerName||'-'}</div>
               <div class="card-row"><span class="card-label">类型</span>${orderTypeTag(o.type)}</div>
               <div class="card-row"><span class="card-label">状态</span>${statusTag(o.status)}</div>
@@ -3252,7 +3258,7 @@ async function renderOrders(){
           const productList = products || [];
           const itemCols = isAdmin ? 7 : 6;
           html += `<tr>`;
-          html += `<td style="vertical-align:top">${o.customerName}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
+          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${o.customerName}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col/><col/>${isAdmin?'<col/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':'<th>利润</th>'}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const prod = productList.find(p => p.id === it.productId);
@@ -3283,7 +3289,7 @@ async function renderOrders(){
       if(filtered.length){
         filtered.forEach(o => {
           html += `<tr>`;
-          html += `<td style="vertical-align:top">${o.customerName}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
+          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${o.customerName}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col/>${isAdmin?'<col/><col/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th>':''}<th>利润</th></tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const prod = (products||[]).find(p => p.id === it.productId);
@@ -3311,7 +3317,7 @@ async function renderOrders(){
       if(filtered.length){
         filtered.forEach(o => {
           html += `<tr>`;
-          html += `<td>${o.customerName}</td>`;
+          html += `<td>${orderIdCell(o.id)}<br>${o.customerName}</td>`;
           html += `<td style="font-weight:600">${money(o.total)}</td>`;
           html += `<td>${orderTypeTag(o.type)}</td>`;
           html += `<td>${statusTag(o.status)}</td>`;
@@ -3434,6 +3440,7 @@ async function renderOrders(){
           : `<button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button>`;
         html += `
           <div class="order-card" onclick="viewOrder('${o.id}')">
+            <div class="card-row" style="margin-bottom:6px"><span class="card-label">订单号</span>${orderIdCell(o.id)}</div>
             <div class="card-customer">${o.customerName||'-'}</div>
             <div class="card-tags">
               ${salesStatusLabel(o.status)}
@@ -3481,7 +3488,7 @@ async function renderOrders(){
               const remark = o.remark ? `<span title="${(o.remark||'').replace(/"/g,"'")}" style="display:inline-block;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${o.remark}</span>` : '<span style="color:var(--text-muted)">-</span>';
               return `
               <tr>
-                <td>${o.customerName||'-'}</td>
+                <td>${orderIdCell(o.id)}<br>${o.customerName||'-'}</td>
                 <td>${o.phone||'<span style="color:var(--text-muted)">未填写</span>'}</td>
                 <td>${salesStatusLabel(o.status)}</td>
                 <td style="font-size:12px">${remark}</td>
@@ -5379,6 +5386,14 @@ function copyToClipboard(text, label){
     fallbackCopy(text, label);
   }
 }
+
+// 订单号 + 复制按钮（销售与admin通用，所有订单列表复用）
+function orderIdCell(id){
+  if(!id) return '';
+  var sid = (''+id).replace(/'/g, "\\'");
+  return '<span class="oid-box" title="复制订单号"><span class="oid-text">'+sid+'</span><button type="button" class="oid-copy" title="复制订单号" onclick="event.stopPropagation();copyToClipboard(\''+sid+'\',\'订单号\')">📋</button></span>';
+}
+
 
 // 综合复制：弹窗提示「订单信息已复制，可直接粘贴」，电脑手机全端兼容
 function copyToClipboardWithMsg(text){
@@ -8137,7 +8152,7 @@ function showPendingFinalPayments(){
       var rem = getOrderRemaining(o);
       var salesName = o.salesName || '-';
       html += '<tr>';
-      html += '<td>' + (o.customerName || '-') + '</td>';
+      html += '<td>' + orderIdCell(o.id) + '<br>' + (o.customerName || '-') + '</td>';
       html += '<td>' + salesName + '</td>';
       html += '<td>' + money(o.total || 0) + '</td>';
       html += '<td style="color:var(--success)">' + money(Math.max(0,(o.total||0)-rem)) + '</td>';
@@ -9427,9 +9442,9 @@ function renderSchedule(){
   } else {
     var sorted = orders.slice().sort(function(a,b){ return doorDateOf(b).localeCompare(doorDateOf(a)); });
     html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
-    if(sorted.length){
+      if(sorted.length){
       sorted.forEach(function(o){
-        var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDateTime(o.createdAt)+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+        var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDateTime(o.createdAt)+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
       });
     }
     html += '</tbody></table></div>';
@@ -9450,7 +9465,7 @@ function showScheduleDayOrders(dateStr){
   if(!dayOrders.length){ el.innerHTML = ''; return; }
   var html = '<div class="detail-section card"><h4 style="margin-bottom:10px">'+dateStr+' 的上门订单</h4><div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
   dayOrders.forEach(function(o){
-    var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDateTime(o.createdAt)+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+    var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDateTime(o.createdAt)+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
   });
   html += '</tbody></table></div></div>';
   el.innerHTML = html;
@@ -9519,7 +9534,7 @@ function renderWarehouse(){
   if(filtered.length){
     html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
     filtered.forEach(function(o){
-      var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+o.customerName+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDateTime(o.createdAt)+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+      var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+o.customerName+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDateTime(o.createdAt)+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
     });
     html += '</tbody></table></div>';
   } else {
