@@ -7731,6 +7731,7 @@ function renderProducts(){
           <thead>
             <tr>
               ${isAdmin && batchMode ? '<th>选择</th>' : ''}
+              <th>序号</th>
               <th>商品名称</th>
               <th>分类</th>
               <th>售价</th>
@@ -7740,38 +7741,19 @@ function renderProducts(){
             </tr>
           </thead>
           <tbody id="productTbody">
-            ${filtered.length ? filtered.map(p=>{
-              const profit = p.price - p.cost;
-              const profitColor = profit >= 0 ? 'var(--success)' : 'var(--danger)';
-              const profitText = profit >= 0 ? '+'+profit : profit;
-              const needCalibration = isAdmin && (p.auto_added === true || p.cost === p.price);
-              return `
-                <tr style="${needCalibration ? 'background:#fff7ed' : ''}">
-                  ${isAdmin && batchMode ? `<td><input type="checkbox" ${selectedIds[p.id]?'checked':''} onchange="toggleProductSelect('${p.id}', this.checked)"></td>` : ''}
-                  <td style="position:relative">
-                    ${needCalibration ? '<span style="position:absolute;top:0;right:0;background:#f59e0b;color:#fff;font-size:10px;padding:1px 6px;border-radius:0 0 0 4px;font-weight:500">待校准</span>' : ''}
-                    ${p.name}
-                  </td>
-                  <td>${p.category||'-'}</td>
-                  <td style="font-weight:600">${money(p.price)}</td>
-                  ${isAdmin ? `<td>${money(p.cost)}</td><td style="color:${profitColor};font-weight:600">${profitText}</td>` : ''}
-                  <td>${p.status==='on'?'<span class="tag tag-onshelf">在售</span>':'<span class="tag tag-offshelf">已下架</span>'}</td>
-                  ${isAdmin ? `<td>
-                    <button class="btn-link" onclick="openProductModal('${p.id}')">编辑</button>
-                    <button class="btn-link" onclick="toggleProductStatus('${p.id}')">${p.status==='on'?'下架':'上架'}</button>
-                  </td>` : ''}
-                </tr>
-              `;
-            }).join('') : '<tr><td colspan="'+((isAdmin?(batchMode?8:7):4))+'" class="table-empty">暂无商品</td></tr>'}
+            ${renderProductRowsHtml()}
           </tbody>
         </table>
       </div>
+      <div id="productPager"></div>
     </div>
   `;
   document.getElementById('mainContent').innerHTML = html;
+  const _pg = document.getElementById('productPager');
+  if(_pg) _pg.innerHTML = renderProductPagerHtml();
 }
 
-// 只生成商品表格的 tbody 内容，供搜索时局部刷新（搜索框不在 tbody 内，不会被销毁重建）
+// 只生成商品表格的 tbody 内容（含分页切片 + 序号），供整体渲染与搜索/翻页局部刷新
 function renderProductRowsHtml(){
   const isAdmin = currentUser.role === 'admin';
   const products = DB.get('products');
@@ -7782,11 +7764,20 @@ function renderProductRowsHtml(){
   }
   const batchMode = window._productBatchMode || false;
   const selectedIds = window._productSelectedIds || {};
-  const colspan = (isAdmin?(batchMode?8:7):4);
-  if(!filtered.length){
+  const colspan = (isAdmin?(batchMode?9:8):5); // 多一列"序号"
+  // 分页
+  const pageSize = window._productPageSize || 20;
+  let page = window._productPage || 1;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  if(page > totalPages) page = window._productPage = totalPages;
+  if(page < 1) page = window._productPage = 1;
+  const start = (page - 1) * pageSize;
+  const pageItems = filtered.slice(start, start + pageSize);
+  if(!pageItems.length){
     return '<tr><td colspan="'+colspan+'" class="table-empty">暂无商品</td></tr>';
   }
-  return filtered.map(p=>{
+  return pageItems.map((p, idx)=>{
+    const no = start + idx + 1;
     const profit = p.price - p.cost;
     const profitColor = profit >= 0 ? 'var(--success)' : 'var(--danger)';
     const profitText = profit >= 0 ? '+'+profit : profit;
@@ -7794,6 +7785,7 @@ function renderProductRowsHtml(){
     return `
       <tr style="${needCalibration ? 'background:#fff7ed' : ''}">
         ${isAdmin && batchMode ? `<td><input type="checkbox" ${selectedIds[p.id]?'checked':''} onchange="toggleProductSelect('${p.id}', this.checked)"></td>` : ''}
+        <td style="color:var(--text-muted);text-align:center">${no}</td>
         <td style="position:relative">
           ${needCalibration ? '<span style="position:absolute;top:0;right:0;background:#f59e0b;color:#fff;font-size:10px;padding:1px 6px;border-radius:0 0 0 4px;font-weight:500">待校准</span>' : ''}
           ${p.name}
@@ -7811,10 +7803,55 @@ function renderProductRowsHtml(){
   }).join('');
 }
 
+// 商品分页器 HTML
+function renderProductPagerHtml(){
+  const products = DB.get('products');
+  const keyword = window._productFilter || '';
+  let filtered = products;
+  if(keyword) filtered = filtered.filter(p => p.name.includes(keyword) || (p.category&&p.category.includes(keyword)));
+  const pageSize = window._productPageSize || 20;
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = window._productPage || 1;
+  if(totalPages <= 1) return '';
+  let pages = '';
+  const startP = Math.max(1, page - 2), endP = Math.min(totalPages, page + 2);
+  for(let i = startP; i <= endP; i++){
+    pages += `<button class="btn btn-sm ${i===page?'btn-primary':'btn-secondary'}" onclick="gotoProductPage(${i})">${i}</button>`;
+  }
+  return `<div class="pager" style="display:flex;align-items:center;gap:8px;justify-content:flex-end;padding:12px;flex-wrap:wrap">
+    <span style="color:var(--text-muted);font-size:13px">共 ${total} 条，第 ${page}/${totalPages} 页</span>
+    <button class="btn btn-sm btn-secondary" ${page<=1?'disabled':''} onclick="gotoProductPage(1)">首页</button>
+    <button class="btn btn-sm btn-secondary" ${page<=1?'disabled':''} onclick="gotoProductPage(${page-1})">上一页</button>
+    ${pages}
+    <button class="btn btn-sm btn-secondary" ${page>=totalPages?'disabled':''} onclick="gotoProductPage(${page+1})">下一页</button>
+    <button class="btn btn-sm btn-secondary" ${page>=totalPages?'disabled':''} onclick="gotoProductPage(${totalPages})">末页</button>
+  </div>`;
+}
+
+// 刷新商品表格 tbody + 分页器（搜索 / 翻页时调用，不重建搜索框）
+function refreshProductTable(){
+  const tb = document.getElementById('productTbody');
+  if(tb) tb.innerHTML = renderProductRowsHtml();
+  const pg = document.getElementById('productPager');
+  if(pg) pg.innerHTML = renderProductPagerHtml();
+}
+
+// 跳转到指定页
+function gotoProductPage(p){
+  const total = DB.get('products').length;
+  const pageSize = window._productPageSize || 20;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  if(p < 1) p = 1;
+  if(p > totalPages) p = totalPages;
+  window._productPage = p;
+  refreshProductTable();
+}
+
 function filterProducts(value){
   window._productFilter = value;
-  const tb = document.getElementById('productTbody');
-  if(tb){ tb.innerHTML = renderProductRowsHtml(); }
+  window._productPage = 1;
+  refreshProductTable();
 }
 
 /* ============ 商品批量操作 ============ */
@@ -7856,32 +7893,124 @@ function confirmBatchImport(){
   const category = document.getElementById('batchImportCategory').value.trim();
   if(!data){ showToast('请粘贴商品数据','error'); return; }
   const products = DB.get('products');
-  let successCount = 0, failCount = 0;
+  let successCount = 0;
+  const failed = [];
   const lines = data.split(/\r?\n/).map(l => l.trim()).filter(l => l);
-  lines.forEach(line => {
+  lines.forEach((line, li) => {
     // 支持 Tab 或多个空格分隔
     const parts = line.split(/\t+|\s{2,}|\s/).map(s => s.trim()).filter(Boolean);
-    if(parts.length < 2){ failCount++; return; }
-    const name = parts[0];
-    const price = parseInt(parts[1]);
-    const cost = parts[2] ? parseInt(parts[2]) : 0;
-    if(!name || isNaN(price) || price < 0){ failCount++; return; }
-    if(isNaN(cost) || cost < 0){ failCount++; return; }
-    products.push({
-      id: 'p' + Date.now() + Math.random().toString(36).slice(2,6),
-      name: name,
-      category: category || '',
-      price: price,
-      cost: cost,
-      status: 'on',
-      createdAt: nowStr()
-    });
-    successCount++;
+    const name = parts[0] || '';
+    const priceRaw = parts[1] || '';
+    const costRaw = parts[2] || '';
+    let reason = '';
+    if(parts.length < 2){
+      reason = '格式错误：至少需要"名称 售价"（用 Tab 或空格分隔）';
+    }else if(!name){
+      reason = '缺少商品名称';
+    }else if(priceRaw === '' || isNaN(parseInt(priceRaw))){
+      reason = '售价不是有效数字';
+    }else{
+      const price = parseInt(priceRaw);
+      if(price < 0){
+        reason = '售价不能为负数';
+      }else{
+        const cost = costRaw ? parseInt(costRaw) : 0;
+        if(costRaw !== '' && isNaN(cost)){
+          reason = '成本不是有效数字';
+        }else if(cost < 0){
+          reason = '成本不能为负数';
+        }else{
+          products.push({
+            id: 'p' + Date.now() + Math.random().toString(36).slice(2,6),
+            name: name,
+            category: category || '',
+            price: price,
+            cost: cost,
+            status: 'on',
+            createdAt: nowStr()
+          });
+          successCount++;
+        }
+      }
+    }
+    if(reason){
+      failed.push({ no: li + 1, raw: line, name: name, price: priceRaw, cost: costRaw, reason: reason });
+    }
   });
   DB.set('products', products);
-  closeModal();
-  showToast('导入完成：成功 '+successCount+' 条，失败 '+failCount+' 条','success');
+  schedulePushToCloud();
   renderProducts();
+  showImportResult(successCount, failed);
+}
+
+// 导入结果弹窗（含失效明细 + 导出失效商品按钮）
+function showImportResult(success, failed){
+  window._invalidImportRows = failed;
+  const failHtml = failed.length ? `
+    <div style="margin-top:16px">
+      <div style="font-weight:600;margin-bottom:8px">失效明细（共 ${failed.length} 条）：</div>
+      <div style="max-height:300px;overflow:auto;border:1px solid var(--border);border-radius:6px">
+        <table style="width:100%;font-size:12px;border-collapse:collapse">
+          <thead>
+            <tr style="background:#f8fafc;position:sticky;top:0">
+              <th style="padding:6px;text-align:left;white-space:nowrap">行号</th>
+              <th style="padding:6px;text-align:left">原始数据</th>
+              <th style="padding:6px;text-align:left">失效原因</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${failed.map(f=>`<tr style="border-top:1px solid var(--border)">
+              <td style="padding:6px;white-space:nowrap;color:var(--text-muted)">${f.no}</td>
+              <td style="padding:6px"><pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-family:monospace">${escapeHtml(f.raw)}</pre></td>
+              <td style="padding:6px;color:var(--danger)">${escapeHtml(f.reason)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>` : '';
+  const modalHtml = `
+    <div class="modal-mask">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>📥 导入结果</h3>
+          <button class="modal-close" onclick="closeModal()">×</button>
+        </div>
+        <div class="modal-body">
+          <div style="font-size:15px">成功导入 <b style="color:var(--success)">${success}</b> 条，失效 <b style="color:var(--danger)">${failed.length}</b> 条。</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:6px">失效商品可一键导出 CSV，在表格中修正后重新导入即可。</div>
+          ${failHtml}
+        </div>
+        <div class="modal-footer">
+          ${failed.length ? '<button class="btn btn-secondary" onclick="exportInvalidProducts()">⬇️ 导出失效商品</button>' : ''}
+          <button class="btn btn-primary" onclick="closeModal()">关闭</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById('modalContainer').innerHTML = modalHtml;
+}
+
+// 导出失效商品（CSV：名称,售价,成本,失效原因），方便用户修正后重新导入
+function exportInvalidProducts(){
+  const rows = window._invalidImportRows || [];
+  if(!rows.length){ showToast('没有可导出的失效数据','error'); return; }
+  const header = ['名称','售价','成本','失效原因'];
+  const escapeCell = (cell) => {
+    const s = String(cell == null ? '' : cell).replace(/"/g,'""');
+    return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
+  };
+  const csv = [header, ...rows.map(r => [r.name, r.price, r.cost, r.reason])]
+    .map(r => r.map(escapeCell).join(',')).join('\r\n');
+  const blob = new Blob(['﻿'+csv], { type:'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '失效商品_' + new Date().toISOString().slice(0,10) + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('失效商品已导出','success');
 }
 
 // 批量删除：切换批量删除模式
