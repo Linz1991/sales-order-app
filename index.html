@@ -2947,8 +2947,8 @@ function renderDashboard(){
     const feedbackOrderCount = myOrders.filter(o=>o.status==='feedback').length;
     // 售后工单
     const myAftersalesCount = aftersales.filter(a => a.salesId === currentUser.id).length;
-    // 待收尾款：本人（管理员为全部）名下有未结清尾款的订单数
-    const balanceOrders = myOrders.filter(o => getOrderRemaining(o) > 0);
+    // 待收尾款：本人（管理员为全部）名下有未结清尾款的订单数（仅定金订单，全款订单无尾款）
+    const balanceOrders = myOrders.filter(o => getOrderRemaining(o) > 0 && (parseInt(o.deposit) || 0) > 0);
     const myBalanceCount = balanceOrders.length;
 
     html += `
@@ -9521,8 +9521,8 @@ function renderCollectBalance(){
   var orders = DB.get('orders');
   if(!isAdmin) orders = orders.filter(function(o){ return o.salesId === currentUser.id; });
   var list = orders.filter(function(o){
-    
-    return getOrderRemaining(o) > 0;
+    // 仅定金订单有尾款，全款订单不纳入待收尾款
+    return getOrderRemaining(o) > 0 && (parseInt(o.deposit) || 0) > 0;
   });
   if(keyword){
     var kw = keyword.toLowerCase();
