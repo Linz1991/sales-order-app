@@ -2441,12 +2441,36 @@ function clearLocalOrderCache(){
   });
 }
 
-// 密码加盐哈希（SHA-256），避免明文存储；兼容旧明文数据自动升级
-async function hashPassword(pwd){
-  const SALT = 'soms_salt_2024';
-  const enc = new TextEncoder().encode(SALT + pwd);
-  const buf = await crypto.subtle.digest('SHA-256', enc);
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+// 纯 JS SHA-256（与 Web Crypto / Node crypto 结果完全一致），用于密码哈希，避免非安全上下文（file:// / http）下 crypto.subtle 不可用导致登录失败
+function sha256js(str){
+  function utf8(s){var out=[];for(var i=0;i<s.length;i++){var c=s.charCodeAt(i);if(c<0x80)out.push(c);else if(c<0x800)out.push(0xc0|(c>>6),0x80|(c&0x3f));else if(c>=0xd800&&c<=0xdbff){var c2=s.charCodeAt(++i);var cp=0x10000+((c&0x3ff)<<10)+(c2&0x3ff);out.push(0xf0|(cp>>18),0x80|((cp>>12)&0x3f),0x80|((cp>>6)&0x3f),0x80|(cp&0x3f));}else out.push(0xe0|(c>>12),0x80|((c>>6)&0x3f),0x80|(c&0x3f));}return out;}
+  function r(x,n){x=x>>>0;var lo=(1<<n)-1;return ((x>>>n)|((x&lo)<<(32-n)))>>>0;}
+  var K=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+  var m=utf8(str);var L=m.length;var bitLen=L*8;
+  var hi=Math.floor(bitLen/0x100000000), lo=bitLen>>>0;
+  m.push(0x80);while(m.length%64!==56)m.push(0);
+  m.push((hi>>>24)&255,(hi>>>16)&255,(hi>>>8)&255,hi&255);
+  m.push((lo>>>24)&255,(lo>>>16)&255,(lo>>>8)&255,lo&255);
+  var H=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+  for(var i=0;i<m.length;i+=64){
+    var w=new Array(64);
+    for(var j=0;j<16;j++){w[j]=((m[i+j*4]<<24)|(m[i+j*4+1]<<16)|(m[i+j*4+2]<<8)|(m[i+j*4+3]))>>>0;}
+    for(var j=16;j<64;j++){var s0=r(w[j-15],7)^r(w[j-15],18)^(w[j-15]>>>3);var s1=r(w[j-2],17)^r(w[j-2],19)^(w[j-2]>>>10);w[j]=((w[j-16]+s0+w[j-7]+s1)|0)>>>0;}
+    var a=H[0],b=H[1],c=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7];
+    for(var j=0;j<64;j++){
+      var S1=r(e,6)^r(e,11)^r(e,25);var ch=(e&f)^((~e)&g);var t1=((h+S1+ch+K[j]+w[j])|0)>>>0;
+      var S0=r(a,2)^r(a,13)^r(a,22);var maj=(a&b)^(a&c)^(b&c);var t2=((S0+maj)|0)>>>0;
+      h=g;g=f;f=e;e=((d+t1)|0)>>>0;d=c;c=b;b=a;a=((t1+t2)|0)>>>0;
+    }
+    H[0]=(H[0]+a)|0;H[1]=(H[1]+b)|0;H[2]=(H[2]+c)|0;H[3]=(H[3]+d)|0;H[4]=(H[4]+e)|0;H[5]=(H[5]+f)|0;H[6]=(H[6]+g)|0;H[7]=(H[7]+h)|0;
+  }
+  function hex(n){return (('00000000'+((n>>>0).toString(16))).slice(-8));}
+  return H.map(hex).join('');
+}
+
+// 密码加盐哈希（SHA-256），避免明文存储；兼容旧明文数据自动升级。同步函数，任何上下文结果一致
+function hashPassword(pwd){
+  return sha256js('soms_salt_2024' + pwd);
 }
 
 async function handleLogin(){
@@ -3658,14 +3682,14 @@ function renderOrderNew(defaultType){
       ${(newOrderType==='warehouse'||newOrderType==='door') ? `
         <div class="form-group">
           <label class="form-label">${newOrderType==='door'?'备货日期':'发货日期（到期自动流转为待下单）'}</label>
-          <input type="date" class="form-control" id="newOrderDate" style="max-width:200px" value="${todayStr()}" onchange="var c=document.getElementById('newCompletionDate');if(c)c.min=this.value;">
+          <input type="date" class="form-control" id="newOrderDate" style="max-width:200px" value="${todayStr()}" onchange="var c=document.getElementById('newCompletionDate');if(c)c.max=this.value;">
           ${newOrderType==='warehouse' ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">设置后，到达该日期时订单将自动变为待下单状态</div>` : ''}
         </div>
       ` : ''}
       ${newOrderType==='door' ? `
         <div class="form-group">
           <label class="form-label">订单上门日期</label>
-          <input type="date" class="form-control" id="newCompletionDate" style="max-width:200px" onchange="var c=document.getElementById('newOrderDate');if(c)c.max=this.value;">
+          <input type="date" class="form-control" id="newCompletionDate" style="max-width:200px" onchange="var c=document.getElementById('newOrderDate');if(c)c.min=this.value;">
         </div>
       ` : ''}
       ${isAdmin ? `
@@ -4443,7 +4467,7 @@ function submitOrder(){
     if(_orderType === 'door'){
       const _doorDate = document.getElementById('newCompletionDate') ? document.getElementById('newCompletionDate').value.trim() : '';
       if(!_doorDate){ showToast('请填写上门日期','error'); return; }
-      if(_stockDate > _doorDate){ showToast('备货日期不能晚于订单上门日期','error'); return; }
+      if(_doorDate > _stockDate){ showToast('上门日期不能大于备货日期','error'); return; }
     }
   }
 
@@ -4629,7 +4653,7 @@ function renderOrderDetail(){
   const dateLabel1 = isDoor ? '备货日期' : '发货日期';
   const dateLabel2 = isDoor ? '订单上门日期' : '订单完成日期';
   // 留仓/上门订单：管理员、提交人、上门订单全体可见成员均可随时修改两个日期
-  const canSaveDates = isAdmin || isOwner || isDoor;
+  const canSaveDates = isAdmin || isOwner;
   // 销售查看「已下单/待反馈/已完成」订单：隐藏商品明细/收款信息，删除编辑订单与申请售后按钮
   const isSalesRestrictedView = !isAdmin && (order.status === 'confirmed' || order.status === 'feedback' || order.status === 'completed');
   // 销售查看「已下单」订单：专属只读视图，商品明细中展示物流单号与查看按钮
@@ -4685,13 +4709,13 @@ function renderOrderDetail(){
         ${(order.type==='warehouse'||order.type==='door') ? `
         <div class="form-group">
           <label class="form-label">${dateLabel1}${order.type==='warehouse'?'（到期自动流转为待下单）':''}</label>
-          <input type="date" class="form-control" id="editOrderDate" value="${order.orderDate||''}" style="max-width:200px" onchange="var c=document.getElementById('editCompletionDate');if(c)c.min=this.value;">
+          <input type="date" class="form-control" id="editOrderDate" value="${order.orderDate||''}" style="max-width:200px" max="${order.completionDate||''}" onchange="var c=document.getElementById('editCompletionDate');if(c)c.max=this.value;">
           ${order.type==='warehouse' ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">设置后，到达该日期时订单将自动变为待下单状态</div>` : ''}
         </div>
         ${isDoor ? `
         <div class="form-group">
           <label class="form-label">订单上门日期</label>
-          <input type="date" class="form-control" id="editCompletionDate" value="${order.completionDate||''}" style="max-width:200px" onchange="var c=document.getElementById('editOrderDate');if(c)c.max=this.value;">
+          <input type="date" class="form-control" id="editCompletionDate" value="${order.completionDate||''}" style="max-width:200px" min="${order.orderDate||''}" onchange="var c=document.getElementById('editOrderDate');if(c)c.min=this.value;">
         </div>
         ` : ''}
         ` : ``}
@@ -4711,8 +4735,8 @@ function renderOrderDetail(){
             ${isAdmin ? `<div class="info-item"><div class="info-label">订单金额</div><div class="info-value" style="color:var(--primary);font-size:18px">${money(order.total)}</div></div>` : ''}
             <div class="info-item"><div class="info-label">创建时间</div><div class="info-value">${formatOrderDateTime(order.createdAt)}</div></div>
             ${(order.type==='warehouse'||order.type==='door') ? `
-            <div class="info-item"><div class="info-label">${dateLabel1}</div><div class="info-value"><input type="date" class="form-control" id="detailOrderDate" value="${order.orderDate||''}" style="max-width:200px" onchange="var c=document.getElementById('detailCompletionDate');if(c)c.min=this.value;">${order.orderDate && todayStr()>order.orderDate ? '<div style="font-size:11px;color:var(--danger);margin-top:2px">已到期</div>' : ''}</div></div>
-            ${isDoor ? `<div class="info-item"><div class="info-label">订单上门日期</div><div class="info-value"><input type="date" class="form-control" id="detailCompletionDate" value="${order.completionDate||''}" style="max-width:200px" onchange="var c=document.getElementById('detailOrderDate');if(c)c.max=this.value;"></div></div>` : ''}
+            <div class="info-item"><div class="info-label">${dateLabel1}</div><div class="info-value"><input type="date" class="form-control" id="detailOrderDate" value="${order.orderDate||''}" style="max-width:200px" max="${order.completionDate||''}" onchange="var c=document.getElementById('detailCompletionDate');if(c)c.max=this.value;">${order.orderDate && todayStr()>order.orderDate ? '<div style="font-size:11px;color:var(--danger);margin-top:2px">已到期</div>' : ''}</div></div>
+            ${isDoor ? `<div class="info-item"><div class="info-label">订单上门日期</div><div class="info-value"><input type="date" class="form-control" id="detailCompletionDate" value="${order.completionDate||''}" style="max-width:200px" min="${order.orderDate||''}" onchange="var c=document.getElementById('detailOrderDate');if(c)c.min=this.value;"></div></div>` : ''}
             ` : ''}
           </div>
         </div>
@@ -4733,8 +4757,8 @@ function renderOrderDetail(){
           ${isAdmin ? `<div class="info-item"><div class="info-label">订单金额</div><div class="info-value" style="color:var(--primary);font-size:18px">${money(order.total)}</div></div>` : ''}
           <div class="info-item"><div class="info-label">创建时间</div><div class="info-value">${formatOrderDateTime(order.createdAt)}</div></div>
           ${(order.type==='warehouse'||order.type==='door') ? `
-          <div class="info-item"><div class="info-label">${dateLabel1}</div><div class="info-value"><input type="date" class="form-control" id="detailOrderDate" value="${order.orderDate||''}" style="max-width:200px" onchange="var c=document.getElementById('detailCompletionDate');if(c)c.min=this.value;">${order.orderDate && todayStr()>order.orderDate ? '<div style="font-size:11px;color:var(--danger);margin-top:2px">已到期</div>' : ''}</div></div>
-          ${isDoor ? `<div class="info-item"><div class="info-label">订单上门日期</div><div class="info-value"><input type="date" class="form-control" id="detailCompletionDate" value="${order.completionDate||''}" style="max-width:200px" onchange="var c=document.getElementById('detailOrderDate');if(c)c.max=this.value;"></div></div>` : ''}
+          <div class="info-item"><div class="info-label">${dateLabel1}</div><div class="info-value"><input type="date" class="form-control" id="detailOrderDate" value="${order.orderDate||''}" style="max-width:200px" max="${order.completionDate||''}" onchange="var c=document.getElementById('detailCompletionDate');if(c)c.max=this.value;">${order.orderDate && todayStr()>order.orderDate ? '<div style="font-size:11px;color:var(--danger);margin-top:2px">已到期</div>' : ''}</div></div>
+          ${isDoor ? `<div class="info-item"><div class="info-label">订单上门日期</div><div class="info-value"><input type="date" class="form-control" id="detailCompletionDate" value="${order.completionDate||''}" style="max-width:200px" min="${order.orderDate||''}" onchange="var c=document.getElementById('detailOrderDate');if(c)c.min=this.value;"></div></div>` : ''}
           ` : ''}
         </div>
         <div class="detail-box"><strong>客户信息：</strong>${custInfoText}</div>`}
@@ -5036,9 +5060,9 @@ function renderOrderDetail(){
           html += `<div style="width:100%;display:flex;justify-content:center;margin-top:4px"><button class="btn btn-warning" onclick="salesSubmitFeedback('${order.id}')">反馈</button></div>`;
         }
       }
-      // 上门订单 → 已完成（仅提交人/管理员可操作；必须已下单/运输中/已签收/待反馈/已反馈，禁止 pending 直接完成）
-      if(isDoor && (isAdmin || isOwner) && ['confirmed','shipped','feedback','feedback_done'].includes(order.status)){
-        html += `<button class="btn btn-success" onclick="setOrderCompleted('${order.id}')">确认已完成</button>`;
+      // 上门订单 → 已完成（仅管理员可操作，且订单须为「已下单」状态；点击给予确认提示）
+      if(isDoor && isAdmin && order.status === 'confirmed'){
+        html += `<button class="btn btn-success" onclick="confirmSetOrderCompleted('${order.id}')">确认已完成</button>`;
       }
       // 留仓/待下单订单：销售编辑按钮
       if(canEdit && !editMode){
@@ -5046,8 +5070,8 @@ function renderOrderDetail(){
         html += `<button class="btn btn-danger" onclick="deleteOrder('${order.id}')">删除订单</button>`;
       }
     }
-    // 记录收款：管理员或本单销售（含上门订单可见成员）均可，待下单编辑态不显示；已全款订单不显示
-    const canRecordPayment = isAdmin || order.salesId === currentUser.id || isDoor;
+    // 记录收款：仅管理员或本单提交人可操作（上门订单所有人可见但仅 admin/提交者可编辑）
+    const canRecordPayment = isAdmin || order.salesId === currentUser.id;
     if(!isAdmin && canRecordPayment && !canEdit && !isFullyPaid){
       html += `<button class="btn btn-success btn-sm" onclick="openAddPayment('${order.id}')">+ 记录收款</button>`;
     }
@@ -5622,6 +5646,27 @@ function setOrderCompleted(orderId){
   updateOrderStatus(orderId, 'completed');
 }
 
+// 上门订单：当全部商品的备货状态均为“已备货”(是) 且当前为待下单(pending)时，自动流转为已下单(confirmed)
+function autoDoorConfirmIfAllStocked(order){
+  if(order.type !== 'door' || order.status !== 'pending') return false;
+  if(!order.items || !order.items.length) return false;
+  const allStocked = order.items.every(it => it.stock === '是');
+  if(allStocked){
+    order.status = 'confirmed';
+    order.confirmedAt = nowStr();
+    order.updatedAt = nowStr();
+    return true;
+  }
+  return false;
+}
+
+// 管理员点击「已完成」前的二次确认提示
+function confirmSetOrderCompleted(orderId){
+  showConfirm('确认将该上门订单标记为「已完成」？此操作不可撤销。', () => {
+    setOrderCompleted(orderId);
+  });
+}
+
 // 普通/留仓订单「无需物流」开关：勾选后标记 noTracking，可跳过"全部填物流单号"硬卡直接推进待反馈
 function toggleNoTracking(orderId, checked){
   const orders = DB.get('orders');
@@ -5920,9 +5965,9 @@ function saveEditOrder(orderId){
   if(_editFulfillmentDateEl) order.fulfillmentDate = _editFulfillmentDateEl.value;
   const _editCompletionDateEl = document.getElementById('editCompletionDate');
   if(_editCompletionDateEl) order.completionDate = _editCompletionDateEl.value;
-  // 上门订单：备货日期不能晚于订单上门日期
-  if(order.type === 'door' && order.orderDate && order.completionDate && order.orderDate > order.completionDate){
-    showToast('备货日期不能晚于订单上门日期','error'); return;
+  // 上门订单：上门日期不能大于备货日期
+  if(order.type === 'door' && order.orderDate && order.completionDate && order.completionDate > order.orderDate){
+    showToast('上门日期不能大于备货日期','error'); return;
   }
   orders[idx] = order;
   DB.set('orders', orders);
@@ -5944,16 +5989,16 @@ function saveOrderDates(orderId){
   const order = orders[idx];
   const isAdmin = currentUser.role === 'admin';
   const isOwner = order.salesId === currentUser.id;
-  const canEdit = isAdmin || isOwner || order.type === 'door';
+  const canEdit = isAdmin || isOwner;
   if(!canEdit){ showToast('无权修改此订单日期','error'); return; }
   
   const orderDateEl = document.getElementById('detailOrderDate');
   const completionDateEl = document.getElementById('detailCompletionDate');
   if(orderDateEl) order.orderDate = orderDateEl.value;
   if(completionDateEl) order.completionDate = completionDateEl.value;
-  // 上门订单：备货日期不能晚于订单上门日期
-  if(order.type === 'door' && order.orderDate && order.completionDate && order.orderDate > order.completionDate){
-    showToast('备货日期不能晚于订单上门日期','error'); return;
+  // 上门订单：上门日期不能大于备货日期
+  if(order.type === 'door' && order.orderDate && order.completionDate && order.completionDate > order.orderDate){
+    showToast('上门日期不能大于备货日期','error'); return;
   }
   order.updatedAt = nowStr();
   orders[idx] = order;
@@ -6488,9 +6533,9 @@ function saveAdminOrder(orderId){
   if(dateEl !== null) o.orderDate = dateEl.value;
   const compEl = document.getElementById('detailCompletionDate');
   if(compEl !== null) o.completionDate = compEl.value;
-  // 上门订单：备货日期不能晚于订单上门日期
-  if(o.type === 'door' && o.orderDate && o.completionDate && o.orderDate > o.completionDate){
-    showToast('备货日期不能晚于订单上门日期','error'); return;
+  // 上门订单：上门日期不能大于备货日期
+  if(o.type === 'door' && o.orderDate && o.completionDate && o.completionDate > o.orderDate){
+    showToast('上门日期不能大于备货日期','error'); return;
   }
   DB.set('orders', orders);
   schedulePushToCloud();
@@ -6510,11 +6555,12 @@ function saveItemStock(orderId, itemIndex, value) {
     return;
   }
   orders[idx].items[itemIndex].stock = (value === '是' ? '是' : '否');
+  const flowed = autoDoorConfirmIfAllStocked(orders[idx]);
   orders[idx].updatedAt = nowStr();
   DB.set('orders', orders);
   schedulePushToCloud();
   renderOrderDetail();
-  showToast('备货状态已更新', 'success');
+  showToast(flowed ? '全部商品已备货，订单已自动转为「已下单」' : '备货状态已更新', 'success');
 }
 
 // 上门订单详情（管理员查看）：保存商品「是否备货」修改，并回存损耗与日期
@@ -6530,14 +6576,15 @@ function saveDoorDetail(orderId){
     const wEl = document.getElementById('wasteItem_' + i);
     if(wEl !== null) it.waste = parseInt(wEl.value) || 0;
   });
+  autoDoorConfirmIfAllStocked(o);
   // 回存上门/备货日期（避免「查看」详情修改后日期丢失）
   const dateEl = document.getElementById('detailOrderDate');
   if(dateEl !== null) o.orderDate = dateEl.value;
   const compEl = document.getElementById('detailCompletionDate');
   if(compEl !== null) o.completionDate = compEl.value;
-  // 上门订单：备货日期不能晚于订单上门日期
-  if(o.type === 'door' && o.orderDate && o.completionDate && o.orderDate > o.completionDate){
-    showToast('备货日期不能晚于订单上门日期','error'); return;
+  // 上门订单：上门日期不能大于备货日期
+  if(o.type === 'door' && o.orderDate && o.completionDate && o.completionDate > o.orderDate){
+    showToast('上门日期不能大于备货日期','error'); return;
   }
   DB.set('orders', orders);
   schedulePushToCloud();
@@ -7644,7 +7691,7 @@ function renderProducts(){
               ${isAdmin ? '<th>操作</th>' : ''}
             </tr>
           </thead>
-          <tbody>
+          <tbody id="productTbody">
             ${filtered.length ? filtered.map(p=>{
               const profit = p.price - p.cost;
               const profitColor = profit >= 0 ? 'var(--success)' : 'var(--danger)';
@@ -7676,9 +7723,50 @@ function renderProducts(){
   document.getElementById('mainContent').innerHTML = html;
 }
 
+// 只生成商品表格的 tbody 内容，供搜索时局部刷新（搜索框不在 tbody 内，不会被销毁重建）
+function renderProductRowsHtml(){
+  const isAdmin = currentUser.role === 'admin';
+  const products = DB.get('products');
+  const keyword = window._productFilter || '';
+  let filtered = products;
+  if(keyword){
+    filtered = filtered.filter(p => p.name.includes(keyword) || (p.category&&p.category.includes(keyword)));
+  }
+  const batchMode = window._productBatchMode || false;
+  const selectedIds = window._productSelectedIds || {};
+  const colspan = (isAdmin?(batchMode?8:7):4);
+  if(!filtered.length){
+    return '<tr><td colspan="'+colspan+'" class="table-empty">暂无商品</td></tr>';
+  }
+  return filtered.map(p=>{
+    const profit = p.price - p.cost;
+    const profitColor = profit >= 0 ? 'var(--success)' : 'var(--danger)';
+    const profitText = profit >= 0 ? '+'+profit : profit;
+    const needCalibration = isAdmin && (p.auto_added === true || p.cost === p.price);
+    return `
+      <tr style="${needCalibration ? 'background:#fff7ed' : ''}">
+        ${isAdmin && batchMode ? `<td><input type="checkbox" ${selectedIds[p.id]?'checked':''} onchange="toggleProductSelect('${p.id}', this.checked)"></td>` : ''}
+        <td style="position:relative">
+          ${needCalibration ? '<span style="position:absolute;top:0;right:0;background:#f59e0b;color:#fff;font-size:10px;padding:1px 6px;border-radius:0 0 0 4px;font-weight:500">待校准</span>' : ''}
+          ${p.name}
+        </td>
+        <td>${p.category||'-'}</td>
+        <td style="font-weight:600">${money(p.price)}</td>
+        ${isAdmin ? `<td>${money(p.cost)}</td><td style="color:${profitColor};font-weight:600">${profitText}</td>` : ''}
+        <td>${p.status==='on'?'<span class="tag tag-onshelf">在售</span>':'<span class="tag tag-offshelf">已下架</span>'}</td>
+        ${isAdmin ? `<td>
+          <button class="btn-link" onclick="openProductModal('${p.id}')">编辑</button>
+          <button class="btn-link" onclick="toggleProductStatus('${p.id}')">${p.status==='on'?'下架':'上架'}</button>
+        </td>` : ''}
+      </tr>
+    `;
+  }).join('');
+}
+
 function filterProducts(value){
   window._productFilter = value;
-  renderProducts();
+  const tb = document.getElementById('productTbody');
+  if(tb){ tb.innerHTML = renderProductRowsHtml(); }
 }
 
 /* ============ 商品批量操作 ============ */
@@ -9179,9 +9267,9 @@ function renderSchedule(){
   var isAdmin = currentUser.role === 'admin';
   // 排除本端已删除的订单 id（避免幽灵计数）
   var deletedIds = (DB.get('_deletedOrderIds') || []);
-  // 销售只能看自己的订单，管理员可看全部
+  // 上门订单：所有人可见（仅 admin 与提交者可编辑）；管理员仍看全部
   var allDoorOrders = DB.get('orders').filter(function(o){ return o.type === 'door' && deletedIds.indexOf(o.id) < 0; });
-  var orders = isAdmin ? allDoorOrders : allDoorOrders.filter(function(o){ return o.salesId === currentUser.id; });
+  var orders = allDoorOrders;
 
   var statusKey = window._scheduleStatus || '';
   // 上门订单状态组：待下单 / 已下单 / 已完成；其余内部状态归入对应显示组
@@ -9317,8 +9405,8 @@ function renderSchedule(){
 
 function showScheduleDayOrders(dateStr){
   var isAdmin = currentUser.role === 'admin';
-  // 销售只能看自己的订单，管理员可看全部
-  var orders = isAdmin ? DB.get('orders').filter(function(o){ return o.type === 'door'; }) : DB.get('orders').filter(function(o){ return o.type === 'door' && o.salesId === currentUser.id; });
+  // 上门订单：所有人可见（仅 admin 与提交者可编辑）
+  var orders = DB.get('orders').filter(function(o){ return o.type === 'door'; });
   var dayOrders = orders.filter(function(o){ return (o.orderDate || (o.createdAt||'').slice(0,10)) === dateStr; });
   var el = document.getElementById('scheduleDayOrders');
   if(!el) return;
