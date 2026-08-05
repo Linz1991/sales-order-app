@@ -7383,9 +7383,13 @@ function exportOrders(){
       const subtotal = Math.round(price*qty);
       // 损耗跟着商品走：每个商品单独显示自己的损耗（单个商品单个计算）
       const itemWaste = Math.round(it.waste || 0);
-      // 成本和利润按每个商品单独计算
+      // 成本和利润按每个商品单独计算；售后损耗按商品数均摊到每行
       const itemCost = (it.cost != null) ? Math.round(it.cost * qty) : (p ? Math.round(p.cost * qty) : 0);
-      const itemProfit = Math.round(subtotal - itemCost - itemWaste);
+      const afterSaleLossPerItem = items.length > 0 ? Math.round(afterSaleLoss / items.length) : 0;
+      // 最后一行承担余数，确保总和精确
+      const isLastRow = idx === items.length - 1;
+      const lossForThisRow = isLastRow ? (afterSaleLoss - afterSaleLossPerItem * (items.length - 1)) : afterSaleLossPerItem;
+      const itemProfit = Math.round(subtotal - itemCost - itemWaste - lossForThisRow);
       // 售后损耗跟订单走：仅在订单首行展示，避免重复计入
       const showAfterSaleLoss = (idx === 0) ? Math.round(afterSaleLoss) : '';
       rows.push([
@@ -7540,9 +7544,10 @@ function exportScheduleOrders(){
     var s = String(cell == null ? '' : cell).replace(/"/g,'""');
     return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
   };
-  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','利润','订单日期','创建时间'];
+  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','利润','订单日期','创建时间'];
   var rows = [];
   filtered.forEach(function(o){
+    var afterSaleLoss = o.afterSaleLoss || 0;
     var address = [o.province,o.city,o.district,o.region,o.address].filter(Boolean).join(' ');
     var items = (o.items&&o.items.length) ? o.items : [{ name:'(无商品)', price:0, qty:0, productId:null, waste:0 }];
     items.forEach(function(it, idx){
@@ -7550,12 +7555,17 @@ function exportScheduleOrders(){
       var qty = it.qty||0;
       var price = it.price||0;
       var itemCost = (it.cost != null) ? Math.round(it.cost * qty) : (p ? Math.round(p.cost * qty) : 0);
-      var itemProfit = Math.round(price * qty - itemCost - (it.waste||0));
+      var itemWaste = Math.round(it.waste || 0);
+      var afterSaleLossPerItem = items.length > 0 ? Math.round(afterSaleLoss / items.length) : 0;
+      var isLastRow = idx === items.length - 1;
+      var lossForThisRow = isLastRow ? (afterSaleLoss - afterSaleLossPerItem * (items.length - 1)) : afterSaleLossPerItem;
+      var itemProfit = Math.round(price * qty - itemCost - itemWaste - lossForThisRow);
+      var showAfterSaleLoss = (idx === 0) ? Math.round(afterSaleLoss) : '';
       rows.push([
         o.id, statusLabel[o.status]||o.status,
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), Math.round(price*qty),
-        Math.round(o.total||0), itemCost, Math.round(it.waste||0), itemProfit,
+        Math.round(o.total||0), itemCost, itemWaste, showAfterSaleLoss, itemProfit,
         o.orderDate||'', fmtExportDateTime(o.createdAt)
       ]);
     });
@@ -7619,22 +7629,28 @@ function exportWarehouseOrders(){
     var s = String(cell == null ? '' : cell).replace(/"/g,'""');
     return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
   };
-  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','利润','订单日期','创建时间'];
+  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','利润','订单日期','创建时间'];
   var rows = [];
   filtered.forEach(function(o){
+    var afterSaleLoss = o.afterSaleLoss || 0;
     var address = [o.province,o.city,o.district,o.region,o.address].filter(Boolean).join(' ');
     var items = (o.items&&o.items.length) ? o.items : [{ name:'(无商品)', price:0, qty:0, productId:null, waste:0 }];
-    items.forEach(function(it){
+    items.forEach(function(it, idx){
       var p = products.find(function(x){return x.id===it.productId});
       var qty = it.qty||0;
       var price = it.price||0;
       var itemCost = (it.cost != null) ? Math.round(it.cost * qty) : (p ? Math.round(p.cost * qty) : 0);
-      var itemProfit = Math.round(price * qty - itemCost - (it.waste||0));
+      var itemWaste = Math.round(it.waste || 0);
+      var afterSaleLossPerItem = items.length > 0 ? Math.round(afterSaleLoss / items.length) : 0;
+      var isLastRow = idx === items.length - 1;
+      var lossForThisRow = isLastRow ? (afterSaleLoss - afterSaleLossPerItem * (items.length - 1)) : afterSaleLossPerItem;
+      var itemProfit = Math.round(price * qty - itemCost - itemWaste - lossForThisRow);
+      var showAfterSaleLoss = (idx === 0) ? Math.round(afterSaleLoss) : '';
       rows.push([
         o.id, statusLabel[o.status]||o.status,
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), Math.round(price*qty),
-        Math.round(o.total||0), itemCost, Math.round(it.waste||0), itemProfit,
+        Math.round(o.total||0), itemCost, itemWaste, showAfterSaleLoss, itemProfit,
         o.orderDate||'', fmtExportDateTime(o.createdAt)
       ]);
     });
