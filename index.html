@@ -2660,13 +2660,18 @@ function renderSidebar(){
   const asProcessingCount = myAs.filter(a => a.status === 'processing').length;
   const asTotalCount = asPendingCount + asProcessingCount;
 
+  // 待校准商品：仅管理员后台展示数量提示（auto_added 自动导入 或 成本=售价 视为待校准）
+  const calibCount = isAdmin ? DB.get('products').filter(function(p){ return p.auto_added === true || p.cost === p.price; }).length : 0;
+
   function badge(count){ return count > 0 ? `<span style="background:var(--danger);color:#fff;font-size:11px;padding:1px 6px;border-radius:10px;margin-left:auto;font-weight:500">${count}</span>` : ''; }
+  function calibBadge(count){ return count > 0 ? `<span style="background:#f59e0b;color:#fff;font-size:11px;padding:1px 6px;border-radius:10px;margin-left:auto;font-weight:500">${count}</span>` : ''; }
 
   nav.innerHTML = '<div class="nav-section-title">功能菜单</div>' +
     menus.map(m => {
       let b = '';
       // if(m.route === 'orders') b = badge(pendingCount + feedbackCount);
       if(m.route === 'aftersales') b = badge(asTotalCount);
+      if(m.route === 'products' && isAdmin) b = calibBadge(calibCount);
       const click = m.route === 'orders' ? "gotoOrdersList()" : `navigate('${m.route}')`;
       return `
       <div class="nav-item ${currentRoute===m.route?'active':''}" onclick="${click}">
