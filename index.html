@@ -2479,7 +2479,7 @@ async function handleLogin(){
   if(!user || !pass){ showToast('请输入用户名和密码','error'); return; }
   // 用户数据已通过 DB.syncFromCloud() 从 Supabase 同步到 localStorage 缓存
   const users = DB.get('users');
-  const target = users.find(u => u.username === user);
+  const target = users.find(u => u.username === user && !u.disabled);
   if(!target){ showToast('用户名或密码错误','error'); return; }
   if(target.disabled){ showToast('该账号已被禁用，无法登录','error'); return; }
   let ok = false;
@@ -9752,7 +9752,8 @@ async function addUser(){
   if(!account){ showToast('请输入登录账号','error'); return; }
   if(!password){ showToast('请输入密码','error'); return; }
   const users = DB.get('users');
-  if(users.find(u => u.username === account)){ showToast('登录账号已存在','error'); return; }
+  // 查重排除已禁用的账号：被「删除」（软删除/禁用）的人员释放用户名，可重新添加
+  if(users.find(u => u.username === account && !u.disabled)){ showToast('登录账号已存在','error'); return; }
   let hp = password;
   try{ hp = await hashPassword(password); }catch(e){}
   users.push({id:DB.uid('u'), username:account, password:hp, name:name, role:role, wechatAmount:wechatAmount, createdAt:nowStr()});
