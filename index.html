@@ -9270,6 +9270,8 @@ function renderSchedule(){
   // 上门订单：所有人可见（仅 admin 与提交者可编辑）；管理员仍看全部
   var allDoorOrders = DB.get('orders').filter(function(o){ return o.type === 'door' && deletedIds.indexOf(o.id) < 0; });
   var orders = allDoorOrders;
+  // 日历/筛选/列表统一按「上门日期」(completionDate) 归组；缺省回退到备货日期/创建日期
+  function doorDateOf(o){ return o.completionDate || o.orderDate || (o.createdAt||'').slice(0,10); }
 
   var statusKey = window._scheduleStatus || '';
   // 上门订单状态组：待下单 / 已下单 / 已完成；其余内部状态归入对应显示组
@@ -9301,12 +9303,12 @@ function renderSchedule(){
         (o.items||[]).some(function(it){ return (it.name||'').indexOf(schKeyword) >= 0; });
     });
   }
-  // 日期范围筛选
+  // 日期范围筛选（按上门日期）
   if(schDateStart){
-    orders = orders.filter(function(o){ var d = o.orderDate || (o.createdAt||'').slice(0,10); return d >= schDateStart; });
+    orders = orders.filter(function(o){ var d = doorDateOf(o); return d >= schDateStart; });
   }
   if(schDateEnd){
-    orders = orders.filter(function(o){ var d = o.orderDate || (o.createdAt||'').slice(0,10); return d <= schDateEnd; });
+    orders = orders.filter(function(o){ var d = doorDateOf(o); return d <= schDateEnd; });
   }
 
   var html = '<div class="card"><div class="card-title"><span class="title-text">📅 上门订单</span><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="renderOrderNew(\'door\')">+ 新建上门订单</button><button class="btn btn-sm '+(viewMode==='calendar'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'calendar\';renderSchedule()">日历视图</button><button class="btn btn-sm '+(viewMode==='list'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'list\';renderSchedule()">列表视图</button><button class="btn btn-primary btn-sm" onclick="exportScheduleOrders()" style="display:inline-flex;align-items:center;gap:4px">📥 导出</button></div></div>';
@@ -9319,7 +9321,7 @@ function renderSchedule(){
   html += '</div>';
   // 日期筛选
   html += '<div class="date-filter">';
-  html += '<span class="df-label">📅 订单日期</span>';
+  html += '<span class="df-label">📅 上门日期</span>';
   html += '<input type="date" class="df-input" value="'+schDateStart+'" onchange="window._scheduleDateStart=this.value;renderSchedule()">';
   html += '<span class="df-sep">至</span>';
   html += '<input type="date" class="df-input" value="'+schDateEnd+'" onchange="window._scheduleDateEnd=this.value;renderSchedule()">';
@@ -9345,7 +9347,7 @@ function renderSchedule(){
 
     var orderMap = {};
     orders.forEach(function(o){
-      var date = o.orderDate || (o.createdAt||'').slice(0,10);
+      var date = doorDateOf(o);
       if(date && date.indexOf(currentMonth) === 0){
         if(!orderMap[date]) orderMap[date] = [];
         orderMap[date].push(o);
@@ -9383,13 +9385,13 @@ function renderSchedule(){
     html += '<div id="scheduleDayOrders" style="margin-top:16px"></div>';
 
     var monthOrders = orders.filter(function(o){
-      var date = o.orderDate || (o.createdAt||'').slice(0,10);
+      var date = doorDateOf(o);
       return date && date.indexOf(currentMonth) === 0;
     });
     html += '<div style="margin-top:16px;padding:12px;background:#f9fafb;border-radius:6px;font-size:13px;color:var(--text-muted)">本月上门订单共 <strong style="color:var(--primary)">'+monthOrders.length+'</strong> 单</div>';
 
   } else {
-    var sorted = orders.slice().sort(function(a,b){ return (b.orderDate||'').localeCompare(a.orderDate||''); });
+    var sorted = orders.slice().sort(function(a,b){ return doorDateOf(b).localeCompare(doorDateOf(a)); });
     html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
     if(sorted.length){
       sorted.forEach(function(o){
@@ -9407,7 +9409,8 @@ function showScheduleDayOrders(dateStr){
   var isAdmin = currentUser.role === 'admin';
   // 上门订单：所有人可见（仅 admin 与提交者可编辑）
   var orders = DB.get('orders').filter(function(o){ return o.type === 'door'; });
-  var dayOrders = orders.filter(function(o){ return (o.orderDate || (o.createdAt||'').slice(0,10)) === dateStr; });
+  function doorDateOf(o){ return o.completionDate || o.orderDate || (o.createdAt||'').slice(0,10); }
+  var dayOrders = orders.filter(function(o){ return doorDateOf(o) === dateStr; });
   var el = document.getElementById('scheduleDayOrders');
   if(!el) return;
   if(!dayOrders.length){ el.innerHTML = ''; return; }
