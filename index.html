@@ -7973,6 +7973,7 @@ function saveProduct(){
   showToast('商品保存成功','success');
   schedulePushToCloud();
   renderProducts();
+  renderSidebar(); // 编辑保存后实时刷新左侧「待校准」角标数量
 }
 
 function toggleProductStatus(productId){
