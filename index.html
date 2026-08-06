@@ -11558,6 +11558,19 @@ window.onload = async function(){
   // 初始化预置数据（仅在缓存为空时填充种子数据）
   initData();
 
+  // 清理脏数据：订单号 id 为 'x' 的测试订单（客户/商品均为空），启动时自动从本地移除并标记已删除，防止被同步拉回
+  try{
+    const orders = DB.get('orders');
+    if(orders.some(o => o.id === 'x')){
+      DB.set('orders', orders.filter(o => o.id !== 'x'));
+      const delKey = 'soms__deletedOrderIds';
+      const set = JSON.parse(localStorage.getItem(delKey) || '[]');
+      if(!set.includes('x')) set.push('x');
+      localStorage.setItem(delKey, JSON.stringify(set));
+      console.log('已自动清理脏数据订单 id=x');
+    }
+  }catch(e){ console.warn('清理脏数据订单 id=x 失败:', e.message); }
+
   // 双向同步：把本地（含新建/修改）数据推送到云端，确保多端/多销售可见。
   // 合并策略本地优先，不会覆盖其他端的订单。RLS 需在 Supabase 关闭才能正常读写。
   try{
