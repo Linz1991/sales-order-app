@@ -1272,6 +1272,7 @@ html{scroll-behavior:smooth}
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
         <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">v3.0</span>
+        <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
     </header>
@@ -1384,6 +1385,8 @@ const DB = {
         localStorage.setItem('soms_aftersales', JSON.stringify([]));
         return [];
       }
+      // 商品表：把原始云端列表暂存，供启动时去重对齐使用（避免本地旧缓存重复上云）
+      if(key === 'products') window._lastCloudProducts = cloud || [];
       localStorage.setItem('soms_'+key, JSON.stringify(merged));
       return merged;
     }catch(e){
@@ -1437,7 +1440,32 @@ const DB = {
         await window._sbpbClient.from(table).delete().neq('id', '___never_exist___');
         return;
       }
-      const snakeData = this._toSnake(data);
+      let snakeData = this._toSnake(data);
+      // 账号表：Supabase 实际列只有 id/username/password/name/role/phone/created_at，
+      // 本地为了业务需要扩展了 disabled/wechatAmount 等字段。 upsert 时必须剥掉不存在的列，
+      // 否则 PostgREST 会报 "column users.xxx does not exist" 导致整批账号同步失败。
+      // 同时按登录名去重（保留创建时间最早的一条），避免云端出现同名账号。
+      if(table === 'users'){
+        const allowed = new Set(['id','username','password','name','role','phone','created_at']);
+        const seen = new Set();
+        snakeData = snakeData
+          .sort((a, b) => {
+            const ta = Date.parse(((a.created_at || '')).replace(' ', 'T')) || 0;
+            const tb = Date.parse(((b.created_at || '')).replace(' ', 'T')) || 0;
+            return ta - tb;
+          })
+          .map(u => {
+            const o = {};
+            Object.keys(u).forEach(k => { if(allowed.has(k)) o[k] = u[k]; });
+            return o;
+          })
+          .filter(u => {
+            const acc = String(u.username || '').trim().toLowerCase();
+            if(!acc || seen.has(acc)) return false;
+            seen.add(acc);
+            return true;
+          });
+      }
       // upsert（按 id 冲突更新）：单条失败不会清空整表，比"删全表+插入"安全
       const batchSize = 100;
       for(let i = 0; i < snakeData.length; i += batchSize){
@@ -2609,6 +2637,7 @@ function startAutoSync(){
     customers: renderCustomers, products: renderProducts, aftersales: renderAftersales,
     commissions: renderCommissions, payments: renderPayments
   };
+  window._routeRenderers = routeRenderers;
   window._autoSyncTimer = setInterval(async () => {
     if(window._autoSyncing) return;
     window._autoSyncing = true;
@@ -2637,6 +2666,20 @@ function startAutoSync(){
     }
     finally{ window._autoSyncing = false; }
   }, 15000);
+  // 联网/断网自动处理：断网标记离线；联网后先拉云端再推本地，保证离线提交的订单不丢
+  window.addEventListener('online', function(){
+    if(typeof updateSyncBadge === 'function') updateSyncBadge('syncing');
+    if(typeof DB !== 'undefined' && DB.syncFromCloud){
+      DB.syncFromCloud().then(function(){
+        if(typeof schedulePushToCloud === 'function') schedulePushToCloud();
+        if(typeof updateSyncBadge === 'function') updateSyncBadge(navigator.onLine ? 'online' : 'pending');
+        if(window._routeRenderers && currentRoute && window._routeRenderers[currentRoute]){
+          try{ window._routeRenderers[currentRoute](); }catch(e){}
+        }
+      }).catch(function(){ if(typeof updateSyncBadge === 'function') updateSyncBadge('error'); });
+    }
+  });
+  window.addEventListener('offline', function(){ if(typeof updateSyncBadge === 'function') updateSyncBadge('offline'); });
 }
 
 // 对可同步的核心表做轻量快照（仅 id 集合+行数），用于判断是否需要刷新当前列表页
@@ -2662,10 +2705,12 @@ function snapshotSyncTables(){
 
 // 写操作后异步推送云端（防抖合并，避免高频写造成频繁全量同步）
 function schedulePushToCloud(){
+  if(typeof updateSyncBadge === 'function') updateSyncBadge(navigator.onLine ? 'syncing' : 'offline');
   if(window._pushTimer) return;
   window._pushTimer = setTimeout(() => {
     window._pushTimer = null;
-    DB.pushToCloud().catch(e => {
+    DB.pushToCloud().then(()=>{ if(typeof updateSyncBadge==='function') updateSyncBadge(navigator.onLine ? 'online' : 'pending'); }).catch(e => {
+      if(typeof updateSyncBadge==='function') updateSyncBadge(navigator.onLine ? 'error' : 'offline');
       window._lastPushErrAt = window._lastPushErrAt || 0;
       if(Date.now() - window._lastPushErrAt > 60000){
         showToast('数据同步到云端失败，请检查网络','error');
@@ -3339,7 +3384,7 @@ async function renderOrders(){
     } else {
     if(activeTab === 'pending'){
       // 待下单Tab：展开商品明细 + 损耗输入 + 利润计算
-      html += `<div class="table-wrap"><table><thead><tr><th>客户</th><th>商品明细</th><th>订单备注</th><th>操作</th></tr></thead><tbody>`;
+      html += `<div class="table-wrap"><table><thead><tr><th>客户</th><th>商品明细</th><th>订单备注</th><th>操作</th></tr></thead><tbody id="adminPendingTbody">`;
       if(filtered.length){
         filtered.forEach(o => {
           const productList = products || [];
@@ -3372,7 +3417,7 @@ async function renderOrders(){
       html += `</tbody></table></div>`;
     } else if(activeTab === 'confirmed'){
       // 已下单Tab：展开商品 + 物流单号输入 + 损耗显示
-      html += `<div class="table-wrap"><table><thead><tr><th>客户</th><th>商品明细</th><th>操作</th></tr></thead><tbody>`;
+      html += `<div class="table-wrap"><table><thead><tr><th>客户</th><th>商品明细</th><th>操作</th></tr></thead><tbody id="adminConfirmedTbody">`;
       if(filtered.length){
         filtered.forEach(o => {
           html += `<tr>`;
@@ -3400,7 +3445,7 @@ async function renderOrders(){
     } else {
       // 全部/待反馈/已完成：简单列表（含类型与状态列）
       const colCount = 6;
-      html += `<div class="table-wrap"><table><thead><tr><th>客户</th><th>金额</th><th>类型</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody>`;
+      html += `<div class="table-wrap"><table><thead><tr><th>客户</th><th>金额</th><th>类型</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="adminSimpleTbody">`;
       if(filtered.length){
         filtered.forEach(o => {
           html += `<tr>`;
@@ -3420,6 +3465,7 @@ async function renderOrders(){
     }
     html += `</div>`;
     document.getElementById('mainContent').innerHTML = html;
+    initAdminListVirtualScroll();
     // 检查留仓/上门订单是否到期待流转
     checkOrderAutoFlow();
     return;
@@ -3860,6 +3906,18 @@ let newOrderImages = []; // 新建订单图片（base64）
 let newOrderType = 'normal'; // 订单类型（normal/warehouse/door）
 
 function renderOrderNew(defaultType){
+  // 移除可能残留的草稿提示条
+  var _dbg = document.getElementById('draftBar'); if(_dbg) _dbg.remove();
+  // 若存在未提交草稿，以草稿类型重新渲染并回填（仅一次，防递归）
+  if(!window._draftRestoring && hasOrderDraft()){
+    try{
+      const _d = JSON.parse(localStorage.getItem('soms_order_draft_v1'));
+      window._draftRestoring = true;
+      renderOrderNew(_d && _d.type ? _d.type : 'normal');
+      window._draftRestoring = false;
+      return;
+    }catch(e){}
+  }
   const isAdmin = currentUser.role === 'admin';
   cart = [];
   newOrderImages = [];
@@ -4033,6 +4091,7 @@ function renderOrderNew(defaultType){
   document.getElementById('mainContent').innerHTML = html;
   fillAreaSelectsInit();
   document.getElementById('orderNumber').value = generateOrderNumber();
+  initOrderDraftOnNewOrder();
 }
 
 // 选择订单类型
@@ -4713,6 +4772,17 @@ function submitOrder(){
     return;
   }
 
+  // ===== 防重复提交：按钮防抖（2.5s）+ 内容指纹去重（8s 内相同内容拦截） =====
+  const _now = Date.now();
+  if(window._submitLockUntil && _now < window._submitLockUntil){ showToast('请勿重复点击提交','error'); return; }
+  window._submitLockUntil = _now + 2500;
+  const _fp = [contact, phone, (cart||[]).map(c => (c.productId||'')+':'+(c.qty||0)+':'+(c.price||0)).join('|'), total, newOrderType].join('§');
+  try{
+    const _last = JSON.parse(localStorage.getItem('soms_last_submit')||'null');
+    if(_last && _last.fp === _fp && (_now - _last.t) < 8000){ showToast('该订单刚刚已提交，请勿重复提交','error'); return; }
+  }catch(e){}
+  localStorage.setItem('soms_last_submit', JSON.stringify({ fp: _fp, t: _now }));
+
   const newOrder = {
     id: orderId,
     customerId: customer.id,
@@ -4749,6 +4819,8 @@ function submitOrder(){
   window._orderFilter = '';
   schedulePushToCloud();
   navigate('order-success');
+  clearOrderDraft();
+  var _dbx = document.getElementById('draftBar'); if(_dbx) _dbx.remove();
 }
 
 /* ============ 提交订单成功页 ============ */
@@ -6770,11 +6842,21 @@ function recalcAdminProfit(orderId){
 }
 
 // 管理员订单详情（查看）统一保存：损耗 + 物流单号，返回对应列表
-function saveAdminOrder(orderId){
+async function saveAdminOrder(orderId){
   const orders = DB.get('orders');
   const idx = orders.findIndex(o => o.id === orderId);
   if(idx < 0) return;
   const o = orders[idx];
+  // ===== 多设备编辑冲突预检：云端该订单有更新则提示覆盖/放弃 =====
+  window._conflictUseServer = false;
+  try{
+    const _cf = await checkOrderCloudConflict(orderId, o.updatedAt);
+    if(_cf && _cf.newer){
+      const _cont = await showConflictModal(_cf.serverUpdatedAt);
+      if(!_cont){ showToast('已取消保存，保留服务器最新数据','info'); return; }
+      if(window._conflictUseServer){ showToast('已放弃本地修改，请刷新查看服务器最新数据','info'); return; }
+    }
+  }catch(e){}
   o.updatedAt = nowStr(); // 关键：刷新时间戳，使云端合并以"本地新版"为准，避免刚填的物流单号/状态被旧云端数据覆盖
   o.items.forEach((it, i) => {
     const wEl = document.getElementById('wasteItem_' + i);
@@ -7952,6 +8034,7 @@ function renderProducts(){
           ${isAdmin ? '<button class="btn btn-secondary btn-sm" onclick="importProductsExcel()">📥 Excel 导入</button>' : ''}
           ${isAdmin ? '<button class="btn btn-secondary btn-sm" onclick="downloadProductTemplate()">⬇️ 下载模板</button>' : ''}
           ${isAdmin ? '<button class="btn btn-secondary btn-sm" onclick="batchImportProducts()">📋 粘贴导入</button>' : ''}
+          ${isAdmin ? '<button class="btn btn-secondary btn-sm" onclick="alignProductsWithCloud()">🔄 对齐云端</button>' : ''}
           ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="batchDeleteProducts()">${batchMode?'取消批量删除':'🗑️ 批量删除'}</button>` : ''}
         </div>
       </div>
@@ -8406,10 +8489,19 @@ function confirmBatchDeleteProducts(){
 
 // 启动时自动清理本地重复商品：按商品名保留 updatedAt 最新的一条，其余删除。
 // 同时把订单里引用到的旧 productId 替换成保留 id，避免利润/详情计算找不到商品。
-function cleanupDuplicateProducts(){
+function cleanupDuplicateProducts(cloudProducts){
   try{
-    const products = DB.get('products');
-    if(!products || products.length <= 180) return;
+    let products = DB.get('products') || [];
+    if(!products.length) return;
+
+    // 名称规范化：去空格、去常见括号、小写，用于识别"三头鹰 32cm 炒锅"与"三头鹰32cm炒锅"这类重复
+    function normName(s){
+      return String(s || '').toLowerCase().replace(/\s+/g, '').replace(/[()（）\[\]【】]/g, '');
+    }
+
+    const idMap = {}; // 被删除的 id -> 保留的 id
+
+    // 1) 本地精确同名去重（保留 updatedAt/createdAt 最新的一条）
     const byName = {};
     products.forEach(p => {
       const n = (p.name || '').trim();
@@ -8417,10 +8509,8 @@ function cleanupDuplicateProducts(){
       if(!byName[n]) byName[n] = [];
       byName[n].push(p);
     });
-    const keepProducts = [];
-    const idMap = {}; // 被删除的 id -> 保留的 id
+    let keepProducts = [];
     Object.values(byName).forEach(arr => {
-      // 保留 updatedAt/createdAt 最新的一条（若都没有则保留第一个）
       arr.sort((a, b) => {
         const ta = Date.parse(((a.updatedAt || a.createdAt || '')).replace(' ', 'T')) || 0;
         const tb = Date.parse(((b.updatedAt || b.createdAt || '')).replace(' ', 'T')) || 0;
@@ -8429,7 +8519,55 @@ function cleanupDuplicateProducts(){
       keepProducts.push(arr[0]);
       for(let i = 1; i < arr.length; i++) idMap[arr[i].id] = arr[0].id;
     });
+
+    // 2) 本地模糊同名去重（去除空格/括号/大小写后仍相同，视为重复）
+    const byNorm = {};
+    const afterExact = keepProducts;
+    keepProducts = [];
+    afterExact.forEach(p => {
+      const n = normName(p.name);
+      if(!n) { keepProducts.push(p); return; }
+      if(!byNorm[n]) byNorm[n] = [];
+      byNorm[n].push(p);
+    });
+    Object.values(byNorm).forEach(arr => {
+      arr.sort((a, b) => {
+        const ta = Date.parse(((a.updatedAt || a.createdAt || '')).replace(' ', 'T')) || 0;
+        const tb = Date.parse(((b.updatedAt || b.createdAt || '')).replace(' ', 'T')) || 0;
+        return tb - ta;
+      });
+      keepProducts.push(arr[0]);
+      for(let i = 1; i < arr.length; i++) idMap[arr[i].id] = arr[0].id;
+    });
+
+    // 3) 以云端商品为准：本地存在但云端没有，且规范化名称与云端某商品重复，则删除并映射到云端 ID
+    //    云端列表由 _loadTable 在同步后写入 window._lastCloudProducts
+    const cloud = cloudProducts || window._lastCloudProducts || [];
+    if(cloud.length > 0 && products.length > cloud.length + 10){
+      const cloudIdSet = new Set(cloud.map(p => p.id));
+      const cloudByNorm = {};
+      cloud.forEach(p => {
+        const n = normName(p.name);
+        if(n && !cloudByNorm[n]) cloudByNorm[n] = p.id;
+      });
+      const aligned = [];
+      keepProducts.forEach(p => {
+        if(cloudIdSet.has(p.id)){
+          aligned.push(p);
+          return;
+        }
+        const n = normName(p.name);
+        if(n && cloudByNorm[n]){
+          idMap[p.id] = cloudByNorm[n];
+          return; // 不加入保留列表
+        }
+        aligned.push(p); // 可能是离线新建的真实新品，保留
+      });
+      keepProducts = aligned;
+    }
+
     if(Object.keys(idMap).length === 0) return;
+
     // 更新本地订单中引用的 productId
     const orders = DB.get('orders');
     let orderChanged = false;
@@ -8442,23 +8580,90 @@ function cleanupDuplicateProducts(){
       });
     });
     if(orderChanged) DB.set('orders', orders);
+
     // 保存去重后的商品
     DB.set('products', keepProducts);
+
     // 把被删除的 id 加入排除集，防止 syncFromCloud 又把它们从云端拉回来
     const delKey = 'soms__deletedProductIds';
     const delIds = JSON.parse(localStorage.getItem(delKey) || '[]');
     const delSet = new Set(delIds);
     Object.keys(idMap).forEach(id => delSet.add(id));
     localStorage.setItem(delKey, JSON.stringify(Array.from(delSet)));
+
     console.log('已自动清理重复商品:', Object.keys(idMap).length, '条，保留:', keepProducts.length, '条');
+    // 如果当前在商品管理页，刷新显示
+    if(currentRoute === 'products' && typeof renderProducts === 'function'){
+      try{ renderProducts(); }catch(e){}
+    }
   }catch(e){
     console.warn('清理重复商品失败:', e.message);
+  }
+}
+
+// 清理重复登录账号：同一登录名出现多个启用账号时，保留创建时间最早的一条，其余标记禁用
+function cleanupDuplicateUsers(){
+  try{
+    const users = DB.get('users') || [];
+    if(!users.length) return;
+    const byAccount = {};
+    users.forEach(u => {
+      const acc = String(u.username || '').trim().toLowerCase();
+      if(!acc) return;
+      if(!byAccount[acc]) byAccount[acc] = [];
+      byAccount[acc].push(u);
+    });
+    let changed = false;
+    Object.values(byAccount).forEach(arr => {
+      if(arr.length <= 1) return;
+      // 按 createdAt 升序，保留第一条（最早创建）
+      arr.sort((a, b) => {
+        const ta = Date.parse(((a.createdAt || '')).replace(' ', 'T')) || 0;
+        const tb = Date.parse(((b.createdAt || '')).replace(' ', 'T')) || 0;
+        return ta - tb;
+      });
+      for(let i = 1; i < arr.length; i++){
+        if(!arr[i].disabled){
+          arr[i].disabled = true;
+          arr[i].disabledAt = nowStr();
+          arr[i].disabledReason = '登录账号重复，系统自动禁用';
+          changed = true;
+        }
+      }
+    });
+    if(changed){
+      DB.set('users', users);
+      console.log('已自动清理重复登录账号');
+      if(currentRoute === 'settings' && typeof renderSettings === 'function'){
+        try{ renderSettings(); }catch(e){}
+      }
+    }
+  }catch(e){
+    console.warn('清理重复账号失败:', e.message);
   }
 }
 
 function renderProductEdit(){
   renderProducts();
   openProductModal();
+}
+
+// 手动以云端商品为准去重对齐（管理员专用）：从云端拉取最新商品列表后，
+// 清理本地重复/变体商品，使本地数量与云端一致。
+async function alignProductsWithCloud(){
+  if(!confirm('确定要以云端商品为准刷新本地商品库吗？\n\n这会删除本地仅存在、且与云端商品重复（名称相似）的记录，保留云端已有商品。')) return;
+  try{
+    showToast('正在从云端同步商品...','info');
+    await DB.syncFromCloud();
+    const before = (DB.get('products') || []).length;
+    cleanupDuplicateProducts(window._lastCloudProducts);
+    const after = (DB.get('products') || []).length;
+    renderProducts();
+    showToast(`对齐完成：本地商品从 ${before} 条整理为 ${after} 条`,'success');
+  }catch(e){
+    console.warn('对齐云端商品失败:', e.message);
+    showToast('对齐失败，请检查网络后重试','error');
+  }
 }
 
 // 转义 HTML 属性值，防止商品名/分类含引号、<、& 等字符破坏弹窗结构导致白屏
@@ -10124,7 +10329,7 @@ function renderSettings(){
     document.getElementById('mainContent').innerHTML = '<div class="empty-state"><div class="empty-icon">🔒</div><div class="empty-text">无权访问</div></div>';
     return;
   }
-  var users = DB.get('users');
+  var users = (DB.get('users') || []).filter(function(u){ return !u.disabled; });
   var html = '<div class="card"><div class="card-title"><span class="title-text">⚙️ 系统设置</span></div>';
 
   html += '<div class="detail-section card"><h4 style="margin-bottom:12px">👥 账号管理</h4>';
@@ -10139,7 +10344,10 @@ function renderSettings(){
   html += '<div style="margin-top:12px"><label style="font-size:13px;color:var(--text-muted)">微信金额（初始值，单位：元）</label><input class="form-control" id="newUserWechat" type="number" min="0" value="0" style="max-width:220px" placeholder="微信收款初始金额"></div>';
   html += '<div style="margin-top:12px"><button class="btn btn-primary btn-sm" onclick="addUser()">提交</button></div>';
   html += '</div></div>';
-  html += '<button class="btn btn-primary btn-sm" onclick="toggleUserForm()" style="margin-bottom:14px">+ 新增账号</button>';
+  html += '<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">';
+  html += '<button class="btn btn-primary btn-sm" onclick="toggleUserForm()">+ 新增账号</button>';
+  html += '<button class="btn btn-secondary btn-sm" onclick="cleanupDuplicateUsers()">🧹 清理重复账号</button>';
+  html += '</div>';
   html += '<div class="table-wrap"><table><thead><tr><th>姓名</th><th>登录账号</th><th>角色</th><th>创建时间</th><th>微信金额</th><th>操作</th></tr></thead><tbody>';
   users.forEach(function(u){
     var isMe = u.id === currentUser.id;
@@ -10320,9 +10528,20 @@ async function addUser(){
   if(!name){ showToast('请输入姓名','error'); return; }
   if(!account){ showToast('请输入登录账号','error'); return; }
   if(!password){ showToast('请输入密码','error'); return; }
+
+  // 先做一次云端同步，拉取其它设备最近创建的账号，防止多端同时添加同名账号
+  try{
+    await DB.syncFromCloud();
+  }catch(e){
+    console.warn('新增账号前同步失败:', e.message);
+  }
+
   const users = DB.get('users');
   // 查重排除已禁用的账号：被「删除」（软删除/禁用）的人员释放用户名，可重新添加
-  if(users.find(u => u.username === account && !u.disabled)){ showToast('登录账号已存在','error'); return; }
+  // 比较时忽略大小写与首尾空格
+  if(users.find(u => String(u.username || '').trim().toLowerCase() === account.toLowerCase() && !u.disabled)){
+    showToast('登录账号已存在','error'); return;
+  }
   let hp = password;
   try{ hp = await hashPassword(password); }catch(e){}
   users.push({id:DB.uid('u'), username:account, password:hp, name:name, role:role, wechatAmount:wechatAmount, createdAt:nowStr()});
@@ -11730,6 +11949,8 @@ window.onload = async function(){
 
   // 清理重复商品：Excel 多次导入会产生同名商品，启动时自动按名称保留最新的一条
   cleanupDuplicateProducts();
+  // 清理重复登录账号：先把本地重复账号禁用，避免推送到云端时产生同名账号
+  cleanupDuplicateUsers();
 
   // 双向同步：把本地（含新建/修改）数据推送到云端，确保多端/多销售可见。
   // 合并策略本地优先，不会覆盖其他端的订单。RLS 需在 Supabase 关闭才能正常读写。
@@ -11738,6 +11959,16 @@ window.onload = async function(){
   }catch(e){
     console.warn('推送到云端失败:', e.message);
     showToast('首次同步到云端失败，请检查网络后点“同步到云端”按钮','error');
+  }
+
+  // 再从云端拉取一次，拿到云端商品基准列表后做一次云端对齐去重，
+  // 防止"云端已清理到 180 条，但本地缓存仍有 333 条重复变体"导致数量虚高。
+  try{
+    await DB.syncFromCloud();
+    cleanupDuplicateProducts(window._lastCloudProducts);
+    cleanupDuplicateUsers();
+  }catch(e){
+    console.warn('云端对齐去重失败:', e.message);
   }
 
   // 恢复正常登录流程
