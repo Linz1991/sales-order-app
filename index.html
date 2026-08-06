@@ -1400,12 +1400,16 @@ const DB = {
         if(error) throw error;
       }
       // 删除云端中"合并集里已不存在"的 id，传播本地删除（不影响其它端新增的单）
-      const ids = data.map(r => r && r.id != null ? r.id : null).filter(Boolean)
-        .map(id => '"' + String(id).replace(/"/g, '\\"') + '"');
-      if(ids.length){
-        const { error: delErr } = await window._sbpbClient.from(table)
-          .delete().not('id', 'in', '(' + ids.join(',') + ')');
-        if(delErr) console.warn('清理已删除记录失败 ['+key+']:', delErr.message);
+      // 注意：users 表不执行此清理——账号是跨设备共享的权威数据，任一台落后设备（如云端拉取偶发失败）
+      // 都不应把别人创建的账号从云端物理删除，否则会导致"在其他设备创建的账号，这里登录不上"的问题。
+      if(key !== 'users'){
+        const ids = data.map(r => r && r.id != null ? r.id : null).filter(Boolean)
+          .map(id => '"' + String(id).replace(/"/g, '\\"') + '"');
+        if(ids.length){
+          const { error: delErr } = await window._sbpbClient.from(table)
+            .delete().not('id', 'in', '(' + ids.join(',') + ')');
+          if(delErr) console.warn('清理已删除记录失败 ['+key+']:', delErr.message);
+        }
       }
       console.log('表 ['+key+'] 同步完成，共 '+data.length+' 条');
     }catch(e){
@@ -2483,7 +2487,13 @@ async function handleLogin(){
   const user = document.getElementById('loginUser').value.trim();
   const pass = document.getElementById('loginPass').value;
   if(!user || !pass){ showToast('请输入用户名和密码','error'); return; }
-  // 用户数据已通过 DB.syncFromCloud() 从 Supabase 同步到 localStorage 缓存
+  // 登录前先强制从云端拉取最新账号（解决"在其他设备/浏览器刚创建的账号，本机缓存还没同步"导致登录不上的问题）
+  try{
+    if(typeof window._sbpbClient !== 'undefined'){
+      await DB._loadTable('users');
+    }
+  }catch(e){ /* 云端不可用则降级用本地缓存，不阻断登录 */ }
+  // 用户数据已通过 DB.syncFromCloud() + 上面强制刷新 从 Supabase 同步到 localStorage 缓存
   const users = DB.get('users');
   const target = users.find(u => u.username === user && !u.disabled);
   if(!target){ showToast('用户名或密码错误','error'); return; }
