@@ -4986,7 +4986,7 @@ function renderOrderDetail(){
               <td colspan="${totalColspan}" style="text-align:right;padding:10px 12px">${isAdminOrderView?'商品总金额':'合计'}</td>
               <td style="color:var(--primary);padding:10px 12px" id="editTotalCell">${money(order.total)}</td>
             </tr>
-            ${isAdminOrderView ? `
+            ${(isAdmin && !editMode && !isAdminDoorDetail) ? `
             <tr style="background:#f8f9fa;font-weight:700">
               <td colspan="${totalColspan}" style="text-align:right;padding:10px 12px">实时利润（商品售价-成本-损耗）</td>
               <td style="color:${calcOrderProfit(order)>=0?'var(--success)':'var(--danger)'};padding:10px 12px" id="adminProfitCell">${money(calcOrderProfit(order))}</td>
@@ -5179,9 +5179,13 @@ function renderOrderDetail(){
       html += `<button class="btn btn-danger" onclick="deleteOrder('${order.id}')">删除订单</button>`;
       html += `</div>`;
     } else {
-      // 编辑订单按钮（跳转编辑详情页）；仅管理员使用（销售走下方 enterEditMode 内联编辑）
+      // 编辑/保存按钮：留仓订单详情页改为「保存修改」，保存损耗/物流/日期并返回列表；其他订单仍走编辑详情页
       if(!isSalesRestrictedView && isAdmin){
-        html += `<button class="btn btn-primary" onclick="editOrder('${order.id}')">✏️ 编辑订单</button>`;
+        if(order.type === 'warehouse'){
+          html += `<button class="btn btn-success" onclick="saveAdminOrder('${order.id}')">保存修改</button>`;
+        }else{
+          html += `<button class="btn btn-primary" onclick="editOrder('${order.id}')">✏️ 编辑订单</button>`;
+        }
       }
 
       // 普通/留仓订单：待反馈 → 已反馈（管理员直接确认；销售需点"反馈"并确认）
@@ -9952,9 +9956,13 @@ function renderWarehouse(){
   html += '<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="搜索订单号/客户/电话/商品" value="'+keyword+'" oninput="window._warehouseFilter=this.value;renderWarehouse()"></div></div>';
 
   if(filtered.length){
-    html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
+    html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>利润/损耗</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
     filtered.forEach(function(o){
-      var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+o.customerName+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDateTime(o.createdAt)+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+      var totalWaste = (o.items||[]).reduce(function(s,it){ return s + (parseInt(it.waste)||0); }, 0);
+      var profit = calcOrderProfit(o);
+      var profitColor = profit >= 0 ? 'var(--success)' : 'var(--danger)';
+      var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>';
+      html += '<tr><td>'+orderIdCell(o.id)+'<br>'+(o.customerName||'-')+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td style="text-align:center"><div style="font-weight:600;color:'+profitColor+'">'+money(profit)+'</div><div style="font-size:11px;color:var(--text-muted)">损耗 '+money(totalWaste)+'</div></td><td>'+formatOrderDateTime(o.createdAt)+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
     });
     html += '</tbody></table></div>';
   } else {
