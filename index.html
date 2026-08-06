@@ -1378,6 +1378,12 @@ const DB = {
       // 导致“刷新后订单丢失 / 销售下的单管理员看不到”等问题。与 syncTable 的合并策略一致。
       const local = this.get(key, []);
       const merged = this._mergeById(local, cloud, key === 'orders' ? this.get('_deletedOrderIds', []) : (key === 'products' ? this.get('_deletedProductIds', []) : null));
+      // 售后工单：云端已被清空（或本就为空）时，强制清空本地缓存，避免刷新后本地旧单被合并逻辑复活上云。
+      // 正常新建售后单会即时上云（cloud 非空），不会受影响。
+      if(key === 'aftersales' && (!cloud || cloud.length === 0)){
+        localStorage.setItem('soms_aftersales', JSON.stringify([]));
+        return [];
+      }
       localStorage.setItem('soms_'+key, JSON.stringify(merged));
       return merged;
     }catch(e){
@@ -3191,6 +3197,8 @@ async function renderOrders(){
       door:      [{key:'all',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'completed',label:'已完成'}]
     };
     const typeLabel = { normal:'普通', warehouse:'留仓', door:'上门' };
+    // 方案A：订单列表类型分段（普通/留仓/上门分开），默认「普通」
+    const listType = window._orderListType || 'normal';
     const tabs = statusTabsByType[listType] || statusTabsByType.normal;
 
     // 当前状态Tab（校验合法性：切换类型后若原Tab不存在则回退到待下单）
@@ -3199,8 +3207,6 @@ async function renderOrders(){
 
     // 当前类型下的订单（普通/留仓/上门 均纳入订单列表，按上方类型分段切换分别展示）
     const statusOrders = orders;
-    // 方案A：订单列表类型分段（普通/留仓/上门分开），默认「普通」
-    const listType = window._orderListType || 'normal';
     // 先按关键词+日期过滤（类型筛选前），用于计算各类型角标总数
     let baseBeforeType = statusOrders;
     if(keyword){
