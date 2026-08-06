@@ -8034,14 +8034,16 @@ function batchImportProducts(){
   document.getElementById('modalContainer').innerHTML = modalHtml;
 }
 
-// 公共导入逻辑：把"名称\t售价\t成本"行数组写入商品库（粘贴与 Excel 共用）
+// 公共导入逻辑：lines 每项为已切分好的数组 [名称, 售价, 成本]（粘贴导入会先切分，Excel 直接按列传入）
 function doImportProductLines(lines, category){
   const products = DB.get('products');
   let successCount = 0;
   const failed = [];
   lines.forEach((line, li) => {
-    // 支持 Tab 或多个空格分隔
-    const parts = line.split(/\t+|\s{2,}|\s/).map(s => s.trim()).filter(Boolean);
+    // Excel 模式直接传入数组；粘贴模式传入字符串，需要先切分
+    let parts = Array.isArray(line) ? line.slice() : String(line).split(/\t+|\s{2,}|\s/).map(s => s.trim()).filter(Boolean);
+    // 只保留前 3 列：名称、售价、成本
+    parts = parts.slice(0, 3);
     const name = parts[0] || '';
     const priceRaw = parts[1] || '';
     const costRaw = parts[2] || '';
@@ -8077,7 +8079,7 @@ function doImportProductLines(lines, category){
       }
     }
     if(reason){
-      failed.push({ no: li + 1, raw: line, name: name, price: priceRaw, cost: costRaw, reason: reason });
+      failed.push({ no: li + 1, raw: Array.isArray(line) ? line.join('\t') : line, name: name, price: priceRaw, cost: costRaw, reason: reason });
     }
   });
   DB.set('products', products);
@@ -8150,9 +8152,11 @@ function importProductsExcel(){
           const ws = wb.Sheets[wb.SheetNames[0]];
           const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' });
           let lines = rows.map(function(r){
-            return (r || []).slice(0,3).map(function(c){ return String(c == null ? '' : c).trim(); }).join('\t');
-          }).filter(function(l){ return l.replace(/\t/g,'').trim() !== ''; });
-          lines = skipHeaderIfNeeded(lines);
+            // 直接以数组形式传入，保留商品名称内的空格；只取前 3 列
+            return (r || []).slice(0,3).map(function(c){ return String(c == null ? '' : c).trim(); });
+          }).filter(function(arr){ return arr.length > 0 && arr.some(function(c){ return c !== ''; }); });
+          // 跳过表头：首行包含商品/售价/成本等关键词
+          if(lines.length && /商品|售价|成本|名称|价格|profit|cost|name/i.test(lines[0].join(''))) lines = lines.slice(1);
           if(!lines.length){ showToast('文件中没有可导入的商品数据', 'error'); return; }
           doImportProductLines(lines, '');
         }catch(err){
