@@ -6815,6 +6815,13 @@ function saveItemWaste(orderId, itemIndex, value) {
 // 管理员对订单逐商品标记"已下单"：点击后该商品 ordered=true；全部商品已下单则订单状态转为"已下单"(confirmed)
 // 支持所有订单类型（普通/留仓/上门），始终停留在订单详情页不跳转
 function markItemOrdered(orderId, idx){
+  // 防连击：DOM 重绘很快，快速点击/双击可能让第二击落到刚出现的"已下单"按钮上触发撤销
+  const cdKey = orderId + ':' + idx;
+  if(!window._itemOrderCooldown) window._itemOrderCooldown = {};
+  const last = window._itemOrderCooldown[cdKey];
+  if(last && Date.now() - last < 600){ return; }
+  window._itemOrderCooldown[cdKey] = Date.now();
+
   const orders = DB.get('orders');
   const oi = orders.findIndex(o => o.id === orderId);
   if(oi < 0) return;
@@ -6864,6 +6871,13 @@ function markItemOrdered(orderId, idx){
 // 撤销某商品的“已下单”标记；若订单已因全部下单而转为“已下单”，撤销任一商品后回到“待下单”
 // 支持所有订单类型（普通/留仓/上门），并在列表与详情视图下都能正确重渲染
 function markItemUnordered(orderId, idx){
+  // 防连击：避免双击"已下单"时第一下撤销、第二下又立刻重新下单导致闪烁回退
+  const cdKey = orderId + ':' + idx;
+  if(!window._itemOrderCooldown) window._itemOrderCooldown = {};
+  const last = window._itemOrderCooldown[cdKey];
+  if(last && Date.now() - last < 600){ return; }
+  window._itemOrderCooldown[cdKey] = Date.now();
+
   const orders = DB.get('orders');
   const oi = orders.findIndex(o => o.id === orderId);
   if(oi < 0) return;
