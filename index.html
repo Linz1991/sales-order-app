@@ -3077,7 +3077,7 @@ function switchOrderTab(tab){
   renderOrders();
 }
 
-// 方案A：订单列表类型切换（全部 / 普通 / 留仓），切换后重渲染，计数与列表保持一致
+// 方案A：订单列表类型切换（普通 / 留仓 / 全部），切换后重渲染，计数与列表保持一致
 function switchOrderListType(type){
   window._orderListType = type;
   renderOrders();
@@ -3087,7 +3087,7 @@ function switchOrderListType(type){
 function salesStatusLabel(status){
   if(status === 'pending') return '<span class="tag tag-pending">待下单</span>';
   if(status === 'confirmed' || status === 'shipped') return '<span class="tag tag-confirmed">已下单</span>';
-  if(status === 'feedback') return '<span class="tag tag-feedback">待反馈</span>';
+  if(status === 'feedback') return '<span class="tag tag-feedback">已反馈</span>';
   return '<span class="tag tag-completed">已完成</span>'; // completed / feedback_done
 }
 // 销售端状态筛选分组（内部状态数组）
@@ -3156,8 +3156,8 @@ async function renderOrders(){
   if(isAdmin){
     // 状态Tab（普通+留仓共用，结构一致）
     const statusTabsByType = {
-      normal:    [{key:'all',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'}],
-      warehouse: [{key:'all',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'}]
+      normal:    [{key:'all',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'已反馈'},{key:'completed',label:'已完成'}],
+      warehouse: [{key:'all',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'已反馈'},{key:'completed',label:'已完成'}]
     };
     const typeLabel = { normal:'普通', warehouse:'留仓', door:'上门' };
     const tabs = statusTabsByType.normal;
@@ -3251,9 +3251,9 @@ async function renderOrders(){
       </div>`;
     // 方案A：类型分段切换（全部 / 普通 / 留仓），带图标与数量角标，与状态Tab视觉分层
     html += `<div class="order-type-seg">
-      <button class="ot-item ${listType==='all'?'active':''}" onclick="switchOrderListType('all')"><span class="ot-icon">📋</span><span>全部</span><span class="ot-count">${typeCounts.all}</span></button>
       <button class="ot-item ${listType==='normal'?'active':''}" onclick="switchOrderListType('normal')"><span class="ot-icon">📦</span><span>普通</span><span class="ot-count">${typeCounts.normal}</span></button>
       <button class="ot-item ${listType==='warehouse'?'active':''}" onclick="switchOrderListType('warehouse')"><span class="ot-icon">🏷️</span><span>留仓</span><span class="ot-count">${typeCounts.warehouse}</span></button>
+      <button class="ot-item ${listType==='all'?'active':''}" onclick="switchOrderListType('all')"><span class="ot-icon">📋</span><span>全部</span><span class="ot-count">${typeCounts.all}</span></button>
     </div>`;
     // 状态Tab（与售后工单一致的按钮样式）
     html += `<div class="admin-tab-bar" style="margin-bottom:14px">`;
@@ -3429,12 +3429,12 @@ async function renderOrders(){
   // 默认显示最近 _pageSize 条，点「加载更多」可继续展开（突破原 10 条上限）
   filtered = filtered.slice(0, _pageSize);
 
-  // 销售端状态筛选标签：全部 / 待下单 / 已下单 / 待反馈 / 已完成
+  // 销售端状态筛选标签：全部 / 待下单 / 已下单 / 已反馈 / 已完成
   const salesStatusTabs = [
     {key:'', label:'全部'},
     {key:'pending', label:'待下单'},
     {key:'confirmed', label:'已下单'},
-    {key:'feedback', label:'待反馈'},
+    {key:'feedback', label:'已反馈'},
     {key:'completed', label:'已完成'}
   ];
 
