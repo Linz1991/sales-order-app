@@ -1378,7 +1378,11 @@ const DB = {
       // 本地优先合并：避免云端数据（可能为空或滞后）覆盖掉本地刚新增/修改的数据，
       // 导致“刷新后订单丢失 / 销售下的单管理员看不到”等问题。与 syncTable 的合并策略一致。
       const local = this.get(key, []);
-      const merged = this._mergeById(local, cloud, key === 'orders' ? this.get('_deletedOrderIds', []) : (key === 'products' ? this.get('_deletedProductIds', []) : null));
+      const merged = this._mergeById(local, cloud,
+        key === 'orders' ? this.get('_deletedOrderIds', []) :
+        key === 'products' ? this.get('_deletedProductIds', []) :
+        key === 'users' ? this.get('_deletedUserIds', []) : null
+      );
       // 售后工单：云端已被清空（或本就为空）时，强制清空本地缓存，避免刷新后本地旧单被合并逻辑复活上云。
       // 正常新建售后单会即时上云（cloud 非空），不会受影响。
       if(key === 'aftersales' && (!cloud || cloud.length === 0)){
@@ -1428,7 +1432,11 @@ const DB = {
         const { data: cloudRows, error } = await window._sbpbClient.from(table).select('*');
         if(!error && cloudRows){
           const cloud = this._toCamel(cloudRows);
-          data = this._mergeById(local, cloud, key === 'orders' ? this.get('_deletedOrderIds', []) : (key === 'products' ? this.get('_deletedProductIds', []) : null));
+          data = this._mergeById(local, cloud,
+            key === 'orders' ? this.get('_deletedOrderIds', []) :
+            key === 'products' ? this.get('_deletedProductIds', []) :
+            key === 'users' ? this.get('_deletedUserIds', []) : null
+          );
           // 写回本地缓存为合并后的全集
           localStorage.setItem('soms_' + key, JSON.stringify(data));
         }
@@ -1446,7 +1454,7 @@ const DB = {
       // 否则 PostgREST 会报 "column users.xxx does not exist" 导致整批账号同步失败。
       // 同时按登录名去重（保留创建时间最早的一条），避免云端出现同名账号。
       if(table === 'users'){
-        const allowed = new Set(['id','username','password','name','role','phone','created_at']);
+        const allowed = new Set(['id','username','password','name','role','phone','created_at','updated_at']);
         const seen = new Set();
         snakeData = snakeData
           .sort((a, b) => {
@@ -1474,9 +1482,19 @@ const DB = {
         if(error) throw error;
       }
       // 删除云端中"合并集里已不存在"的 id，传播本地删除（不影响其它端新增的单）
-      // 注意：users 表不执行此清理——账号是跨设备共享的权威数据，任一台落后设备（如云端拉取偶发失败）
-      // 都不应把别人创建的账号从云端物理删除，否则会导致"在其他设备创建的账号，这里登录不上"的问题。
-      if(key !== 'users'){
+      if(key === 'users'){
+        // 账号表：只清理被明确标记为已删除的 id，避免落后设备误删别人新建的账号。
+        // 同时这些 id 在 _mergeById 中已被过滤，不会从云端拉回到本地。
+        const delIds = this.get('_deletedUserIds', []);
+        if(delIds.length){
+          const ids = delIds.filter(id => id != null).map(id => '"' + String(id).replace(/"/g, '\\"') + '"');
+          if(ids.length){
+            const { error: delErr } = await window._sbpbClient.from(table)
+              .delete().in('id', '(' + ids.join(',') + ')');
+            if(delErr) console.warn('清理已删除账号失败 ['+key+']:', delErr.message);
+          }
+        }
+      }else{
         const ids = data.map(r => r && r.id != null ? r.id : null).filter(Boolean)
           .map(id => '"' + String(id).replace(/"/g, '\\"') + '"');
         if(ids.length){
@@ -2568,6 +2586,8 @@ async function handleLogin(){
     }
   }catch(e){ /* 云端不可用则降级用本地缓存，不阻断登录 */ }
   // 用户数据已通过 DB.syncFromCloud() + 上面强制刷新 从 Supabase 同步到 localStorage 缓存
+  // 清理重复/残留账号，确保同名账号只保留最新（含最新密码）的一条
+  cleanupDuplicateUsers();
   const users = DB.get('users');
   const target = users.find(u => u.username === user && !u.disabled);
   if(!target){ showToast('用户名或密码错误','error'); return; }
@@ -8603,7 +8623,31 @@ function cleanupDuplicateProducts(cloudProducts){
   }
 }
 
-// 清理重复登录账号：同一登录名出现多个启用账号时，保留创建时间最早的一条，其余标记禁用
+// 物理删除用户：本地移除 + 云端 DELETE + 记录 _deletedUserIds，防止被同步拉回来
+async function _deleteUserPhysical(id){
+  if(id === currentUser.id) return false; // 不能删自己
+  try{
+    const users = DB.get('users') || [];
+    const idx = users.findIndex(u => u.id === id);
+    if(idx < 0) return false;
+    users.splice(idx, 1);
+    DB.set('users', users);
+    const delIds = new Set(DB.get('_deletedUserIds', []));
+    delIds.add(id);
+    DB.set('_deletedUserIds', Array.from(delIds));
+    if(typeof window._sbpbClient !== 'undefined'){
+      try{
+        await window._sbpbClient.from('users').delete().eq('id', id);
+      }catch(e){ console.warn('云端删除账号失败:', e.message); }
+    }
+    return true;
+  }catch(e){
+    console.warn('物理删除用户失败:', e.message);
+    return false;
+  }
+}
+
+// 清理重复登录账号：同一登录名出现多个账号时，保留创建时间最早的一条，其余物理删除（含云端）
 function cleanupDuplicateUsers(){
   try{
     const users = DB.get('users') || [];
@@ -8615,30 +8659,40 @@ function cleanupDuplicateUsers(){
       if(!byAccount[acc]) byAccount[acc] = [];
       byAccount[acc].push(u);
     });
-    let changed = false;
+    const toDelete = new Set();
     Object.values(byAccount).forEach(arr => {
       if(arr.length <= 1) return;
-      // 按 createdAt 升序，保留第一条（最早创建）
+      // 按 updatedAt/createdAt 降序，保留最新的一条（确保保留最近修改过密码/角色的账号）
       arr.sort((a, b) => {
-        const ta = Date.parse(((a.createdAt || '')).replace(' ', 'T')) || 0;
-        const tb = Date.parse(((b.createdAt || '')).replace(' ', 'T')) || 0;
-        return ta - tb;
+        const ta = Date.parse(((a.updatedAt || a.createdAt || '')).replace(' ', 'T')) || 0;
+        const tb = Date.parse(((b.updatedAt || b.createdAt || '')).replace(' ', 'T')) || 0;
+        return tb - ta;
       });
-      for(let i = 1; i < arr.length; i++){
-        if(!arr[i].disabled){
-          arr[i].disabled = true;
-          arr[i].disabledAt = nowStr();
-          arr[i].disabledReason = '登录账号重复，系统自动禁用';
-          changed = true;
-        }
+      // 当前用户如果也在重复组里，必须保留；否则保留最新的一条
+      const keepIndex = Math.max(0, arr.findIndex(u => u.id === currentUser.id));
+      for(let i = 0; i < arr.length; i++){
+        if(i === keepIndex) continue;
+        toDelete.add(arr[i].id);
       }
     });
-    if(changed){
-      DB.set('users', users);
-      console.log('已自动清理重复登录账号');
-      if(currentRoute === 'settings' && typeof renderSettings === 'function'){
-        try{ renderSettings(); }catch(e){}
-      }
+    if(!toDelete.size) return;
+    // 批量物理删除本地 + 云端
+    const delArray = Array.from(toDelete);
+    const newUsers = users.filter(u => !toDelete.has(u.id));
+    DB.set('users', newUsers);
+    const delIds = new Set(DB.get('_deletedUserIds', []));
+    delArray.forEach(id => delIds.add(id));
+    DB.set('_deletedUserIds', Array.from(delIds));
+    (async () => {
+      if(typeof window._sbpbClient === 'undefined') return;
+      try{
+        const ids = delArray.map(id => '"' + String(id).replace(/"/g, '\\"') + '"');
+        await window._sbpbClient.from('users').delete().in('id', '(' + ids.join(',') + ')');
+      }catch(e){ console.warn('批量云端删除重复账号失败:', e.message); }
+    })();
+    console.log('已自动清理重复登录账号:', delArray.length, '条');
+    if(currentRoute === 'settings' && typeof renderSettings === 'function'){
+      try{ renderSettings(); }catch(e){}
     }
   }catch(e){
     console.warn('清理重复账号失败:', e.message);
@@ -10546,8 +10600,11 @@ async function addUser(){
   }
   let hp = password;
   try{ hp = await hashPassword(password); }catch(e){}
-  users.push({id:DB.uid('u'), username:account, password:hp, name:name, role:role, wechatAmount:wechatAmount, createdAt:nowStr()});
+  const now = nowStr();
+  users.push({id:DB.uid('u'), username:account, password:hp, name:name, role:role, wechatAmount:wechatAmount, createdAt:now, updatedAt:now});
   DB.set('users', users);
+  // 立即推云端，确保新增账号在其它设备/Pad 能立刻登录，不依赖定时同步
+  DB.pushToCloud().catch(e => console.warn('新增账号推云端失败:', e.message));
   showToast('人员已添加','success');
   renderUsers();
 }
@@ -10568,16 +10625,15 @@ function saveUserWechat(id){
 
 function deleteUser(id){
   if(id === currentUser.id){ showToast('不能删除自己的账号','error'); return; }
-  showConfirm('确定删除此人员吗？\n（该账号将被禁用无法再登录，但其历史订单数据会完整保留）', () => {
-    const users = DB.get('users');
-    const idx = users.findIndex(u => u.id === id);
-    if(idx >= 0){
-      // 标记禁用而非物理删除：保证订单数据中 salesId 仍可关联、云端同步不会把人拉回来
-      users[idx].disabled = true;
-      users[idx].disabledAt = nowStr();
-      DB.set('users', users);
-      showToast('账号已禁用，该人员无法再登录','success');
+  const u = (DB.get('users') || []).find(x => x.id === id);
+  const label = u ? `${u.name}（${u.username}）` : '此人员';
+  showConfirm(`确定删除 ${label} 吗？\n删除后该账号无法登录，历史订单数据仍会保留。`, async () => {
+    const ok = await _deleteUserPhysical(id);
+    if(ok){
+      showToast('账号已删除','success');
       renderUsers();
+    }else{
+      showToast('删除失败','error');
     }
   });
 }
@@ -10589,7 +10645,9 @@ async function resetUserPassword(id){
     let hp = '123456';
     try{ hp = await hashPassword('123456'); }catch(e){}
     users[idx].password = hp;
+    users[idx].updatedAt = nowStr();
     DB.set('users', users);
+    schedulePushToCloud();
     showToast('密码已重置为 123456','success');
   }
 }
@@ -11483,7 +11541,9 @@ function submitChangePassword(){
     let nh = newPass;
     try{ nh = await hashPassword(newPass); }catch(e){}
     cur.password = nh;
+    cur.updatedAt = nowStr();
     DB.set('users', users);
+    schedulePushToCloud();
     closeModal();
     showToast('密码修改成功','success');
   })();
