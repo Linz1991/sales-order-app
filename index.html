@@ -3233,8 +3233,9 @@ function switchOrderListType(type){
 function salesStatusLabel(status){
   if(status === 'pending') return '<span class="tag tag-pending">待下单</span>';
   if(status === 'confirmed' || status === 'shipped') return '<span class="tag tag-confirmed">已下单</span>';
-  if(status === 'feedback') return '<span class="tag tag-feedback">已反馈</span>';
-  return '<span class="tag tag-completed">已完成</span>'; // completed / feedback_done
+  if(status === 'feedback') return '<span class="tag tag-feedback">待反馈</span>';
+  if(status === 'feedback_done') return '<span class="tag tag-feedback-done">已反馈</span>';
+  return '<span class="tag tag-completed">已完成</span>'; // completed
 }
 // 销售端状态筛选分组（内部状态数组）
 function salesStatusGroup(key){
@@ -3302,8 +3303,8 @@ async function renderOrders(){
   if(isAdmin){
     // 状态Tab（普通+留仓含「已反馈」；上门无待反馈环节，仅 全部/待下单/已下单/已完成）
     const statusTabsByType = {
-      normal:    [{key:'all',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'已反馈'},{key:'completed',label:'已完成'}],
-      warehouse: [{key:'all',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'已反馈'},{key:'completed',label:'已完成'}],
+      normal:    [{key:'all',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'}],
+      warehouse: [{key:'all',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'}],
       door:      [{key:'all',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'completed',label:'已完成'}]
     };
     const typeLabel = { normal:'普通', warehouse:'留仓', door:'上门' };
@@ -3541,8 +3542,8 @@ async function renderOrders(){
   const listType = window._orderListType || 'normal';
   // 类型分段状态Tab（普通/留仓含「已反馈」；上门无待反馈环节，仅 全部/待下单/已下单/已完成）
   const salesStatusTabsByType = {
-    normal:    [{key:'',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'已反馈'},{key:'completed',label:'已完成'}],
-    warehouse: [{key:'',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'已反馈'},{key:'completed',label:'已完成'}],
+    normal:    [{key:'',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'}],
+    warehouse: [{key:'',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'}],
     door:      [{key:'',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'completed',label:'已完成'}]
   };
   const salesTabs = salesStatusTabsByType[listType] || salesStatusTabsByType.normal;
