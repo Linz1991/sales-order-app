@@ -6968,10 +6968,10 @@ function renderUnshipped() {
     filtered.forEach(o => {
       html += `
         <div class="detail-section card">
-          <h4>${o.id} - ${o.customerName}</h4>
+          <h4>${o.id} - ${o.customerName||'-'}</h4>
           <div class="info-grid">
-            <div class="info-item"><div class="info-label">客户</div><div class="info-value">${o.customerName}</div></div>
-            <div class="info-item"><div class="info-label">提交人(销售)</div><div class="info-value">${o.salesName}</div></div>
+            <div class="info-item"><div class="info-label">客户</div><div class="info-value">${o.customerName||'-'}</div></div>
+            <div class="info-item"><div class="info-label">提交人(销售)</div><div class="info-value">${o.salesName||'-'}</div></div>
             <div class="info-item"><div class="info-label">订单类型</div><div class="info-value">${orderTypeTag(o.type)}</div></div>
             <div class="info-item"><div class="info-label">订单日期</div><div class="info-value">${o.orderDate||'-'}</div></div>
             ${(isAdmin || o.salesId === currentUser.id) ? `
@@ -8424,8 +8424,8 @@ function renderPayments(){
             ${filtered.length ? filtered.map(p=>`
               <tr>
                 <td><a class="btn-link" onclick="viewOrder('${p.orderId}')">${p.orderId}</a></td>
-                <td>${p.customerName}</td>
-                ${isAdmin ? `<td>${p.salesName}</td>` : ''}
+                <td>${p.customerName||'-'}</td>
+                ${isAdmin ? `<td>${p.salesName||'-'}</td>` : ''}
                 <td style="font-weight:600">${money(p.amount)}</td>
                 <td>${p.stage || '-'}</td>
                 <td>${p.method}</td>
