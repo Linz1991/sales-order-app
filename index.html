@@ -494,7 +494,6 @@ tbody tr:hover{background:#f3f4f6}
 }
 .tag-pending{background:#fef3c7;color:#92400e}
 .tag-confirmed{background:#dbeafe;color:#1e40af}
-.tag-shipped{background:#e0e7ff;color:#3730a3}
 .tag-feedback{background:#fef3c7;color:#92400e}
 .tag-feedback-done{background:#f3e8ff;color:#6b21a8}
 .tag-completed{background:#d1fae5;color:#065f46}
@@ -1307,7 +1306,9 @@ const DB = {
     paymentMethod:'payment_method', expressCompany:'express_company', commissionId:'commission_id',
     period:'period', aftersaleId:'aftersale_id', orderItemId:'order_item_id',
     fullPayment:'full_payment', finalPayment:'final_payment', completionDate:'completion_date',
-    collectedAmount:'collected_amount', doorDate:'door_date', contactName:'contact_name'
+    collectedAmount:'collected_amount', doorDate:'door_date', contactName:'contact_name',
+    actorId:'actor_id', actorName:'actor_name', actorRole:'actor_role', action:'action',
+    targetType:'target_type', targetId:'target_id', targetLabel:'target_label', before:'before', after:'after', detail:'detail'
   },
   _snakeToCamel: {},
   // JSONB 字段（需要序列化/反序列化）
@@ -1517,12 +1518,17 @@ const DB = {
     }
     this._initMapping();
     this._setSyncStatus('syncing');
-    const tables = ['users','customers','products','orders','aftersales','payments','commissions'];
+    const tables = ['users','customers','products','orders','aftersales','payments','commissions','audit_log'];
     let hasError = false;
     for(let i = 0; i < tables.length; i++){
       try{
-        const result = await this._loadTable(tables[i]);
-        if(result === null) hasError = true;
+      const result = await this._loadTable(tables[i]);
+      if(result === null){
+        // audit_log 表可能尚未在 Supabase 创建（需用户跑一次 copyRlsSql 的建表语句），
+        // 此时跳过该表，避免把整体同步状态误报为"失败"。本地审计始终可用。
+        if(tables[i] === 'audit_log'){ console.warn('audit_log 表尚未创建，跳过同步（本地审计仍可用）'); continue; }
+        hasError = true;
+      }
       }catch(e){
         console.warn('同步表 ['+tables[i]+'] 失败:', e.message);
         hasError = true;
@@ -1537,7 +1543,7 @@ const DB = {
     if(typeof window._sbpbClient === 'undefined') return;
     this._initMapping();
     this._setSyncStatus('syncing');
-    const tables = ['users','customers','products','orders','aftersales','payments','commissions'];
+    const tables = ['users','customers','products','orders','aftersales','payments','commissions','audit_log'];
     let hasError = false;
     for(let i = 0; i < tables.length; i++){
       try{
@@ -1582,6 +1588,44 @@ const DB = {
 
 // 初始化映射
 DB._initMapping();
+
+// ============ 操作日志 / 审计 ============
+// 动作中文标签（用于管理页展示）
+const AUDIT_ACTION_LABELS = {
+  create_order: '新建订单',
+  edit_amount: '修改金额',
+  edit_status: '修改状态',
+  edit_order: '修改订单',
+  edit_logistics: '修改物流单号',
+  collect_payment: '记录收款',
+  reset_password: '重置密码',
+  change_password: '修改密码',
+  create_user: '新增人员'
+};
+// 统一审计埋点：记录谁 / 时间 / 动作 / 对象 / 前后值。写本地并自动同步 Supabase（audit_log 表）。
+function logAudit(opts){
+  try{
+    const actor = (typeof currentUser !== 'undefined' && currentUser) ? currentUser : { name: '系统', id: '', role: '' };
+    const entry = {
+      id: DB.uid('log_'),
+      createdAt: nowStr(),
+      actorId: actor.id || '',
+      actorName: actor.name || (actor.username || '未知'),
+      actorRole: actor.role || '',
+      action: opts.action || 'unknown',
+      targetType: opts.targetType || '',
+      targetId: opts.targetId || '',
+      targetLabel: opts.targetLabel || '',
+      before: (opts.before != null && opts.before !== '') ? String(opts.before) : '',
+      after: (opts.after != null && opts.after !== '') ? String(opts.after) : '',
+      detail: opts.detail || ''
+    };
+    const logs = DB.get('audit_log', []);
+    logs.push(entry);
+    if(logs.length > 2000) logs.splice(0, logs.length - 2000); // 限制本地长度，避免无限增长
+    DB.set('audit_log', logs);
+  }catch(e){ console.warn('logAudit 失败:', e.message); }
+}
 
 /* ============ 初始化预置数据 ============ */
 function initData(){
@@ -2588,6 +2632,8 @@ async function handleLogin(){
   // 用户数据已通过 DB.syncFromCloud() + 上面强制刷新 从 Supabase 同步到 localStorage 缓存
   // 清理重复/残留账号，确保同名账号只保留最新（含最新密码）的一条
   cleanupDuplicateUsers();
+  // 清理重复客户：避免多次下单/录入手机号不一致产生重复客户
+  cleanupDuplicateCustomers();
   const users = DB.get('users');
   const target = users.find(u => u.username === user && !u.disabled);
   if(!target){ showToast('用户名或密码错误','error'); return; }
@@ -2762,6 +2808,7 @@ function renderSidebar(){
       {route:'customers', icon:'👥', name:'客户管理'},
       {route:'commissions', icon:'🏆', name:'销售提成'},
       {route:'profit-report', icon:'📈', name:'多维度利润报表'},
+      {route:'audit', icon:'📝', name:'操作日志'},
       {route:'settings', icon:'⚙️', name:'系统设置'}
     ];
   }else{
@@ -2828,22 +2875,20 @@ const routeTitles = {
   'product-edit': ['新增商品','添加新商品到商品库'],
   payments: ['收款记录','查看收款记录'],
   commissions: ['销售提成','管理销售提成'],
-  unshipped: ['未发货','留仓和上门订单管理'],
   aftersales: ['售后工单','处理售后申请'],
   'collect-balance': ['待收尾款','待收客户未结清尾款'],
   'aftersale-new': ['新建售后','提交售后申请'],
   'aftersale-detail': ['售后详情','查看售后详情'],
   'profit-report': ['多维度利润报表','多维度利润分析'],
-  settings: ['系统设置','账号与权限管理']
+  settings: ['系统设置','账号与权限管理'],
+  audit: ['操作日志','查看操作审计记录']
 };
 
 function navigate(route){
-  // 未发货模块已合并到订单管理
-  if(route === 'unshipped') route = 'orders';
   currentRoute = route;
   // 权限检查：销售角色不能访问管理员专属页面
   const isAdmin = currentUser.role === 'admin';
-  const restrictedRoutes = ['customers','payments','dashboard2','settings','commissions','profit-report'];
+  const restrictedRoutes = ['customers','payments','dashboard2','settings','commissions','profit-report','audit'];
   if(!isAdmin && restrictedRoutes.includes(route)){
     showToast('无访问权限','error');
     route = 'dashboard';
@@ -2889,7 +2934,6 @@ function navigate(route){
     'product-edit': renderProductEdit,
     payments: renderPayments,
     commissions: renderCommissions,
-    unshipped: renderUnshipped,
     aftersales: renderAftersales,
     'collect-balance': renderCollectBalance,
     'aftersale-new': renderAftersaleNew,
@@ -2897,7 +2941,8 @@ function navigate(route){
     dashboard2: renderDashboard2,
     'profit-report': renderProfitReport,
     settings: renderSettings,
-    users: renderUsers
+    users: renderUsers,
+    audit: renderAuditLog
   };
   const fn = renderers[route] || renderDashboard;
   fn();
@@ -3387,7 +3432,7 @@ async function renderOrders(){
               <div class="card-row" style="margin-bottom:6px"><span class="card-label">订单号</span>${orderIdCell(o.id)}</div>
               <div class="card-customer">${o.customerName||'-'}</div>
               <div class="card-row"><span class="card-label">类型</span>${orderTypeTag(o.type)}</div>
-              <div class="card-row"><span class="card-label">状态</span>${statusTag(o.status)}</div>
+              <div class="card-row"><span class="card-label">状态</span>${statusTag(o.status)}${paymentSettledTag(o)}</div>
               <div class="card-row"><span class="card-label">金额</span><b style="color:var(--text)">${money(o.total)}</b></div>
               ${o.remark ? `<div class="card-row"><span class="card-label">备注</span><span style="text-align:right">${o.remark}</span></div>` : ''}
               <div class="card-time" style="font-size:12px;color:var(--text-muted);margin:6px 0">${formatOrderDateTime(o.createdAt)}</div>
@@ -3472,7 +3517,7 @@ async function renderOrders(){
           html += `<td>${orderIdCell(o.id)}<br>${o.customerName||'-'}</td>`;
           html += `<td style="font-weight:600">${money(o.total)}</td>`;
           html += `<td>${orderTypeTag(o.type)}</td>`;
-          html += `<td>${statusTag(o.status)}</td>`;
+          html += `<td>${statusTag(o.status)}${paymentSettledTag(o)}</td>`;
           html += `<td>${formatOrderDateTime(o.createdAt)}</td>`;
           html += `<td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button>${o.status === 'feedback' ? ` <button class="btn btn-warning btn-sm" style="margin-left:4px" onclick="markOrderFeedbackDone('${o.id}')">确认已反馈</button>` : ''}</td>`;
           html += `</tr>`;
@@ -4832,6 +4877,7 @@ function submitOrder(){
   const orders = DB.get('orders');
   orders.push(newOrder);
   DB.set('orders', orders);
+  logAudit({action:'create_order', targetType:'order', targetId: orderId, targetLabel: contact, before: '', after: total, detail: '金额 '+money(total)+' / 类型 '+(newOrder.type==='warehouse'?'留仓':newOrder.type==='door'?'上门':'普通')});
 
   // 注意：提交订单时不再把库中不存在的商品自动写入商品库。
   // 识别到的商品若未匹配到商品库，仅作为订单行（自带名称/价格）保存，避免污染商品库。
@@ -5042,7 +5088,7 @@ function renderOrderDetail(){
           <div class="detail-green-title">📋 订单信息</div>
           <div class="info-grid">
             <div class="info-item"><div class="info-label">订单号</div><div class="info-value mono">${order.id}</div></div>
-            <div class="info-item"><div class="info-label">状态</div><div class="info-value">${statusTag(order.status)}</div></div>
+            <div class="info-item"><div class="info-label">状态</div><div class="info-value">${statusTag(order.status)}${paymentSettledTag(order)}</div></div>
             <div class="info-item"><div class="info-label">订单类型</div><div class="info-value">${orderTypeTag(order.type)}</div></div>
             <div class="info-item"><div class="info-label">下单人</div><div class="info-value">${order.salesName||'-'}</div></div>
             ${isAdmin ? `<div class="info-item"><div class="info-label">订单金额</div><div class="info-value" style="color:var(--primary);font-size:18px">${money(order.total)}</div></div>` : ''}
@@ -6258,6 +6304,7 @@ function saveEditOrder(orderId){
     return;
   }
   const order = orders[idx];
+  const auditBeforeTotal = order.total;
   let total = 0;
   order.items.forEach((it,i) => {
     const name = document.getElementById('editItemName_'+i).value.trim();
@@ -6337,6 +6384,7 @@ function saveEditOrder(orderId){
   }
   orders[idx] = order;
   DB.set('orders', orders);
+  logAudit({action:'edit_amount', targetType:'order', targetId: orderId, targetLabel: order.customerName||order.contact||'-', before: auditBeforeTotal, after: order.total, detail: '修改订单金额/损耗'});
 
   // 注意：保存编辑订单时同样不再把库中不存在的商品自动写入商品库，避免污染商品库。
   // 订单行始终保留自带名称/价格，未匹配商品库的商品不影响订单展示与流转。
@@ -6682,6 +6730,7 @@ function updateOrderStatus(orderId, status){
   const orders = DB.get('orders');
   const idx = orders.findIndex(o => o.id === orderId);
   if(idx >= 0){
+    const auditOldStatus = orders[idx].status;
     orders[idx].status = status;
     if(status === 'confirmed') orders[idx].confirmedAt = nowStr();
     if(status === 'completed'){
@@ -6693,6 +6742,7 @@ function updateOrderStatus(orderId, status){
     if(status === 'shipped') orders[idx].shippedAt = nowStr();
     orders[idx].updatedAt = nowStr();
     DB.set('orders', orders);
+    logAudit({action:'edit_status', targetType:'order', targetId: orderId, targetLabel: orders[idx].customerName||'-', before: auditOldStatus, after: status});
     schedulePushToCloud();
     showToast('订单状态已更新','success');
     window._orderEditMode = false;
@@ -6869,6 +6919,7 @@ async function saveAdminOrder(orderId){
   const idx = orders.findIndex(o => o.id === orderId);
   if(idx < 0) return;
   const o = orders[idx];
+  const auditBeforeStatus = o.status;
   // ===== 多设备编辑冲突预检：云端该订单有更新则提示覆盖/放弃 =====
   window._conflictUseServer = false;
   try{
@@ -6917,6 +6968,7 @@ async function saveAdminOrder(orderId){
     showToast('备货日期不能晚于订单上门日期','error'); return;
   }
   DB.set('orders', orders);
+  logAudit({action:'edit_order', targetType:'order', targetId: orderId, targetLabel: o.customerName||'-', before: auditBeforeStatus, after: o.status, detail: '管理员修改(物流/损耗/状态)'});
   schedulePushToCloud();
   showToast(o.status === 'feedback' ? (o.noTracking ? '已标记为无需物流，订单已转入「待反馈」' : '全部商品物流单号已录入，订单已转入「待反馈」') : '修改完成', 'success');
   // 返回对应列表（confirmed/shipped 归入「已下单」Tab；completed/feedback_done 归入「已完成」Tab）
@@ -7048,6 +7100,8 @@ function saveTrackingNo(orderId, itemIndex, value) {
   const idx = orders.findIndex(o => o.id === orderId);
   if (idx < 0) return;
   const item = orders[idx].items[itemIndex];
+  const auditBeforeTracking = item ? item.trackingNo : '';
+  const auditBeforeStatus = orders[idx].status;
   item.trackingNo = value.trim();
   item.expressCompany = value.trim() ? detectExpressCompany(value.trim()) : '';
   const order = orders[idx];
@@ -7060,6 +7114,7 @@ function saveTrackingNo(orderId, itemIndex, value) {
       order.status = 'feedback';
       order.feedbackAt = nowStr();
       DB.set('orders', orders);
+      logAudit({action:'edit_status', targetType:'order', targetId: orderId, targetLabel: order.customerName||'-', before: auditBeforeStatus, after: 'feedback', detail: '录入物流单号后转待反馈'});
       window._orderTab = 'feedback';
       showToast('订单已转入待反馈', 'success');
       navigate('orders');
@@ -7067,6 +7122,7 @@ function saveTrackingNo(orderId, itemIndex, value) {
       order.status = 'shipped';
       order.shippedAt = order.shippedAt || nowStr();
       DB.set('orders', orders);
+      logAudit({action:'edit_status', targetType:'order', targetId: orderId, targetLabel: order.customerName||'-', before: auditBeforeStatus, after: 'shipped'});
       renderOrderDetail();
     });
     return;
@@ -7090,6 +7146,7 @@ function saveTrackingNo(orderId, itemIndex, value) {
     }
   }
   DB.set('orders', orders);
+  logAudit({action:'edit_logistics', targetType:'order', targetId: orderId, targetLabel: order.customerName||'-', before: auditBeforeTracking, after: item.trackingNo, detail: '商品#'+(itemIndex+1)+' 物流单号'+(auditBeforeStatus!==order.status?('；状态 '+auditBeforeStatus+'→'+order.status):'')});
   renderOrderDetail();
 }
 
@@ -7099,6 +7156,8 @@ function saveTrackingNoFromList(orderId, itemIndex, value) {
   const idx = orders.findIndex(o => o.id === orderId);
   if (idx < 0) return;
   const order = orders[idx];
+  const auditBeforeTracking = order.items[itemIndex] ? order.items[itemIndex].trackingNo : '';
+  const auditBeforeStatus = order.status;
   order.updatedAt = nowStr(); // 关键：刷新时间戳，使云端合并以"本地新版"为准
   order.items[itemIndex].trackingNo = value.trim();
   order.items[itemIndex].expressCompany = value.trim() ? detectExpressCompany(value.trim()) : '';
@@ -7139,126 +7198,10 @@ function saveTrackingNoFromList(orderId, itemIndex, value) {
     showToast('所有商品均已填写物流，订单状态已更新为"待反馈"', 'success');
   }
   DB.set('orders', orders);
+  logAudit({action:'edit_logistics', targetType:'order', targetId: orderId, targetLabel: order.customerName||'-', before: auditBeforeTracking, after: order.items[itemIndex].trackingNo, detail: '商品#'+(itemIndex+1)+' 物流单号'+(auditBeforeStatus!==order.status?('；状态 '+auditBeforeStatus+'→'+order.status):'')});
   renderOrders();
 }
 
-/* ============ 未发货模块 ============ */
-function renderUnshipped() {
-  if (!window._unshippedTypeFilter) window._unshippedTypeFilter = '';
-  const typeFilter = window._unshippedTypeFilter;
-  const isAdmin = currentUser.role === 'admin';
-  // 销售只能看自己的订单，管理员可看全部
-  const orders = DB.get('orders').filter(o =>
-    (o.type === 'warehouse' || o.type === 'door') && o.status === 'pending' &&
-    (isAdmin || o.salesId === currentUser.id)
-  );
-  let filtered = orders;
-  if (typeFilter) filtered = filtered.filter(o => o.type === typeFilter);
-  filtered = [...filtered].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-
-  let html = `
-    <div class="card">
-      <div class="card-title"><span class="title-text">📦 未发货订单</span></div>
-      <div class="filter-bar">
-        <select onchange="window._unshippedTypeFilter=this.value;renderUnshipped()">
-          <option value="" ${typeFilter===''?'selected':''}>全部类型</option>
-          <option value="warehouse" ${typeFilter==='warehouse'?'selected':''}>留仓</option>
-          <option value="door" ${typeFilter==='door'?'selected':''}>上门</option>
-        </select>
-        <button class="btn btn-secondary btn-sm" onclick="toggleAllItemsView()">📊 查看全部商品汇总</button>
-      </div>
-      <div id="allItemsSummary" style="display:none"></div>
-  `;
-
-  if (filtered.length === 0) {
-    html += '<div class="empty-state"><div class="empty-icon">📦</div><div class="empty-text">暂无未发货订单</div></div>';
-  } else {
-    filtered.forEach(o => {
-      html += `
-        <div class="detail-section card">
-          <h4>${o.id} - ${o.customerName||'-'}</h4>
-          <div class="info-grid">
-            <div class="info-item"><div class="info-label">客户</div><div class="info-value">${o.customerName||'-'}</div></div>
-            <div class="info-item"><div class="info-label">提交人(销售)</div><div class="info-value">${o.salesName||'-'}</div></div>
-            <div class="info-item"><div class="info-label">订单类型</div><div class="info-value">${orderTypeTag(o.type)}</div></div>
-            <div class="info-item"><div class="info-label">订单日期</div><div class="info-value">${o.orderDate||'-'}</div></div>
-            ${(isAdmin || o.salesId === currentUser.id) ? `
-            <div class="info-item"><div class="info-label">全款</div><div class="info-value"><input type="number" value="${o.fullPayment||''}" min="0" placeholder="输入金额" style="width:100px;padding:6px 10px;border:1px solid var(--border);border-radius:4px" onchange="saveUnshippedPayment('${o.id}','fullPayment',this.value)"></div></div>
-            <div class="info-item"><div class="info-label">定金</div><div class="info-value"><input type="number" value="${o.deposit||''}" min="0" placeholder="输入金额" style="width:100px;padding:6px 10px;border:1px solid var(--border);border-radius:4px" onchange="saveUnshippedPayment('${o.id}','deposit',this.value)"></div></div>
-            <div class="info-item"><div class="info-label">尾款（自动）</div><div class="info-value" style="font-weight:700;color:var(--primary)">${money(Math.max(0,(o.total||0)-(o.deposit||0)))}</div></div>
-            ` : `
-            <div class="info-item"><div class="info-label">收款信息</div><div class="info-value" style="color:var(--text-muted)">🔒 仅提交人及管理员可见</div></div>
-            `}
-          </div>
-          <div class="table-wrap" style="margin-top:12px">
-            <table>
-              <thead><tr><th>商品名称</th><th>数量</th><th>订货</th><th>备注</th><th>售价</th></tr></thead>
-              <tbody>
-                ${o.items.map((it, i) => `
-                  <tr>
-                    <td>${it.name}</td>
-                    <td>${it.qty}</td>
-                    <td><select style="padding:6px 10px;border:1px solid var(--border);border-radius:4px" onchange="saveUnshippedOrdered('${o.id}',${i},this.value)"><option value="否" ${(it.ordered||'否')==='否'?'selected':''}>否</option><option value="是" ${it.ordered==='是'?'selected':''}>是</option></select></td>
-                    <td><button class="btn btn-secondary btn-sm" onclick="openItemRemarkModal('${o.id}',${i})">备注</button></td>
-                    <td>${money(it.price)}</td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-          </div>
-          ${o.remark ? `<div style="margin-top:8px;padding:8px;background:#fef3c7;border-radius:6px;font-size:13px;color:#92400e"><strong>订单备注：</strong>${o.remark}</div>` : ''}
-        </div>
-      `;
-    });
-
-    // 底部汇总
-    let totalDeposit = 0, totalFinalPayment = 0, totalFullPayment = 0;
-    filtered.forEach(o => {
-      if(!isAdmin && o.salesId !== currentUser.id) return; // 非管理员不统计他人收款金额
-      totalDeposit += parseInt(o.deposit) || 0;
-      totalFinalPayment += parseInt(o.finalPayment) || 0;
-      totalFullPayment += parseInt(o.fullPayment) || 0;
-    });
-    html += `
-      <div class="card" style="margin-top:16px;background:#f9fafb">
-        <div class="card-title"><span class="title-text">📊 汇总${!isAdmin?'（仅本人可查看部分）':''}</span></div>
-        <div class="info-grid">
-          <div class="info-item"><div class="info-label">定金已收总金额</div><div class="info-value" style="color:var(--success);font-weight:700">${money(totalDeposit)}</div></div>
-          <div class="info-item"><div class="info-label">待收尾款总金额</div><div class="info-value" style="color:var(--danger);font-weight:700">${money(totalFinalPayment)}</div></div>
-          <div class="info-item"><div class="info-label">全款总金额</div><div class="info-value" style="color:var(--primary);font-weight:700">${money(totalFullPayment)}</div></div>
-        </div>
-      </div>
-    `;
-  }
-
-  html += `</div>`;
-  document.getElementById('mainContent').innerHTML = html;
-}
-
-// 保存未发货订单付款信息（尾款=订单总额-定金，自动计算，不可手动改）
-function saveUnshippedPayment(orderId, field, value) {
-  const orders = DB.get('orders');
-  const idx = orders.findIndex(o => o.id === orderId);
-  if (idx >= 0) {
-    orders[idx][field] = parseInt(value) || 0;
-    if (field === 'deposit') {
-      const total = orders[idx].total || 0;
-      orders[idx].finalPayment = Math.max(0, total - (orders[idx].deposit || 0));
-    }
-    DB.set('orders', orders);
-    renderUnshipped();
-  }
-}
-
-// 保存未发货订单商品订货状态
-function saveUnshippedOrdered(orderId, itemIndex, value) {
-  const orders = DB.get('orders');
-  const idx = orders.findIndex(o => o.id === orderId);
-  if (idx >= 0) {
-    orders[idx].items[itemIndex].ordered = value;
-    DB.set('orders', orders);
-  }
-}
 
 // 打开商品备注弹窗
 function openItemRemarkModal(orderId, itemIndex) {
@@ -7365,6 +7308,7 @@ function renderCustomers(){
         <span class="title-text">👥 客户列表</span>
         <button class="btn btn-primary btn-sm" onclick="openCustomerModal()">+ 新增客户</button>
         <button class="btn btn-secondary btn-sm" onclick="exportCustomers()" style="margin-left:8px">⬇ 导出客户</button>
+        ${isAdmin ? '<button class="btn btn-secondary btn-sm" onclick="cleanupDuplicateCustomers()" style="margin-left:8px">🧹 清理重复客户</button>' : ''}
       </div>
       <div class="filter-bar">
         <div class="search-box">
@@ -7626,6 +7570,16 @@ function saveCustomer(){
     ownerId = currentUser.id;
   }
   if(!name){ showToast('请输入客户名称','error'); return; }
+
+  // 新增时按手机号（归一化）查重，避免录入重复客户（与自动建客户同源问题）
+  if(!id){
+    const _normPhone = (p) => String(p || '').replace(/[\s-]/g, '');
+    const _exist = (DB.get('customers') || []).find(c => _normPhone(c.phone) === _normPhone(phone) && _normPhone(phone) !== '');
+    if(_exist){
+      showToast('该手机号客户已存在（' + (_exist.name||'-') + '），请勿重复添加，可直接编辑', 'error');
+      return;
+    }
+  }
 
   const customers = DB.get('customers');
   if(id){
@@ -8699,6 +8653,55 @@ function cleanupDuplicateUsers(){
   }
 }
 
+// 清理重复客户：以手机号归一化（去空格/横杠）为主键合并；手机号为空时按客户名称归一化（去空格/大小写）合并。
+// 保留创建时间最早的一条，其余本地合并移除；订单 customerId 同步重映射，避免历史订单丢失归属。
+function cleanupDuplicateCustomers(){
+  try{
+    let customers = DB.get('customers') || [];
+    if(!customers.length) return;
+    function normPhone(p){ return String(p || '').replace(/[\s-]/g, ''); }
+    function normName(s){ return String(s || '').toLowerCase().replace(/\s+/g, ''); }
+
+    const idMap = {}; // 被合并的 id -> 保留的 id
+    const byKey = {};
+    customers.forEach(c => {
+      const phone = normPhone(c.phone);
+      const key = phone ? ('P:' + phone) : ('N:' + normName(c.name));
+      if(!key || key === 'N:') return; // 手机号和名称都为空，不纳入去重
+      if(!byKey[key]) byKey[key] = [];
+      byKey[key].push(c);
+    });
+    let keep = [];
+    Object.values(byKey).forEach(arr => {
+      arr.sort((a, b) => {
+        const ta = Date.parse(((a.createdAt || '')).replace(' ', 'T')) || 0;
+        const tb = Date.parse(((b.createdAt || '')).replace(' ', 'T')) || 0;
+        return ta - tb; // 保留最早创建
+      });
+      keep.push(arr[0]);
+      for(let i = 1; i < arr.length; i++) idMap[arr[i].id] = arr[0].id;
+    });
+    if(Object.keys(idMap).length === 0){ showToast('未发现重复客户','info'); return; }
+
+    // 重映射订单中的 customerId
+    const orders = DB.get('orders');
+    let orderChanged = false;
+    orders.forEach(o => {
+      if(o.customerId && idMap[o.customerId]){ o.customerId = idMap[o.customerId]; orderChanged = true; }
+    });
+    if(orderChanged) DB.set('orders', orders);
+
+    DB.set('customers', keep);
+    const msg = '已清理重复客户 ' + Object.keys(idMap).length + ' 条，保留 ' + keep.length + ' 条';
+    console.log(msg);
+    showToast(msg, 'success');
+    if(currentRoute === 'customers' && typeof renderCustomers === 'function'){ try{ renderCustomers(); }catch(e){} }
+  }catch(e){
+    console.warn('清理重复客户失败:', e.message);
+    showToast('清理失败：' + e.message, 'error');
+  }
+}
+
 function renderProductEdit(){
   renderProducts();
   openProductModal();
@@ -9061,6 +9064,20 @@ function savePayment(orderId){
     amount, method, payDate, status, stage, createdAt: nowStr()
   });
   DB.set('payments', payments);
+  // ===== 收款闭环：回写订单实收金额与"已结清"标记 =====
+  const allOrders = DB.get('orders');
+  const target = allOrders.find(o => o.id === orderId);
+  if(target){
+    const initPaid = parseInt(target.collectedAmount) || 0;
+    const paidSum = (DB.get('payments') || []).filter(p => p.orderId === orderId && p.status === 'paid').reduce((s, p) => s + (parseInt(p.amount) || 0), 0);
+    const totalCollected = initPaid + paidSum;
+    target.collectedAmount = totalCollected;
+    const orderTotal = parseInt(target.total) || 0;
+    target.paymentSettled = (orderTotal > 0 && totalCollected >= orderTotal);
+    target.updatedAt = nowStr();
+    DB.set('orders', allOrders);
+  }
+  logAudit({action:'collect_payment', targetType:'order', targetId: orderId, targetLabel: order.customerName, before: '', after: amount, detail: '收款 '+money(amount)+' / 阶段 '+(stage||'-')+' / 方式 '+method+(target && target.paymentSettled ? ' / 订单已结清' : '')});
   closeModal();
   if(method === '微信支付'){
     const wt = money(getWechatTotal(order.salesId));
@@ -10506,9 +10523,49 @@ function renderUsers(){
   document.getElementById('mainContent').innerHTML = html;
 }
 
+// 操作日志 / 审计 页面（仅管理员可见）
+function renderAuditLog(){
+  if(currentUser.role !== 'admin'){
+    document.getElementById('mainContent').innerHTML = '<div class="empty-state"><div class="empty-icon">🔒</div><div class="empty-text">无权访问</div></div>';
+    return;
+  }
+  const logs = (DB.get('audit_log', []) || []).slice().sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
+  const actionFilter = window._auditAction || '';
+  const actorFilter = window._auditActor || '';
+  let filtered = logs;
+  if(actionFilter) filtered = filtered.filter(l => l.action === actionFilter);
+  if(actorFilter) filtered = filtered.filter(l => (l.actorName||'').includes(actorFilter));
+
+  const actionOptions = Object.keys(AUDIT_ACTION_LABELS).map(k => `<option value="${k}" ${actionFilter===k?'selected':''}>${AUDIT_ACTION_LABELS[k]}</option>`).join('');
+  const actors = Array.from(new Set(logs.map(l => l.actorName).filter(Boolean)));
+  const actorOptions = actors.map(n => `<option value="${n}" ${actorFilter===n?'selected':''}>${n}</option>`).join('');
+
+  let html = '<div class="card"><div class="card-title"><span class="title-text">📝 操作日志</span><span style="margin-left:auto;font-size:12px;color:var(--text-muted)">共 '+logs.length+' 条记录</span></div>';
+  html += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">';
+  html += '<select onchange="window._auditAction=this.value;renderAuditLog()"><option value="">全部动作</option>'+actionOptions+'</select>';
+  html += '<select onchange="window._auditActor=this.value;renderAuditLog()"><option value="">全部操作人</option>'+actorOptions+'</select>';
+  html += '</div>';
+
+  if(!filtered.length){
+    html += '<div class="empty-state"><div class="empty-icon">📝</div><div class="empty-text">暂无操作记录</div></div>';
+  }else{
+    html += '<div class="table-wrap"><table><thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>对象</th><th>变更</th></tr></thead><tbody>';
+    filtered.slice(0, 500).forEach(l => {
+      const actLabel = AUDIT_ACTION_LABELS[l.action] || l.action;
+      const change = (l.before||l.after) ? (l.before+' → '+l.after) : (l.detail||'');
+      const target = [l.targetType, l.targetId, l.targetLabel].filter(Boolean).join(' / ');
+      html += '<tr><td>'+ (l.createdAt||'-') +'</td><td>'+ (l.actorName||'-') + (l.actorRole==='admin'?' <span style="font-size:11px;color:#6b7280">(管理员)</span>':'') +'</td><td>'+ actLabel +'</td><td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+target+'">'+ target +'</td><td style="max-width:260px">'+ change +'</td></tr>';
+    });
+    html += '</tbody></table></div>';
+    if(filtered.length > 500) html += '<div style="text-align:center;color:var(--text-muted);font-size:12px;margin-top:10px">仅显示最近 500 条</div>';
+  }
+  html += '</div>';
+  document.getElementById('mainContent').innerHTML = html;
+}
+
 // 导出全量备份（JSON 下载）
 function exportBackup(){
-  const tables = ['users','customers','products','orders','aftersales','payments','commissions'];
+  const tables = ['users','customers','products','orders','aftersales','payments','commissions','audit_log'];
   const data = {};
   tables.forEach(t => { data[t] = DB.get(t) || []; });
   data._exportedAt = nowStr();
@@ -10533,7 +10590,7 @@ function importBackup(input){
   reader.onload = async () => {
     try{
       const data = JSON.parse(reader.result);
-      const tables = ['users','customers','products','orders','aftersales','payments','commissions'];
+      const tables = ['users','customers','products','orders','aftersales','payments','commissions','audit_log'];
       tables.forEach(t => { if(Array.isArray(data[t])) DB.set(t, data[t]); });
       showToast('备份已导入，正在同步到云端...','success');
       await DB.pushToCloud();
@@ -10564,7 +10621,23 @@ function copyRlsSql(){
     'ALTER TABLE payments ENABLE ROW LEVEL SECURITY;\n' +
     'CREATE POLICY "anon_all_payments" ON payments FOR ALL TO anon USING (true) WITH CHECK (true);\n' +
     'ALTER TABLE commissions ENABLE ROW LEVEL SECURITY;\n' +
-    'CREATE POLICY "anon_all_commissions" ON commissions FOR ALL TO anon USING (true) WITH CHECK (true);\n';
+    'CREATE POLICY "anon_all_commissions" ON commissions FOR ALL TO anon USING (true) WITH CHECK (true);\n' +
+    'CREATE TABLE IF NOT EXISTS audit_log (\n' +
+    '  id text PRIMARY KEY,\n' +
+    '  created_at text,\n' +
+    '  actor_id text,\n' +
+    '  actor_name text,\n' +
+    '  actor_role text,\n' +
+    '  action text,\n' +
+    '  target_type text,\n' +
+    '  target_id text,\n' +
+    '  target_label text,\n' +
+    '  before text,\n' +
+    '  after text,\n' +
+    '  detail text\n' +
+    ');\n' +
+    'ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;\n' +
+    'CREATE POLICY "anon_all_audit_log" ON audit_log FOR ALL TO anon USING (true) WITH CHECK (true);\n';
   navigator.clipboard.writeText(sql).then(() => showToast('RLS 配置 SQL 已复制到剪贴板','success'))
     .catch(() => showToast('复制失败，请手动复制','error'));
 }
@@ -10601,8 +10674,10 @@ async function addUser(){
   let hp = password;
   try{ hp = await hashPassword(password); }catch(e){}
   const now = nowStr();
-  users.push({id:DB.uid('u'), username:account, password:hp, name:name, role:role, wechatAmount:wechatAmount, createdAt:now, updatedAt:now});
+  const newUserId = DB.uid('u');
+  users.push({id:newUserId, username:account, password:hp, name:name, role:role, wechatAmount:wechatAmount, createdAt:now, updatedAt:now});
   DB.set('users', users);
+  logAudit({action:'create_user', targetType:'user', targetId: newUserId, targetLabel: name, detail: '登录账号 '+account+' / 角色 '+(role==='admin'?'管理员':'销售')});
   // 立即推云端，确保新增账号在其它设备/Pad 能立刻登录，不依赖定时同步
   DB.pushToCloud().catch(e => console.warn('新增账号推云端失败:', e.message));
   showToast('人员已添加','success');
@@ -10647,6 +10722,7 @@ async function resetUserPassword(id){
     users[idx].password = hp;
     users[idx].updatedAt = nowStr();
     DB.set('users', users);
+    logAudit({action:'reset_password', targetType:'user', targetId: id, targetLabel: users[idx].name||users[idx].username||'-', detail: '重置为 123456'});
     schedulePushToCloud();
     showToast('密码已重置为 123456','success');
   }
@@ -11543,6 +11619,7 @@ function submitChangePassword(){
     cur.password = nh;
     cur.updatedAt = nowStr();
     DB.set('users', users);
+    logAudit({action:'change_password', targetType:'user', targetId: currentUser.id, targetLabel: currentUser.name, detail: '本人修改密码'});
     schedulePushToCloud();
     closeModal();
     showToast('密码修改成功','success');
@@ -11572,6 +11649,11 @@ function statusTag(status){
     completed: '<span class="tag tag-completed">已完成</span>'
   };
   return map[status] || status;
+}
+
+// 订单"已结清"徽标（收款闭环：尾款/全款还清后标记）
+function paymentSettledTag(o){
+  return (o && o.paymentSettled) ? '<span class="tag tag-paid">✅ 已结清</span>' : '';
 }
 
 function orderTypeTag(type){
@@ -12013,6 +12095,8 @@ window.onload = async function(){
   cleanupDuplicateProducts();
   // 清理重复登录账号：先把本地重复账号禁用，避免推送到云端时产生同名账号
   cleanupDuplicateUsers();
+  // 清理重复客户：与商品/账号同源，避免重复客户
+  cleanupDuplicateCustomers();
 
   // 双向同步：把本地（含新建/修改）数据推送到云端，确保多端/多销售可见。
   // 合并策略本地优先，不会覆盖其他端的订单。RLS 需在 Supabase 关闭才能正常读写。
@@ -12029,6 +12113,7 @@ window.onload = async function(){
     await DB.syncFromCloud();
     cleanupDuplicateProducts(window._lastCloudProducts);
     cleanupDuplicateUsers();
+    cleanupDuplicateCustomers();
   }catch(e){
     console.warn('云端对齐去重失败:', e.message);
   }
