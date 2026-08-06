@@ -3263,7 +3263,7 @@ async function renderOrders(){
           const productList = products || [];
           const itemCols = isAdmin ? 7 : 6;
           html += `<tr>`;
-          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${o.customerName}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
+          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${o.customerName||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col/><col/>${isAdmin?'<col/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':'<th>利润</th>'}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const prod = productList.find(p => p.id === it.productId);
@@ -3294,7 +3294,7 @@ async function renderOrders(){
       if(filtered.length){
         filtered.forEach(o => {
           html += `<tr>`;
-          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${o.customerName}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
+          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${o.customerName||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col/>${isAdmin?'<col/><col/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th>':''}<th>利润</th></tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const prod = (products||[]).find(p => p.id === it.productId);
@@ -3322,7 +3322,7 @@ async function renderOrders(){
       if(filtered.length){
         filtered.forEach(o => {
           html += `<tr>`;
-          html += `<td>${orderIdCell(o.id)}<br>${o.customerName}</td>`;
+          html += `<td>${orderIdCell(o.id)}<br>${o.customerName||'-'}</td>`;
           html += `<td style="font-weight:600">${money(o.total)}</td>`;
           html += `<td>${orderTypeTag(o.type)}</td>`;
           html += `<td>${statusTag(o.status)}</td>`;
