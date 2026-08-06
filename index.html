@@ -3152,24 +3152,25 @@ async function renderOrders(){
   const typeFilter = window._orderType || '';
   const dateFilter = window._orderDateFilter || '';
 
-  // 管理员：按Tab分状态显示（订单管理仅显示普通+留仓订单，上门订单在「上门订单」页面管理，售后统一在「售后工单」模块）
+  // 管理员：按Tab分状态显示（订单管理含 普通/留仓/上门 三类，通过类型分段切换分离；售后统一在「售后工单」模块）
   if(isAdmin){
-    // 状态Tab（普通+留仓共用，结构一致）
+    // 状态Tab（普通+留仓含「已反馈」；上门无待反馈环节，仅 全部/待下单/已下单/已完成）
     const statusTabsByType = {
       normal:    [{key:'all',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'已反馈'},{key:'completed',label:'已完成'}],
-      warehouse: [{key:'all',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'已反馈'},{key:'completed',label:'已完成'}]
+      warehouse: [{key:'all',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'已反馈'},{key:'completed',label:'已完成'}],
+      door:      [{key:'all',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'completed',label:'已完成'}]
     };
     const typeLabel = { normal:'普通', warehouse:'留仓', door:'上门' };
-    const tabs = statusTabsByType.normal;
+    const tabs = statusTabsByType[listType] || statusTabsByType.normal;
 
     // 当前状态Tab（校验合法性：切换类型后若原Tab不存在则回退到待下单）
     let activeTab = window._orderTab || 'pending';
     if(!tabs.some(t => t.key === activeTab)) activeTab = 'pending';
 
-    // 当前类型下的订单（固定排除上门订单，上门在「上门订单」页面管理）
-    const statusOrders = orders.filter(o => o.type !== 'door');
-    // 方案A：订单列表类型分段（普通/留仓分开），默认「全部」（保留原有可见性，点击可分离）
-    const listType = window._orderListType || 'all';
+    // 当前类型下的订单（普通/留仓/上门 均纳入订单列表，按上方类型分段切换分别展示）
+    const statusOrders = orders;
+    // 方案A：订单列表类型分段（普通/留仓/上门分开），默认「普通」
+    const listType = window._orderListType || 'normal';
     // 先按关键词+日期过滤（类型筛选前），用于计算各类型角标总数
     let baseBeforeType = statusOrders;
     if(keyword){
@@ -3186,14 +3187,15 @@ async function renderOrders(){
     }
     // 类型分段角标（统计各类型总数，不受当前选中类型影响）
     const typeCounts = {
-      all: baseBeforeType.length,
-      normal: baseBeforeType.filter(o => o.type !== 'warehouse').length,
-      warehouse: baseBeforeType.filter(o => o.type === 'warehouse').length
+      normal: baseBeforeType.filter(o => o.type !== 'warehouse' && o.type !== 'door').length,
+      warehouse: baseBeforeType.filter(o => o.type === 'warehouse').length,
+      door: baseBeforeType.filter(o => o.type === 'door').length
     };
     // 应用类型筛选，得到 状态tab计数 与 列表 的共同基础集
     let countBase = baseBeforeType;
-    if(listType === 'normal') countBase = countBase.filter(o => o.type !== 'warehouse');
+    if(listType === 'normal') countBase = countBase.filter(o => o.type !== 'warehouse' && o.type !== 'door');
     else if(listType === 'warehouse') countBase = countBase.filter(o => o.type === 'warehouse');
+    else if(listType === 'door') countBase = countBase.filter(o => o.type === 'door');
     const tabCount = {
       all: countBase.length,
       pending: countBase.filter(o=>o.status==='pending').length,
@@ -3249,11 +3251,11 @@ async function renderOrders(){
           </button>
         </div>
       </div>`;
-    // 方案A：类型分段切换（全部 / 普通 / 留仓），带图标与数量角标，与状态Tab视觉分层
+    // 方案A：类型分段切换（普通 / 留仓 / 上门），带图标与数量角标，与状态Tab视觉分层
     html += `<div class="order-type-seg">
       <button class="ot-item ${listType==='normal'?'active':''}" onclick="switchOrderListType('normal')"><span class="ot-icon">📦</span><span>普通</span><span class="ot-count">${typeCounts.normal}</span></button>
       <button class="ot-item ${listType==='warehouse'?'active':''}" onclick="switchOrderListType('warehouse')"><span class="ot-icon">🏷️</span><span>留仓</span><span class="ot-count">${typeCounts.warehouse}</span></button>
-      <button class="ot-item ${listType==='all'?'active':''}" onclick="switchOrderListType('all')"><span class="ot-icon">📋</span><span>全部</span><span class="ot-count">${typeCounts.all}</span></button>
+      <button class="ot-item ${listType==='door'?'active':''}" onclick="switchOrderListType('door')"><span class="ot-icon">🚪</span><span>上门</span><span class="ot-count">${typeCounts.door}</span></button>
     </div>`;
     // 状态Tab（与售后工单一致的按钮样式）
     html += `<div class="admin-tab-bar" style="margin-bottom:14px">`;
@@ -7983,9 +7985,9 @@ function renderProductRowsHtml(){
         <td style="color:var(--text-muted);text-align:center">${no}</td>
         <td style="position:relative">
           ${needCalibration ? '<span style="position:absolute;top:0;right:0;background:#f59e0b;color:#fff;font-size:10px;padding:1px 6px;border-radius:0 0 0 4px;font-weight:500">待校准</span>' : ''}
-          ${p.name}
+          ${escAttr(p.name)}
         </td>
-        <td>${p.category||'-'}</td>
+        <td>${escAttr(p.category)||'-'}</td>
         <td style="font-weight:600">${money(p.price)}</td>
         ${isAdmin ? `<td>${money(p.cost)}</td><td style="color:${profitColor};font-weight:600">${profitText}</td>` : ''}
         <td>${p.status==='on'?'<span class="tag tag-onshelf">在售</span>':'<span class="tag tag-offshelf">已下架</span>'}</td>
@@ -8405,6 +8407,13 @@ function renderProductEdit(){
   openProductModal();
 }
 
+// 转义 HTML 属性值，防止商品名/分类含引号、<、& 等字符破坏弹窗结构导致白屏
+function escAttr(s){
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/"/g,'&quot;')
+    .replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
 function openProductModal(productId){
   const product = productId ? DB.get('products').find(p => p.id === productId) : null;
   const modalHtml = `
@@ -8416,14 +8425,14 @@ function openProductModal(productId){
         </div>
         <div class="modal-body">
           ${product && product.auto_added === true ? '<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:10px;margin-bottom:12px;color:#9a3412;font-size:13px;font-weight:500">⚠ 该商品为自动新增，尚未录入真实采购成本，请尽快维护</div>' : ''}
-          <input type="hidden" id="productId" value="${product?product.id:''}">
+          <input type="hidden" id="productId" value="${product?escAttr(product.id):''}">
           <div class="form-group">
             <label class="form-label">商品名称 <span class="required">*</span></label>
-            <input type="text" class="form-control" id="productName" value="${product?product.name:''}" placeholder="请输入商品名称">
+            <input type="text" class="form-control" id="productName" value="${product?escAttr(product.name):''}" placeholder="请输入商品名称">
           </div>
           <div class="form-group">
             <label class="form-label">分类</label>
-            <input type="text" class="form-control" id="productCategory" value="${product?product.category:''}" placeholder="商品分类">
+            <input type="text" class="form-control" id="productCategory" value="${product?escAttr(product.category):''}" placeholder="商品分类">
           </div>
           <div class="form-row">
             <div class="form-group">
