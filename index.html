@@ -8310,6 +8310,58 @@ function confirmBatchDeleteProducts(){
   });
 }
 
+// 启动时自动清理本地重复商品：按商品名保留 updatedAt 最新的一条，其余删除。
+// 同时把订单里引用到的旧 productId 替换成保留 id，避免利润/详情计算找不到商品。
+function cleanupDuplicateProducts(){
+  try{
+    const products = DB.get('products');
+    if(!products || products.length <= 180) return;
+    const byName = {};
+    products.forEach(p => {
+      const n = (p.name || '').trim();
+      if(!n) return;
+      if(!byName[n]) byName[n] = [];
+      byName[n].push(p);
+    });
+    const keepProducts = [];
+    const idMap = {}; // 被删除的 id -> 保留的 id
+    Object.values(byName).forEach(arr => {
+      // 保留 updatedAt/createdAt 最新的一条（若都没有则保留第一个）
+      arr.sort((a, b) => {
+        const ta = Date.parse(((a.updatedAt || a.createdAt || '')).replace(' ', 'T')) || 0;
+        const tb = Date.parse(((b.updatedAt || b.createdAt || '')).replace(' ', 'T')) || 0;
+        return tb - ta;
+      });
+      keepProducts.push(arr[0]);
+      for(let i = 1; i < arr.length; i++) idMap[arr[i].id] = arr[0].id;
+    });
+    if(Object.keys(idMap).length === 0) return;
+    // 更新本地订单中引用的 productId
+    const orders = DB.get('orders');
+    let orderChanged = false;
+    orders.forEach(o => {
+      (o.items || []).forEach(it => {
+        if(it.productId && idMap[it.productId]){
+          it.productId = idMap[it.productId];
+          orderChanged = true;
+        }
+      });
+    });
+    if(orderChanged) DB.set('orders', orders);
+    // 保存去重后的商品
+    DB.set('products', keepProducts);
+    // 把被删除的 id 加入排除集，防止 syncFromCloud 又把它们从云端拉回来
+    const delKey = 'soms__deletedProductIds';
+    const delIds = JSON.parse(localStorage.getItem(delKey) || '[]');
+    const delSet = new Set(delIds);
+    Object.keys(idMap).forEach(id => delSet.add(id));
+    localStorage.setItem(delKey, JSON.stringify(Array.from(delSet)));
+    console.log('已自动清理重复商品:', Object.keys(idMap).length, '条，保留:', keepProducts.length, '条');
+  }catch(e){
+    console.warn('清理重复商品失败:', e.message);
+  }
+}
+
 function renderProductEdit(){
   renderProducts();
   openProductModal();
@@ -11570,6 +11622,9 @@ window.onload = async function(){
       console.log('已自动清理脏数据订单 id=x');
     }
   }catch(e){ console.warn('清理脏数据订单 id=x 失败:', e.message); }
+
+  // 清理重复商品：Excel 多次导入会产生同名商品，启动时自动按名称保留最新的一条
+  cleanupDuplicateProducts();
 
   // 双向同步：把本地（含新建/修改）数据推送到云端，确保多端/多销售可见。
   // 合并策略本地优先，不会覆盖其他端的订单。RLS 需在 Supabase 关闭才能正常读写。
