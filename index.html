@@ -459,6 +459,16 @@ tbody tr:hover{background:#f3f4f6}
 .sales-tab-seg .seg-item.active{background:#fff;color:var(--primary);box-shadow:0 1px 4px rgba(0,0,0,.1);font-weight:600}
 .sales-tab-seg .seg-count{display:inline-block;margin-left:2px;font-size:11px;opacity:.7}
 
+/* 订单列表「类型分段切换」（方案A：普通/留仓分开，上门在独立菜单） */
+.order-type-seg{display:flex;gap:6px;background:linear-gradient(135deg,#f8fafc,#eef2f7);padding:5px;border-radius:14px;margin-bottom:14px;box-shadow:inset 0 1px 3px rgba(15,23,42,.06);overflow-x:auto}
+.order-type-seg .ot-item{flex:1 1 0;min-width:88px;border:none;background:transparent;color:var(--text-muted);font-size:13px;padding:9px 6px;border-radius:10px;cursor:pointer;white-space:nowrap;transition:all .18s;font-weight:500;display:flex;align-items:center;justify-content:center;gap:6px}
+.order-type-seg .ot-item:hover{color:var(--text);background:rgba(255,255,255,.55)}
+.order-type-seg .ot-item.active{background:#fff;color:var(--primary);box-shadow:0 2px 10px rgba(59,130,246,.20);font-weight:700}
+.order-type-seg .ot-item .ot-icon{font-size:15px;line-height:1}
+.order-type-seg .ot-item .ot-count{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;border-radius:10px;background:rgba(15,23,42,.08);font-size:11px;font-weight:600;color:var(--text-muted)}
+.order-type-seg .ot-item.active .ot-count{background:var(--primary);color:#fff}
+@media(max-width:600px){.order-type-seg .ot-item{min-width:72px;font-size:12px;padding:8px 4px}}
+
 /* 销售端订单列表：空状态引导 */
 .sales-empty{display:flex;flex-direction:column;align-items:center;gap:12px;padding:48px 16px;color:var(--text-muted)}
 .sales-empty .empty-icon{font-size:40px}
@@ -3067,6 +3077,12 @@ function switchOrderTab(tab){
   renderOrders();
 }
 
+// 方案A：订单列表类型切换（全部 / 普通 / 留仓），切换后重渲染，计数与列表保持一致
+function switchOrderListType(type){
+  window._orderListType = type;
+  renderOrders();
+}
+
 // 销售端状态分组：内部状态 -> 列表显示的4个状态
 function salesStatusLabel(status){
   if(status === 'pending') return '<span class="tag tag-pending">待下单</span>';
@@ -3152,11 +3168,13 @@ async function renderOrders(){
 
     // 当前类型下的订单（固定排除上门订单，上门在「上门订单」页面管理）
     const statusOrders = orders.filter(o => o.type !== 'door');
-    // tabCount 延迟到 filtered 构建后计算，确保计数与列表筛选条件完全一致（含关键词+日期）
-    let countBase = statusOrders;
+    // 方案A：订单列表类型分段（普通/留仓分开），默认「全部」（保留原有可见性，点击可分离）
+    const listType = window._orderListType || 'all';
+    // 先按关键词+日期过滤（类型筛选前），用于计算各类型角标总数
+    let baseBeforeType = statusOrders;
     if(keyword){
       const kw = keyword.toLowerCase();
-      countBase = countBase.filter(o =>
+      baseBeforeType = baseBeforeType.filter(o =>
         o.id.toLowerCase().includes(kw) ||
         (o.customerName||'').includes(keyword) ||
         (o.contact||'').includes(keyword) ||
@@ -3164,8 +3182,18 @@ async function renderOrders(){
       );
     }
     { const _s = window._expStart, _e = window._expEnd;
-      if(_s||_e) countBase = countBase.filter(o => { const d = (o.createdAt||'').slice(0,10); return d && (!_s || d >= _s) && (!_e || d <= _e); });
+      if(_s||_e) baseBeforeType = baseBeforeType.filter(o => { const d = (o.createdAt||'').slice(0,10); return d && (!_s || d >= _s) && (!_e || d <= _e); });
     }
+    // 类型分段角标（统计各类型总数，不受当前选中类型影响）
+    const typeCounts = {
+      all: baseBeforeType.length,
+      normal: baseBeforeType.filter(o => o.type !== 'warehouse').length,
+      warehouse: baseBeforeType.filter(o => o.type === 'warehouse').length
+    };
+    // 应用类型筛选，得到 状态tab计数 与 列表 的共同基础集
+    let countBase = baseBeforeType;
+    if(listType === 'normal') countBase = countBase.filter(o => o.type !== 'warehouse');
+    else if(listType === 'warehouse') countBase = countBase.filter(o => o.type === 'warehouse');
     const tabCount = {
       all: countBase.length,
       pending: countBase.filter(o=>o.status==='pending').length,
@@ -3175,7 +3203,7 @@ async function renderOrders(){
     };
 
     // 订单过滤（售后Tab单独处理）
-    let filtered = statusOrders;
+    let filtered = countBase;
     if(activeTab === 'pending'){
       filtered = filtered.filter(o => o.status === 'pending');
     } else if(activeTab === 'confirmed'){
@@ -3221,6 +3249,12 @@ async function renderOrders(){
           </button>
         </div>
       </div>`;
+    // 方案A：类型分段切换（全部 / 普通 / 留仓），带图标与数量角标，与状态Tab视觉分层
+    html += `<div class="order-type-seg">
+      <button class="ot-item ${listType==='all'?'active':''}" onclick="switchOrderListType('all')"><span class="ot-icon">📋</span><span>全部</span><span class="ot-count">${typeCounts.all}</span></button>
+      <button class="ot-item ${listType==='normal'?'active':''}" onclick="switchOrderListType('normal')"><span class="ot-icon">📦</span><span>普通</span><span class="ot-count">${typeCounts.normal}</span></button>
+      <button class="ot-item ${listType==='warehouse'?'active':''}" onclick="switchOrderListType('warehouse')"><span class="ot-icon">🏷️</span><span>留仓</span><span class="ot-count">${typeCounts.warehouse}</span></button>
+    </div>`;
     // 状态Tab（与售后工单一致的按钮样式）
     html += `<div class="admin-tab-bar" style="margin-bottom:14px">`;
     tabs.forEach(t => {
