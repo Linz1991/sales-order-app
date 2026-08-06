@@ -3427,10 +3427,22 @@ async function renderOrders(){
 
   // === 销售端 ===
   // isMobile 已在函数顶部统一定义，销售端卡片布局直接复用
-  let filtered = orders;
+  const listType = window._orderListType || 'normal';
+  // 类型分段状态Tab（普通/留仓含「已反馈」；上门无待反馈环节，仅 全部/待下单/已下单/已完成）
+  const salesStatusTabsByType = {
+    normal:    [{key:'',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'已反馈'},{key:'completed',label:'已完成'}],
+    warehouse: [{key:'',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'已反馈'},{key:'completed',label:'已完成'}],
+    door:      [{key:'',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'completed',label:'已完成'}]
+  };
+  const salesTabs = salesStatusTabsByType[listType] || salesStatusTabsByType.normal;
+  // 切换类型后若当前状态Tab在该类型下不存在（如「上门」无「已反馈」），回退到「全部」
+  if(status && !salesTabs.some(t => t.key === status)){ status = ''; window._orderStatus = ''; }
+
+  // 关键词 + 日期 过滤，作为类型角标与列表的共同基础集（与 admin 一致）
+  let baseBeforeType = orders;
   if(keyword){
     const kw = keyword.toLowerCase();
-    filtered = filtered.filter(o =>
+    baseBeforeType = baseBeforeType.filter(o =>
       o.id.toLowerCase().includes(kw) ||
       (o.customerName||'').toLowerCase().includes(kw) ||
       (o.contact||'').toLowerCase().includes(kw) ||
@@ -3438,21 +3450,29 @@ async function renderOrders(){
       (o.items||[]).some(it => (it.name||'').toLowerCase().includes(kw))
     );
   }
+  const salesDateStart = window._salesDateStart || '';
+  const salesDateEnd = window._salesDateEnd || '';
+  if(salesDateStart){ baseBeforeType = baseBeforeType.filter(o => { var d = (o.createdAt||'').slice(0,10); return d >= salesDateStart; }); }
+  if(salesDateEnd){ baseBeforeType = baseBeforeType.filter(o => { var d = (o.createdAt||'').slice(0,10); return d <= salesDateEnd; }); }
+
+  // 类型分段角标（各类型总数，不受当前选中类型与状态影响，但受关键词+日期影响）
+  const typeCounts = {
+    normal: baseBeforeType.filter(o => o.type !== 'warehouse' && o.type !== 'door').length,
+    warehouse: baseBeforeType.filter(o => o.type === 'warehouse').length,
+    door: baseBeforeType.filter(o => o.type === 'door').length
+  };
+
+  // 应用类型筛选，得到状态Tab计数与列表的共同基础集
+  let countBase = baseBeforeType;
+  if(listType === 'normal') countBase = countBase.filter(o => o.type !== 'warehouse' && o.type !== 'door');
+  else if(listType === 'warehouse') countBase = countBase.filter(o => o.type === 'warehouse');
+  else if(listType === 'door') countBase = countBase.filter(o => o.type === 'door');
+
+  // 状态筛选 -> 最终列表（status 空表示「全部」）
+  let filtered = countBase;
   if(status){
     const group = salesStatusGroup(status);
     if(group.length) filtered = filtered.filter(o => group.includes(o.status));
-  }
-  if(typeFilter === 'whdoor'){
-    filtered = filtered.filter(o => o.type==='warehouse' || o.type==='door');
-  }
-  // 销售端日期范围筛选
-  const salesDateStart = window._salesDateStart || '';
-  const salesDateEnd = window._salesDateEnd || '';
-  if(salesDateStart){
-    filtered = filtered.filter(o => { var d = (o.createdAt||'').slice(0,10); return d >= salesDateStart; });
-  }
-  if(salesDateEnd){
-    filtered = filtered.filter(o => { var d = (o.createdAt||'').slice(0,10); return d <= salesDateEnd; });
   }
 
   filtered = [...filtered].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
@@ -3467,22 +3487,18 @@ async function renderOrders(){
   // 默认显示最近 _pageSize 条，点「加载更多」可继续展开（突破原 10 条上限）
   filtered = filtered.slice(0, _pageSize);
 
-  // 销售端状态筛选标签：全部 / 待下单 / 已下单 / 已反馈 / 已完成
-  const salesStatusTabs = [
-    {key:'', label:'全部'},
-    {key:'pending', label:'待下单'},
-    {key:'confirmed', label:'已下单'},
-    {key:'feedback', label:'已反馈'},
-    {key:'completed', label:'已完成'}
-  ];
-
   let html = `
     <div class="card">
       <div class="card-title">
         <span class="title-text">📦 订单列表</span>
       </div>
+      <div class="order-type-seg">
+        <button class="ot-item ${listType==='normal'?'active':''}" onclick="switchOrderListType('normal')"><span class="ot-icon">📦</span><span>普通</span><span class="ot-count">${typeCounts.normal}</span></button>
+        <button class="ot-item ${listType==='warehouse'?'active':''}" onclick="switchOrderListType('warehouse')"><span class="ot-icon">🏷️</span><span>留仓</span><span class="ot-count">${typeCounts.warehouse}</span></button>
+        <button class="ot-item ${listType==='door'?'active':''}" onclick="switchOrderListType('door')"><span class="ot-icon">🚪</span><span>上门</span><span class="ot-count">${typeCounts.door}</span></button>
+      </div>
       <div class="sales-tab-seg">
-        ${salesStatusTabs.map(t=>{
+        ${salesTabs.map(t=>{
           // 计数必须与列表过滤完全一致：纳入日期范围、关键词、类型等所有当前筛选条件
           let base = orders;
           if(keyword){
@@ -3499,7 +3515,9 @@ async function renderOrders(){
             const g = salesStatusGroup(t.key);
             if(g.length) base = base.filter(o => g.includes(o.status));
           }
-          if(typeFilter === 'whdoor') base = base.filter(o => o.type==='warehouse' || o.type==='door');
+          if(listType === 'normal') base = base.filter(o => o.type !== 'warehouse' && o.type !== 'door');
+          else if(listType === 'warehouse') base = base.filter(o => o.type === 'warehouse');
+          else if(listType === 'door') base = base.filter(o => o.type === 'door');
           if(salesDateStart) base = base.filter(o => { var d = (o.createdAt||'').slice(0,10); return d >= salesDateStart; });
           if(salesDateEnd) base = base.filter(o => { var d = (o.createdAt||'').slice(0,10); return d <= salesDateEnd; });
           const cnt = base.length;
