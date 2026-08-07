@@ -1243,7 +1243,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">2026-0807-6 版</div>
+          <div class="brand-sub">2026-0807-7 版</div>
         </div>
       </div>
     </div>
@@ -1285,7 +1285,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0807-6</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0807-7</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -1303,7 +1303,7 @@ html{scroll-behavior:smooth}
 
 <script>
 /* ============================================================
- * 销售订单管理系统 - 2026-0807-6
+ * 销售订单管理系统 - 2026-0807-7
  * 单文件 HTML，localStorage 模拟数据库
  * ============================================================ */
 
@@ -1557,6 +1557,24 @@ const DB = {
       console.warn('同步 ['+key+'] 到 Supabase 失败:', e.message);
       throw e; // 上抛，让调用方（改密码/重置密码/推送）能感知并提示用户，不再静默丢失
     }
+  },
+
+  // 把单条用户记录直接 upsert 到云端（用于改密码/重置密码等只需更新一条账号的场景）。
+  // 避免 syncTable('users') 全量拉取+合并时因 Service Worker 缓存/网络抖动导致失败提示。
+  // 注意：这是单向推送本地→云端；登录/自动同步时仍由 _loadTable 的云端权威合并保证多端收敛。
+  async upsertUser(user){
+    if(!window._sbpbClient) throw new Error('Supabase 未初始化');
+    const payload = {
+      id: user.id,
+      username: user.username,
+      password: user.password,
+      name: user.name || '',
+      role: user.role || 'sales',
+      phone: user.phone || '',
+      created_at: user.createdAt || user.created_at || new Date().toISOString()
+    };
+    const { error } = await window._sbpbClient.from('users').upsert(payload, { onConflict: 'id' });
+    if(error) throw error;
   },
 
   // 从 Supabase 同步所有表到 localStorage 缓存
@@ -10861,17 +10879,26 @@ async function resetUserPassword(id){
   logAudit({action:'reset_password', targetType:'user', targetId: id, targetLabel: u.name||u.username||'-', detail: '管理员重置密码'});
   // 关键修复：立即同步到云端并提示结果，不再静默
   let synced = false;
+  let errMsg = '';
   try{
     if(window._sbpbClient){
-      await DB.syncTable('users');
-      synced = true;
+      // 先尝试轻量单条 upsert，避免 syncTable 全量拉取时受旧 Service Worker 缓存/网络抖动影响
+      try{
+        await DB.upsertUser(u);
+        synced = true;
+      }catch(e1){
+        console.warn('单条 upsert 用户失败，fallback 到全量同步:', e1.message);
+        await DB.syncTable('users');
+        synced = true;
+      }
     } else {
       schedulePushToCloud();
     }
   }catch(e){
+    errMsg = e.message || '';
     schedulePushToCloud();
   }
-  showToast(synced ? '密码已重置并同步到云端' : '密码已本地重置，但云端同步失败，请稍后重试', synced ? 'success' : 'warning');
+  showToast(synced ? '密码已重置并同步到云端' : '密码已本地重置，但云端同步失败' + (errMsg ? '：'+errMsg : '，请稍后重试'), synced ? 'success' : 'warning');
 }
 
 /* ============ 销售看板（管理员） ============ */
@@ -11772,18 +11799,27 @@ function submitChangePassword(){
     // 关键修复：改完立即同步到云端（不再依赖 800ms 防抖），确保其他设备能马上用新密码登录；
     // 同步结果显式提示，不再静默丢失。
     let synced = false;
+    let errMsg = '';
     try{
       if(window._sbpbClient){
-        await DB.syncTable('users');
-        synced = true;
+        // 先尝试轻量单条 upsert，避免 syncTable 全量拉取时受旧 Service Worker 缓存/网络抖动影响
+        try{
+          await DB.upsertUser(cur);
+          synced = true;
+        }catch(e1){
+          console.warn('单条 upsert 用户失败，fallback 到全量同步:', e1.message);
+          await DB.syncTable('users');
+          synced = true;
+        }
       } else {
         schedulePushToCloud();
       }
     }catch(e){
+      errMsg = e.message || '';
       schedulePushToCloud();
     }
     closeModal();
-    showToast(synced ? '密码修改成功，已同步到云端' : '密码已本地更新，但云端同步失败，请稍后点“同步到云端”重试', synced ? 'success' : 'warning');
+    showToast(synced ? '密码修改成功，已同步到云端' : '密码已本地更新，但云端同步失败' + (errMsg ? '：'+errMsg : '，请稍后点“同步到云端”重试'), synced ? 'success' : 'warning');
   })();
 }
 
@@ -12524,7 +12560,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：直接读取页面顶栏 #headerVersion
-  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0807-6';
+  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0807-7';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
