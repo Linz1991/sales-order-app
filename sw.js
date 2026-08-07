@@ -1,5 +1,6 @@
-// 销售订单管理系统 Service Worker：网络优先，离线时回退到缓存，保证断网也能打开页面查看历史数据
-const CACHE = 'soms-v32';
+// 销售订单管理系统 Service Worker：仅缓存应用壳资源，不缓存 Supabase API 与 version.json，
+// 确保订单等实时业务数据走 network-only，避免多设备看到旧缓存。
+const CACHE = 'soms-v33';
 const ASSETS = [
   './',
   './index.html',
@@ -8,6 +9,18 @@ const ASSETS = [
   './manifest.json',
   './icon-192.png'
 ];
+
+// 判断请求是否为需要绕过 SW 缓存的实时接口（Supabase REST/Realtime、版本标记）
+function shouldBypassCache(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname.includes('supabase.co')) return true;
+    if (u.pathname.includes('/rest/v1/')) return true;
+    if (u.pathname.includes('/realtime/')) return true;
+    if (u.pathname.endsWith('/version.json')) return true;
+  } catch (_) {}
+  return false;
+}
 
 self.addEventListener('install', e => {
   e.waitUntil(
@@ -30,6 +43,13 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
+
+  // 对 Supabase 接口与 version.json 完全不拦截，让浏览器直接走网络，避免缓存实时数据
+  if (shouldBypassCache(e.request.url)) {
+    return;
+  }
+
+  // 应用壳资源：网络优先，离线回退缓存
   e.respondWith(
     fetch(e.request)
       .then(res => {
