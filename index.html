@@ -24,7 +24,7 @@ if('serviceWorker' in navigator){
 <script>
 const SUPABASE_URL = 'https://mfimcrzewhnlbtkjgqlq.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_nwhoBCwURiqEoUegkuGI5g_6AJwfrBj';
-window._sbpbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+try { window._sbpbClient = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null; } catch(e) { window._sbpbClient = null; console.warn('[Supabase] 初始化失败，云同步已禁用：', (e && e.message) || e); }
 
 // 注意：原先的“一次性清空全部订单”脚本（含云端 DELETE）已移除——
 // 其云端 DELETE 会在未设标记的浏览器首次加载时清空整个 orders 表，误删他人刚提交的订单。
@@ -1455,7 +1455,7 @@ const DB = {
       // 否则 PostgREST 会报 "column users.xxx does not exist" 导致整批账号同步失败。
       // 同时按登录名去重（保留创建时间最早的一条），避免云端出现同名账号。
       if(table === 'users'){
-        const allowed = new Set(['id','username','password','name','role','phone','created_at','updated_at']);
+        const allowed = new Set(['id','username','password','name','role','phone','created_at']);
         const seen = new Set();
         snakeData = snakeData
           .sort((a, b) => {
@@ -11629,8 +11629,11 @@ function submitChangePassword(){
       else if(cur.password === oldPass) oldOk = true; // 兼容旧明文
     }catch(e){ if(cur.password === oldPass) oldOk = true; }
     if(!oldOk){ showToast('原密码错误','error'); return; }
-    let nh = newPass;
-    try{ nh = await hashPassword(newPass); }catch(e){}
+    let nh;
+    try{ nh = await hashPassword(newPass); }catch(e){
+      showToast('密码加密失败，请重试','error');
+      return;
+    }
     cur.password = nh;
     cur.updatedAt = nowStr();
     DB.set('users', users);
