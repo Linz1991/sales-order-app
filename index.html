@@ -1265,7 +1265,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">2026-0808-5 版</div>
+          <div class="brand-sub">2026-0808-7 版</div>
         </div>
       </div>
     </div>
@@ -1307,7 +1307,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0808-5</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0808-7</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -1325,7 +1325,7 @@ html{scroll-behavior:smooth}
 
 <script>
 /* ============================================================
- * 销售订单管理系统 - 2026-0808-5
+ * 销售订单管理系统 - 2026-0808-7
  * 单文件 HTML，localStorage 模拟数据库
  * ============================================================ */
 
@@ -2094,6 +2094,17 @@ function escapeHtml(s){
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
+// JS 字符串转义：把不可信数据安全地塞进 onclick 等 HTML 属性里的 JS 字符串字面量（单引号）中。
+// 不能用 escapeHtml：escapeHtml 把 ' 变成 &#39;，浏览器在解析 HTML 属性时会先把 &#39; 解码回 '，
+// 最终 JS 引擎仍会把它当成字符串结束符 → 脱离字符串、造成 XSS。此处：反斜杠先转义；单引号转成 \'（阻止脱离 JS 字符串）；
+// 双引号转成 &quot;（阻止脱离外层双引号 HTML 属性）；换行转义。
+function escapeJsStr(s){
+  return String(s == null ? '' : s)
+    .replace(/\\/g,'\\\\')
+    .replace(/'/g,"\\'")
+    .replace(/"/g,'&quot;')
+    .replace(/\n/g,'\\n').replace(/\r/g,'\\r');
+}
 // 手机号规范化：去掉空格与横杠，统一为连续数字（如 177 1278 0802 → 17712780802）
 function normalizePhone(raw){
   if(!raw) return '';
@@ -2269,7 +2280,7 @@ function onProvinceChange(){
     onCityChange();
     return;
   }
-  cv.innerHTML = '<option value="">请选择城市</option>' + (prov.children||[]).map(c => '<option value="'+c.name+'">'+c.name+'</option>').join('');
+  cv.innerHTML = '<option value="">请选择城市</option>' + (prov.children||[]).map(c => '<option value="'+escapeHtml(c.name)+'">'+escapeHtml(c.name)+'</option>').join('');
 }
 function onCityChange(){
   const pv = document.getElementById('custProvince');
@@ -3158,7 +3169,12 @@ function renderSidebar(){
   const pendingCount = myOrders.filter(o => o.status === 'pending').length;
   const feedbackCount = myOrders.filter(o => o.status === 'feedback').length;
   // 上门未完成订单数（全员可见：统计全部上门订单中未完成的数量，不按销售过滤）
-  const doorIncompleteCount = allOrders.filter(o => o.type === 'door' && o.status !== 'completed').length;
+  const deletedIds = (DB.get('_deletedOrderIds') || []);
+  const doorIncompleteCount = allOrders.filter(o =>
+    o.type === 'door' &&
+    deletedIds.indexOf(o.id) < 0 &&
+    ['pending','confirmed','shipped'].indexOf(o.status) >= 0
+  ).length;
   const allAftersales = DB.get('aftersales');
   const myAs = isAdmin ? allAftersales : allAftersales.filter(a => a.salesId === currentUser.id);
   const asPendingCount = myAs.filter(a => a.status === 'pending').length;
@@ -3182,7 +3198,7 @@ function renderSidebar(){
       return `
       <div class="nav-item ${currentRoute===m.route?'active':''}" onclick="${click}">
         <span class="nav-icon">${m.icon}</span>
-        <span>${m.name}</span>
+        <span>${escapeHtml(m.name)}</span>
         ${b}
       </div>`;
     }).join('');
@@ -3427,7 +3443,7 @@ async function renderDashboard(){
               <tbody>
                 ${recentOrders.length ? recentOrders.map(o=>`
                   <tr>
-                    <td>${orderIdCell(o.id)}<br>${o.customerName || '-'}</td>
+                    <td>${orderIdCell(o.id)}<br>${escapeHtml(o.customerName) || '-'}</td>
                     <td>${money(o.total)}</td>
                     <td>${statusTag(o.status)}</td>
                     <td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button></td>
@@ -3469,7 +3485,7 @@ async function renderDashboard(){
     const myBalanceCount = balanceOrders.length;
 
     html += `
-      <div class="dashboard-greeting">欢迎回来，<span class="name">${currentUser.name}</span>！</div>
+      <div class="dashboard-greeting">欢迎回来，<span class="name">${escapeHtml(currentUser.name)}</span>！</div>
 
       <div class="dashboard-top">
         <div class="dashboard-summary-card">
@@ -3774,11 +3790,11 @@ async function renderOrders(){
           html += `
             <div class="order-card" onclick="viewOrder('${o.id}', true)">
               <div class="card-row" style="margin-bottom:6px"><span class="card-label">订单号</span>${orderIdCell(o.id)}</div>
-              <div class="card-customer">${o.customerName||'-'}</div>
+              <div class="card-customer">${escapeHtml(o.customerName)||'-'}</div>
               <div class="card-row"><span class="card-label">类型</span>${orderTypeTag(o.type)}</div>
               <div class="card-row"><span class="card-label">状态</span>${statusTag(o.status)}${paymentSettledTag(o)}</div>
               <div class="card-row"><span class="card-label">金额</span><b style="color:var(--text)">${money(o.total)}</b></div>
-              ${o.remark ? `<div class="card-row"><span class="card-label">备注</span><span style="text-align:right">${o.remark}</span></div>` : ''}
+              ${o.remark ? `<div class="card-row"><span class="card-label">备注</span><span style="text-align:right">${escapeHtml(o.remark)}</span></div>` : ''}
               <div class="card-time" style="font-size:12px;color:var(--text-muted);margin:6px 0">${formatOrderDateTime(o.createdAt)}</div>
               <div class="card-footer" style="justify-content:center;gap:8px">
                 <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewOrder('${o.id}', true)">查看</button>
@@ -3799,14 +3815,14 @@ async function renderOrders(){
           const productList = products || [];
           const itemCols = isAdmin ? 7 : 6;
           html += `<tr>`;
-          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${o.customerName||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
+          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(o.customerName)||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span></td>`;
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/><col/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const prod = productList.find(p => p.id === it.productId);
             const cost = (it.cost != null) ? it.cost : (prod ? prod.cost : 0);
             const waste = it.waste || 0;
             const profit = it.price * it.qty - cost * it.qty - waste;
-            html += `<tr><td>${it.name}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
+            html += `<tr><td>${escapeHtml(it.name)}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
             if(isAdmin){
               html += `<td>${money(cost)}</td>`;
               html += `<td style="font-weight:600;color:var(--danger)">${money(waste)}</td>`;
@@ -3815,7 +3831,7 @@ async function renderOrders(){
             html += `</tr>`;
           });
           html += `</tbody></table></td>`;
-          html += `<td style="font-size:12px;text-align:center">${o.remark||'-'}</td>`;
+          html += `<td style="font-size:12px;text-align:center">${escapeHtml(o.remark)||'-'}</td>`;
           html += `<td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button></td></tr>`;
         });
       } else {
@@ -3828,14 +3844,14 @@ async function renderOrders(){
       if(filtered.length){
         filtered.forEach(o => {
           html += `<tr>`;
-          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${o.customerName||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${o.phone||''}</span></td>`;
+          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(o.customerName)||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span></td>`;
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/><col/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const prod = (products||[]).find(p => p.id === it.productId);
             const cost = (it.cost != null) ? it.cost : (prod ? prod.cost : 0);
             const waste = it.waste || 0;
             const profit = it.price * it.qty - cost * it.qty - waste;
-            html += `<tr><td>${it.name}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
+            html += `<tr><td>${escapeHtml(it.name)}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
             if(isAdmin){
               html += `<td>${money(cost)}</td>`;
               html += `<td style="font-weight:600;color:var(--danger)">${money(waste)}</td>`;
@@ -3857,7 +3873,7 @@ async function renderOrders(){
       if(filtered.length){
         filtered.forEach(o => {
           html += `<tr>`;
-          html += `<td>${orderIdCell(o.id)}<br>${o.customerName||'-'}</td>`;
+          html += `<td>${orderIdCell(o.id)}<br>${escapeHtml(o.customerName)||'-'}</td>`;
           html += `<td style="font-weight:600">${money(o.total)}</td>`;
           html += `<td>${orderTypeTag(o.type)}</td>`;
           html += `<td>${statusTag(o.status)}${paymentSettledTag(o)}</td>`;
@@ -4000,14 +4016,14 @@ async function renderOrders(){
         html += `
           <div class="order-card" onclick="viewOrder('${o.id}')">
             <div class="card-row" style="margin-bottom:6px"><span class="card-label">订单号</span>${orderIdCell(o.id)}</div>
-            <div class="card-customer">${o.customerName||'-'}</div>
+            <div class="card-customer">${escapeHtml(o.customerName)||'-'}</div>
             <div class="card-tags">
               ${salesStatusLabel(o.status)}
             </div>
             <div class="card-row"><span class="card-label">类型</span>${orderTypeTag(o.type)}</div>
             <div class="card-row"><span class="card-label">金额</span><b style="color:var(--text)">${money(o.total)}</b></div>
-            <div class="card-row"><span class="card-label">电话</span><span style="color:var(--text)">${o.phone||'未填写'}</span></div>
-            <div class="card-logistics"><span style="color:var(--text-muted)">备注：</span>${o.remark||'无'}</div>
+            <div class="card-row"><span class="card-label">电话</span><span style="color:var(--text)">${escapeHtml(o.phone)||'未填写'}</span></div>
+            <div class="card-logistics"><span style="color:var(--text-muted)">备注：</span>${escapeHtml(o.remark)||'无'}</div>
     <div class="card-time" style="font-size:12px;color:var(--text-muted);margin-bottom:6px">${formatOrderDateTime(o.createdAt)}</div>
     <div class="card-footer" style="display:flex;justify-content:center;align-items:center">
       ${opBtn}
@@ -4044,11 +4060,11 @@ async function renderOrders(){
               const opBtn = (o.status === 'pending' && canEdit && !hasOrderedItem)
                 ? `<button class="btn btn-primary btn-sm" onclick="editOrder('${o.id}')">编辑</button>`
                 : `<button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button>`;
-              const remark = o.remark ? `<span title="${(o.remark||'').replace(/"/g,"'")}" style="display:inline-block;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${o.remark}</span>` : '<span style="color:var(--text-muted)">-</span>';
+              const remark = o.remark ? `<span title="${(o.remark||'').replace(/"/g,"'")}" style="display:inline-block;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${escapeHtml(o.remark)}</span>` : '<span style="color:var(--text-muted)">-</span>';
               return `
               <tr>
-                <td>${orderIdCell(o.id)}<br>${o.customerName||'-'}</td>
-                <td>${o.phone||'<span style="color:var(--text-muted)">未填写</span>'}</td>
+                <td>${orderIdCell(o.id)}<br>${escapeHtml(o.customerName)||'-'}</td>
+                <td>${escapeHtml(o.phone) || '<span style="color:var(--text-muted)">未填写</span>'}</td>
                 <td>${salesStatusLabel(o.status)}</td>
                 <td style="font-size:12px">${remark}</td>
                 <td>${formatOrderDateTime(o.createdAt)}</td>
@@ -4390,7 +4406,7 @@ function renderOrderNew(defaultType){
           <label class="form-label">指派销售 <span class="required">*</span></label>
           <select class="form-control" id="orderSales" onchange="updateWechatTotalDisplay()">
             <option value="">请选择销售</option>
-            ${salesUsers.map(u => `<option value="${u.id}" ${u.id===currentUser.id?'selected':''}>${u.name}</option>`).join('')}
+            ${salesUsers.map(u => `<option value="${u.id}" ${u.id===currentUser.id?'selected':''}>${escapeHtml(u.name)}</option>`).join('')}
           </select>
         </div>
       ` : ''}
@@ -4705,7 +4721,7 @@ function searchProducts(keyword){
       <div class="ps-item" style="cursor:pointer" onclick="toggleSearchSelect('${p.id}',event)">
         <input type="checkbox" ${checked} style="width:16px;height:16px;flex-shrink:0;cursor:pointer" onclick="event.stopPropagation();toggleSearchSelect('${p.id}',event)">
         <div>
-          <div style="font-weight:500">${p.name}</div>
+          <div style="font-weight:500">${escapeHtml(p.name)}</div>
           <div style="font-size:12px;color:var(--text-muted)">${p.category||''}</div>
         </div>
       </div>`;
@@ -4872,7 +4888,7 @@ function renderCart(){
     </div>
     ${cart.map((c,i)=>`
       <div class="cart-item">
-        <div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.name}">${c.name}</div>
+        <div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(c.name)}">${escapeHtml(c.name)}</div>
         <div><input type="number" value="${c.price}" min="0" step="1" onchange="setCartPrice(${i},this.value)" style="width:70px;padding:2px 6px;text-align:center;border:1px solid var(--border);border-radius:4px;font-size:13px"></div>
         <div class="qty-control">
           <button onclick="changeQty(${i},-1)">−</button>
@@ -5259,7 +5275,7 @@ function renderOrderSuccess(saved){
   const itemsHtml = order.items.map(it => `
     <div class="order-success-product">
       <div>
-        <div class="order-success-product-name">${it.name}</div>
+        <div class="order-success-product-name">${escapeHtml(it.name)}</div>
         <div class="order-success-product-meta">单价 ${money(it.price)} × ${it.qty}</div>
       </div>
       <div style="font-weight:600;color:var(--primary)">${money(it.subtotal)}</div>
@@ -5282,11 +5298,11 @@ function renderOrderSuccess(saved){
         <div class="order-success-grid">
           <div class="order-success-item">
             <span class="order-success-label">客户</span>
-            <span class="order-success-value">${order.contact || order.customerName || '-'}</span>
+            <span class="order-success-value">${escapeHtml(order.contact || order.customerName || '-')}</span>
           </div>
           <div class="order-success-item">
             <span class="order-success-label">电话</span>
-            <span class="order-success-value">${order.phone || '-'}</span>
+            <span class="order-success-value">${escapeHtml(order.phone) || '-'}</span>
           </div>
           <div class="order-success-item full">
             <span class="order-success-label">地址</span>
@@ -5412,7 +5428,7 @@ function renderOrderDetail(){
           </div>
           <div class="form-group">
             <label class="form-label">联系电话 <span class="required">*</span></label>
-            <input type="tel" class="form-control" id="custPhone" value="${order.phone||''}" placeholder="手机号码">
+            <input type="tel" class="form-control" id="custPhone" value="${escapeHtml(order.phone)||''}" placeholder="手机号码">
           </div>
           <div class="form-group">
             <label class="form-label">所在地区</label>
@@ -5438,7 +5454,7 @@ function renderOrderDetail(){
         ` : ``}
         <div class="form-group">
           <label class="form-label">订单备注</label>
-          <textarea class="form-control" id="editOrderRemark" style="min-height:50px">${order.remark||''}</textarea>
+          <textarea class="form-control" id="editOrderRemark" style="min-height:50px">${escapeHtml(order.remark)||''}</textarea>
         </div>
       ` : `
         ${isAdminOrderView ? `
@@ -5448,7 +5464,7 @@ function renderOrderDetail(){
             <div class="info-item"><div class="info-label">订单号</div><div class="info-value mono">${order.id}</div></div>
             <div class="info-item"><div class="info-label">状态</div><div class="info-value">${statusTag(order.status)}${paymentSettledTag(order)}</div></div>
             <div class="info-item"><div class="info-label">订单类型</div><div class="info-value">${orderTypeTag(order.type)}</div></div>
-            <div class="info-item"><div class="info-label">下单人</div><div class="info-value">${order.salesName||'-'}</div></div>
+            <div class="info-item"><div class="info-label">下单人</div><div class="info-value">${escapeHtml(order.salesName) || '-'}</div></div>
             ${isAdmin ? `<div class="info-item"><div class="info-label">订单金额</div><div class="info-value" style="color:var(--primary);font-size:18px">${money(order.total)}</div></div>` : ''}
             <div class="info-item"><div class="info-label">创建时间</div><div class="info-value">${formatOrderDateTime(order.createdAt)}</div></div>
             ${(order.type==='warehouse'||order.type==='door') ? `
@@ -5460,8 +5476,8 @@ function renderOrderDetail(){
         <div class="detail-customer">
           <div class="detail-customer-title">👤 订单客户信息</div>
           <div class="info-grid">
-            <div class="info-item"><div class="info-label">客户姓名</div><div class="info-value">${order.customerName||order.contact||'-'}</div></div>
-            <div class="info-item"><div class="info-label">联系电话</div><div class="info-value">${order.phone||'-'}</div></div>
+            <div class="info-item"><div class="info-label">客户姓名</div><div class="info-value">${escapeHtml(order.customerName||order.contact||'-')}</div></div>
+            <div class="info-item"><div class="info-label">联系电话</div><div class="info-value">${escapeHtml(order.phone)||'-'}</div></div>
             <div class="info-item full"><div class="info-label">收货地址</div><div class="info-value">${[order.province,order.city,order.district,order.region,order.address].filter(Boolean).join(' ')||'-'}</div></div>
           </div>
         </div>
@@ -5470,7 +5486,7 @@ function renderOrderDetail(){
           <div class="info-item"><div class="info-label">订单号</div><div class="info-value mono">${order.id}</div></div>
           <div class="info-item"><div class="info-label">状态</div><div class="info-value">${statusTag(order.status)}</div></div>
           <div class="info-item"><div class="info-label">订单类型</div><div class="info-value">${orderTypeTag(order.type)}</div></div>
-          <div class="info-item"><div class="info-label">下单人</div><div class="info-value">${order.salesName||'-'}</div></div>
+          <div class="info-item"><div class="info-label">下单人</div><div class="info-value">${escapeHtml(order.salesName) || '-'}</div></div>
           ${isAdmin ? `<div class="info-item"><div class="info-label">订单金额</div><div class="info-value" style="color:var(--primary);font-size:18px">${money(order.total)}</div></div>` : ''}
           <div class="info-item"><div class="info-label">创建时间</div><div class="info-value">${formatOrderDateTime(order.createdAt)}</div></div>
           ${(order.type==='warehouse'||order.type==='door') ? `
@@ -5480,13 +5496,13 @@ function renderOrderDetail(){
         </div>
         <div class="detail-box"><strong>客户信息：</strong>${custInfoText}</div>`}
         ${(order.type==='warehouse'||order.type==='door') && canSaveDates && !isAdminOrderView ? `<div style="margin-top:12px"><button class="btn btn-primary btn-sm" onclick="saveOrderDates('${order.id}')">保存修改</button></div>` : ''}
-        ${order.remark ? `<div class="detail-note"><strong>备注：</strong>${order.remark}</div>` : ''}
+        ${order.remark ? `<div class="detail-note"><strong>备注：</strong>${escapeHtml(order.remark)}</div>` : ''}
       `}
       ${order.images && order.images.length ? `
         <div style="margin-top:10px">
           <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">订单图片</div>
           <div class="after-images">
-            ${order.images.map((img,i)=>`<img src="${img}" onclick="viewImage('${img}')">`).join('')}
+            ${order.images.map((img,i)=>`<img src="${img}" onclick="viewImage(escapeJsStr(img))">`).join('')}
           </div>
         </div>
       ` : ''}
@@ -5541,7 +5557,7 @@ function renderOrderDetail(){
               return `
               <tr>
                 ${isAdminDoorDetail ? `
-                  <td>${it.name}</td>
+                  <td>${escapeHtml(it.name)}</td>
                   <td>${it.qty}</td>
                   <td>${money(it.price)}</td>
                   <td>${money(cost)}</td>
@@ -5549,14 +5565,14 @@ function renderOrderDetail(){
                   <td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}" id="adminItemProfit_${i}">${money(itemProfit)}</td>
                   <td><select class="form-control" id="doorStockItem_${i}" style="padding:6px 10px;width:70px" onchange="saveItemStock('${order.id}',${i},this.value)"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select></td>
                 ` : `
-                  <td>${editMode ? `<input type="text" class="form-control" id="editItemName_${i}" value="${it.name}" style="padding:6px 10px">` : it.name}</td>
+                  <td>${editMode ? `<input type="text" class="form-control" id="editItemName_${i}" value="${escapeHtml(it.name)}" style="padding:6px 10px">` : it.name}</td>
                   <td>${editMode ? `<input type="number" class="form-control" id="editItemQty_${i}" value="${it.qty}" min="1" style="padding:6px 10px;width:60px" onchange="recalcEditItem(${i})">` : it.qty}</td>
                   <td>${editMode ? `<input type="number" class="form-control" id="editItemPrice_${i}" value="${it.price}" min="0" style="padding:6px 10px;width:80px" onchange="recalcEditItem(${i})">` : money(it.price)}</td>
                   ${isAdmin ? `<td>${money(cost)}</td>` : ''}
                   ${isAdmin ? `<td><input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px;color:var(--danger);font-weight:600" id="wasteItem_${i}" oninput="saveItemWaste('${order.id}',${i},this.value)" onchange="saveItemWaste('${order.id}',${i},this.value)"></td>` : ''}
                   ${isAdmin ? `<td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}">${money(itemProfit)}</td>` : ''}
                   ${(isAdmin && (order.status==='pending' || order.items && order.items.some(it=>it.ordered))) ? `<td>${it.ordered ? '<button class="btn btn-sm" title="双击撤回下单" ondblclick="markItemUnordered(\''+order.id+'\','+i+')" style="background:#3b82f6;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer">已下单</button>' : '<button class="btn btn-success btn-sm" onclick="markItemOrdered(\''+order.id+'\','+i+')">下单</button>'}</td>` : ''}
-                  ${(isAdmin && order.type==='warehouse' && !hideInlineTracking) ? `<td><input type="text" class="form-control" id="whTrackItem_${i}" value="${it.trackingNo||''}" placeholder="输入运单号" style="padding:6px 10px;min-width:150px">${it.trackingNo ? `<a class="btn-link" style="margin-left:6px;white-space:nowrap" onclick="queryLogistics('${order.id}', ${i}, document.getElementById('whTrackItem_${i}').value)">查询</a>` : ''}</td>` : ''}
+                  ${(isAdmin && order.type==='warehouse' && !hideInlineTracking) ? `<td><input type="text" class="form-control" id="whTrackItem_${i}" value="${escapeHtml(it.trackingNo) || ''}" placeholder="输入运单号" style="padding:6px 10px;min-width:150px">${it.trackingNo ? `<a class="btn-link" style="margin-left:6px;white-space:nowrap" onclick="queryLogistics(escapeJsStr(order.id), ${i}, document.getElementById('whTrackItem_${i}').value)">查询</a>` : ''}</td>` : ''}
                   ${isDoor ? `<td>${editMode ? `<select class="form-control" id="editItemStock_${i}" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : ((isAdmin || currentUser.role==='sales') ? `<select class="form-control" onchange="saveItemStock('${order.id}',${i},this.value)" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : (it.stock==='是'?'<span class="tag tag-completed">已备货</span>':'<span class="tag tag-pending">未备货</span>'))}</td>` : ''}
                   ${editMode ? `<td><button class="btn-link danger" onclick="removeEditItem(${i})">删除</button></td>` : ''}
                 `}
@@ -5586,7 +5602,7 @@ function renderOrderDetail(){
       ${editMode ? `
         <div style="margin-top:12px">
           <label class="form-label">修改备注</label>
-          <textarea class="form-control" id="editRemark" style="min-height:50px">${order.remark||''}</textarea>
+          <textarea class="form-control" id="editRemark" style="min-height:50px">${escapeHtml(order.remark)||''}</textarea>
         </div>
       ` : ''}
     </div>
@@ -5612,11 +5628,11 @@ function renderOrderDetail(){
             <tbody>
               ${order.items.map((it, i) => `
                 <tr>
-                  <td>${it.name}</td>
+                  <td>${escapeHtml(it.name)}</td>
                   <td>${it.qty}</td>
-                  <td>${it.expressCompany || '<span style="color:var(--text-muted)">-</span>'}</td>
-                  <td><input type="text" class="form-control" id="trackItem_${i}" value="${it.trackingNo||''}" placeholder="输入运单号" style="padding:6px 10px;min-width:160px"></td>
-                  <td>${it.trackingNo ? `<button class="btn btn-primary btn-sm" onclick="queryLogistics('${order.id}', ${i}, '${it.trackingNo}')">查看</button>` : ''}</td>
+                  <td>${escapeHtml(it.expressCompany) || '<span style="color:var(--text-muted)">-</span>'}</td>
+                  <td><input type="text" class="form-control" id="trackItem_${i}" value="${escapeHtml(it.trackingNo) || ''}" placeholder="输入运单号" style="padding:6px 10px;min-width:160px"></td>
+                  <td>${it.trackingNo ? `<button class="btn btn-primary btn-sm" onclick="queryLogistics(escapeJsStr(order.id), ${i}, escapeJsStr(it.trackingNo))">查看</button>` : ''}</td>
                 </tr>
               `).join('')}
             </tbody>
@@ -5634,17 +5650,17 @@ function renderOrderDetail(){
           <tbody>
             ${order.items.map((it, i) => `
               <tr>
-                  <td>${it.name}</td>
+                  <td>${escapeHtml(it.name)}</td>
                   <td>${it.qty}</td>
-                  <td>${it.expressCompany || '<span style="color:var(--text-muted)">-</span>'}</td>
+                  <td>${escapeHtml(it.expressCompany) || '<span style="color:var(--text-muted)">-</span>'}</td>
                 <td>${canEditLogistics ? `
-                  <input type="text" class="form-control" id="${order.type==='warehouse'?'whTrackItem_':'trackItem_'}${i}" value="${it.trackingNo||''}" 
+                  <input type="text" class="form-control" id="${order.type==='warehouse'?'whTrackItem_':'trackItem_'}${i}" value="${escapeHtml(it.trackingNo) || ''}" 
                     placeholder="输入运单号" style="padding:6px 10px;min-width:160px"
                     onchange="saveTrackingNo('${order.id}', ${i}, this.value)">
-                ` : (it.trackingNo ? `<span class="mono" style="font-size:13px">${it.trackingNo}</span>` : '<span style="color:var(--text-muted)">-</span>')}
+                ` : (it.trackingNo ? `<span class="mono" style="font-size:13px">${escapeHtml(it.trackingNo)}</span>` : '<span style="color:var(--text-muted)">-</span>')}
                 </td>
                 <td>${getLogisticsStatusTag(it)}</td>
-                <td>${it.trackingNo ? `<button class="btn btn-primary btn-sm" onclick="queryLogistics('${order.id}', ${i}, '${it.trackingNo}')">查看</button>` : ''}</td>
+                <td>${it.trackingNo ? `<button class="btn btn-primary btn-sm" onclick="queryLogistics(escapeJsStr(order.id), ${i}, escapeJsStr(it.trackingNo))">查看</button>` : ''}</td>
               </tr>
             `).join('')}
           </tbody>
@@ -5734,7 +5750,7 @@ function renderOrderDetail(){
     html += `
     <div class="detail-section card">
       <h4>💰 收款信息</h4>
-      <div class="detail-box detail-locked">🔒 收款金额仅提交人（${order.salesName||'销售'}）及管理员可见</div>
+      <div class="detail-box detail-locked">🔒 收款金额仅提交人（${escapeHtml(order.salesName) || '销售'}）及管理员可见</div>
     </div>`;
   }
 
@@ -5930,7 +5946,7 @@ function renderOrderEdit(){
         <button class="btn btn-secondary btn-sm" onclick="copyOrderInfo('${order.id}')">📋 一键收集订单信息</button>
       </div>
       <div style="padding:10px;background:#f9fafb;border-radius:6px;font-size:14px;line-height:1.8">${custInfoText}</div>
-      ${order.remark ? `<div style="margin-top:10px;padding:10px;background:#fef3c7;border-radius:6px;font-size:13px;color:#92400e"><strong>备注：</strong>${order.remark}</div>` : ''}
+      ${order.remark ? `<div style="margin-top:10px;padding:10px;background:#fef3c7;border-radius:6px;font-size:13px;color:#92400e"><strong>备注：</strong>${escapeHtml(order.remark)}</div>` : ''}
     </div>
 
     <!-- 商品明细 + 物流单号（合并板块） -->
@@ -5948,7 +5964,7 @@ function renderOrderEdit(){
           <tbody>
             ${order.items.map((it,i) => `
               <tr>
-                <td>${it.name}</td>
+                <td>${escapeHtml(it.name)}</td>
                 <td>${it.qty}</td>
               </tr>
             `).join('')}
@@ -5969,10 +5985,10 @@ function renderOrderEdit(){
             <tbody>
               ${order.items.map((it, i) => `
                 <tr>
-                  <td>${it.name}</td>
-                  <td id="expressCompany_${i}">${it.expressCompany || '<span style="color:var(--text-muted)">自动识别</span>'}</td>
+                  <td>${escapeHtml(it.name)}</td>
+                  <td id="expressCompany_${i}">${escapeHtml(it.expressCompany) || '<span style="color:var(--text-muted)">自动识别</span>'}</td>
                   <td>
-                    <input type="text" class="form-control" id="editTrackingNo_${i}" value="${it.trackingNo||''}"
+                    <input type="text" class="form-control" id="editTrackingNo_${i}" value="${escapeHtml(it.trackingNo) || ''}"
                       placeholder="输入运单号" style="padding:6px 10px;min-width:180px"
                       oninput="previewExpressCompany(${i}, this.value)"
                       onchange="saveOrderEditTracking('${order.id}')">
@@ -6050,7 +6066,7 @@ function copySingleOrderInfo(orderId){
   const lines = [];
   // 第一行：客户 电话 地址
   let head = (order.customerName || '未知客户');
-  if(order.phone) head += ' ' + order.phone;
+  if(order.phone) head += ' ' + escapeHtml(order.phone);
   const addr = formatOrderAddress(order);
   if(addr) head += addr;
   else if(order.region || order.address) head += (order.region || '') + (order.address || '');
@@ -6522,7 +6538,7 @@ function searchEditProducts(keyword){
   }else{
     html = matched.map(p => {
       const checked = _editSearchSelected.has(p.id) ? 'checked' : '';
-      return `<div class="ps-item" style="cursor:pointer" onclick="toggleEditSelect('${p.id}',event)"><input type="checkbox" ${checked} style="width:16px;height:16px;flex-shrink:0;cursor:pointer" onclick="event.stopPropagation();toggleEditSelect('${p.id}',event)"><div><div style="font-weight:500">${p.name}</div><div style="font-size:12px;color:var(--text-muted)">${p.category||''}</div></div></div>`;
+      return `<div class="ps-item" style="cursor:pointer" onclick="toggleEditSelect('${p.id}',event)"><input type="checkbox" ${checked} style="width:16px;height:16px;flex-shrink:0;cursor:pointer" onclick="event.stopPropagation();toggleEditSelect('${p.id}',event)"><div><div style="font-weight:500">${escapeHtml(p.name)}</div><div style="font-size:12px;color:var(--text-muted)">${p.category||''}</div></div></div>`;
     }).join('');
   }
   results.innerHTML = html;
@@ -7441,7 +7457,7 @@ function collectPendingOrdersInfo() {
   // 单行格式拼接：客户 电话 地址 商品 ×数量 … 备注：
   const lines = orders.map(o => {
     let line = (o.customerName || '未知客户');
-    if(o.phone) line += ' ' + o.phone;
+    if(o.phone) line += ' ' + escapeHtml(o.phone);
     const addr = formatOrderAddress(o);
     if(addr) line += addr;
     else if(o.region || o.address) line += (o.region || '') + (o.address || '');
@@ -7602,7 +7618,7 @@ function openItemRemarkModal(orderId, itemIndex) {
     <div class="modal-mask" onclick="if(event.target===this)closeModal()">
       <div class="modal" style="max-width:400px">
         <div class="modal-header">
-          <h3>商品备注 - ${item.name}</h3>
+          <h3>商品备注 - ${escapeHtml(item.name)}</h3>
           <button class="modal-close" onclick="closeModal()">×</button>
         </div>
         <div class="modal-body">
@@ -7660,7 +7676,7 @@ function toggleAllItemsView() {
         <div class="table-wrap"><table>
           <thead><tr><th>商品名称</th><th>总数量</th><th>涉及订单数</th></tr></thead>
           <tbody>
-            ${items.map(it => `<tr><td>${it.name}</td><td style="font-weight:600">${it.totalQty}</td><td>${it.orderCount}</td></tr>`).join('')}
+            ${items.map(it => `<tr><td>${escapeHtml(it.name)}</td><td style="font-weight:600">${it.totalQty}</td><td>${it.orderCount}</td></tr>`).join('')}
           </tbody>
         </table></div>
       </div>
@@ -7728,9 +7744,9 @@ function renderCustomers(){
                 : '<span style="background:#f3f4f6;color:#6b7280;padding:2px 10px;border-radius:4px;font-size:12px;font-weight:500">停用</span>';
               return `
                 <tr>
-                  <td>${c.name}</td>
-                  <td>${c.contact||'-'}</td>
-                  <td>${c.phone||'-'}</td>
+                  <td>${escapeHtml(c.name)}</td>
+                  <td>${escapeHtml(c.contact)||'-'}</td>
+                  <td>${escapeHtml(c.phone)||'-'}</td>
                   <td>${c.region||'-'}</td>
                   ${isAdmin ? `<td>${owner?owner.name:'-'}</td>` : ''}
                   <td>${statusBadge}</td>
@@ -7775,7 +7791,7 @@ function showCustomerOrders(customerId){
     <div class="modal-mask" onclick="if(event.target===this)closeModal()">
       <div class="modal lg">
         <div class="modal-header">
-          <h3>📦 ${customer.name} 的订单记录</h3>
+          <h3>📦 ${escapeHtml(customer.name)} 的订单记录</h3>
           <button class="modal-close" onclick="closeModal()">×</button>
         </div>
         <div class="modal-body">
@@ -7922,7 +7938,7 @@ function openCustomerModal(customerId){
               <label class="form-label">归属销售 <span class="required">*</span></label>
               <select class="form-control" id="customerOwner">
                 <option value="">请选择销售</option>
-                ${salesUsers.map(u=>`<option value="${u.id}" ${customer&&customer.ownerId===u.id?'selected':''}>${u.name}</option>`).join('')}
+                ${salesUsers.map(u=>`<option value="${u.id}" ${customer&&customer.ownerId===u.id?'selected':''}>${escapeHtml(u.name)}</option>`).join('')}
               </select>
             </div>
           ` : ''}
@@ -9406,8 +9422,8 @@ function renderPayments(){
             ${filtered.length ? filtered.map(p=>`
               <tr>
                 <td><a class="btn-link" onclick="viewOrder('${p.orderId}')">${p.orderId}</a></td>
-                <td>${p.customerName||'-'}</td>
-                ${isAdmin ? `<td>${p.salesName||'-'}</td>` : ''}
+                <td>${escapeHtml(p.customerName)||'-'}</td>
+                ${isAdmin ? `<td>${escapeHtml(p.salesName) || '-'}</td>` : ''}
                 <td style="font-weight:600">${money(p.amount)}</td>
                 <td>${p.stage || '-'}</td>
                 <td>${p.method}</td>
@@ -9673,7 +9689,7 @@ function renderCommissions(){
             <thead><tr><th>销售员</th><th>当前提成比例(%)</th><th>操作</th></tr></thead>
             <tbody>
               ${salesUsers.map(function(u){
-                return '<tr><td>'+u.name+'</td>'+
+                return '<tr><td>'+escapeHtml(u.name)+'</td>'+
                   '<td><input type="number" class="form-control" style="width:80px" value="'+(u.commission_rate!=null?u.commission_rate:9)+'" min="0" max="100" step="0.1" id="rate_'+u.id+'"></td>'+
                   '<td><button class="btn btn-primary btn-sm" onclick="saveCommissionRate(\''+u.id+'\')">保存</button></td></tr>';
               }).join('')}
@@ -9693,7 +9709,7 @@ function renderCommissions(){
             <label class="form-label" style="font-size:12px">销售人员</label>
             <select class="form-control" style="width:auto" onchange="window._comSalesId=this.value">
               <option value="">全部</option>
-              ${salesUsers.map(function(u){ return '<option value="'+u.id+'" '+(window._comSalesId===u.id?'selected':'')+'>'+u.name+'</option>'; }).join('')}
+              ${salesUsers.map(function(u){ return '<option value="'+u.id+'" '+(window._comSalesId===u.id?'selected':'')+'>'+escapeHtml(u.name)+'</option>'; }).join('')}
             </select>
           </div>
         ` : ''}
@@ -9907,8 +9923,8 @@ function openCommissionModal(){
               <label style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer">
                 <input type="checkbox" value="${o.id}" class="com-order-cb" checked>
                 <div style="flex:1">
-                  <div style="font-weight:500">${o.id} · ${o.customerName}</div>
-                  <div style="font-size:12px;color:var(--text-muted)">${o.salesName} · ${money(o.total)}</div>
+                  <div style="font-weight:500">${o.id} · ${escapeHtml(o.customerName)}</div>
+                  <div style="font-size:12px;color:var(--text-muted)">${escapeHtml(o.salesName)} · ${money(o.total)}</div>
                 </div>
               </label>
             `).join('') : '<div style="padding:20px;text-align:center;color:var(--text-muted)">暂无可生成提成的订单</div>'}
@@ -10062,7 +10078,7 @@ function renderAftersales(){
           <tbody>
             ${filtered.length ? filtered.map(a=>`
               <tr>
-                <td>${a.customerName}</td>
+                <td>${escapeHtml(a.customerName)}</td>
                 <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.items.map(it=>it.name+' x'+it.qty).join('、')}</td>
                 ${showLossCol ? '<td style="color:var(--danger);font-weight:600">'+(a.loss ? money(a.loss) : '-')+'</td>' : ''}
                 <td>${aftersaleStatusTag(a.status)}</td>
@@ -10109,8 +10125,8 @@ function viewAftersale(id){
             <div class="info-item"><div class="info-label">状态</div><div class="info-value">${aftersaleStatusTag(as.status)}</div></div>
             <div class="info-item"><div class="info-label">创建时间</div><div class="info-value">${as.createdAt||'-'}</div></div>
             <div class="info-item"><div class="info-label">关联订单</div><div class="info-value"><a class="btn-link" onclick="closeModal();viewOrder('${as.orderId}')">${as.orderId}</a></div></div>
-            <div class="info-item"><div class="info-label">客户</div><div class="info-value">${as.customerName}</div></div>
-            <div class="info-item"><div class="info-label">电话</div><div class="info-value">${as.phone||'-'}</div></div>
+            <div class="info-item"><div class="info-label">客户</div><div class="info-value">${escapeHtml(as.customerName)}</div></div>
+            <div class="info-item"><div class="info-label">电话</div><div class="info-value">${escapeHtml(as.phone)||'-'}</div></div>
           </div>
           ${isAdmin ? `
           <div class="form-group">
@@ -10126,34 +10142,34 @@ function viewAftersale(id){
               <table>
                 <thead><tr><th>商品名称</th><th>数量</th></tr></thead>
                 <tbody>
-                  ${as.items.map(it=>`<tr><td>${it.name}</td><td>${it.qty}</td></tr>`).join('')}
+                  ${as.items.map(it=>`<tr><td>${escapeHtml(it.name)}</td><td>${it.qty}</td></tr>`).join('')}
                 </tbody>
               </table>
             </div>
           </div>
           <div class="form-group">
             <label class="form-label">售后原因</label>
-            <div style="padding:10px;background:#f9fafb;border-radius:6px;font-size:14px;line-height:1.7">${as.reason}</div>
+            <div style="padding:10px;background:#f9fafb;border-radius:6px;font-size:14px;line-height:1.7">${escapeHtml(as.reason)}</div>
           </div>
           ${as.images && as.images.length ? `
             <div class="form-group">
               <label class="form-label">售后图片</label>
               <div class="after-images">
-                ${as.images.map(img=>`<img src="${img}" onclick="viewImage('${img}')" style="width:80px;height:80px;object-fit:cover;border-radius:6px;margin-right:8px;cursor:pointer">`).join('')}
+                ${as.images.map(img=>`<img src="${img}" onclick="viewImage(escapeJsStr(img))" style="width:80px;height:80px;object-fit:cover;border-radius:6px;margin-right:8px;cursor:pointer">`).join('')}
               </div>
             </div>
           ` : ''}
           <div class="form-group">
             <label class="form-label">物流单号</label>
             <div style="display:flex;gap:8px;align-items:center">
-              <input type="text" class="form-control" id="asTrackingNo" value="${as.trackingNo||''}" placeholder="录入物流单号，保存后永久留存" style="flex:1">
+              <input type="text" class="form-control" id="asTrackingNo" value="${escapeHtml(as.trackingNo) || ''}" placeholder="录入物流单号，保存后永久留存" style="flex:1">
               <button class="btn btn-primary btn-sm" onclick="viewAftersaleTracking('${as.id}')">查看</button>
             </div>
             <div style="font-size:12px;color:var(--text-muted);margin-top:4px">录入单号保存后永久留存，点击查看跳转物流实时流转轨迹</div>
           </div>
           <div class="form-group">
             <label class="form-label">售后备注</label>
-            <textarea class="form-control" id="asRemark" placeholder="填写或修改售后备注信息" style="min-height:80px">${as.remark||''}</textarea>
+            <textarea class="form-control" id="asRemark" placeholder="填写或修改售后备注信息" style="min-height:80px">${escapeHtml(as.remark)||''}</textarea>
           </div>
           <div class="form-group">
             <label class="form-label">修改状态</label>
@@ -10375,8 +10391,8 @@ function searchOrdersForAftersale(keyword){
     results.innerHTML = matched.map(o => `
       <div class="ps-item" onclick="selectOrderForAftersale('${o.id}')">
         <div>
-          <div style="font-weight:500">${o.id} · ${o.customerName}</div>
-          <div style="font-size:12px;color:var(--text-muted)">${o.phone||''} ${o.address||''}</div>
+          <div style="font-weight:500">${o.id} · ${escapeHtml(o.customerName)}</div>
+          <div style="font-size:12px;color:var(--text-muted)">${escapeHtml(o.phone)||''} ${escapeHtml(o.address)||''}</div>
         </div>
         <button class="btn btn-primary btn-sm">选择</button>
       </div>
@@ -10399,8 +10415,8 @@ function selectOrderForAftersale(orderId){
   document.getElementById('selectedOrderInfo').innerHTML = `
     <div style="background:#f0f4ff;padding:10px 14px;border-radius:6px;font-size:13px">
       <div><strong>订单号：</strong>${order.id}</div>
-      <div><strong>客户：</strong>${order.customerName} · ${order.phone||''}</div>
-      <div><strong>地址：</strong>${order.region||''} ${order.address||''}</div>
+      <div><strong>客户：</strong>${escapeHtml(order.customerName)} · ${escapeHtml(order.phone)||''}</div>
+      <div><strong>地址：</strong>${order.region||''} ${escapeHtml(order.address)||''}</div>
     </div>
   `;
   // 显示商品列表（不显示价格），支持复选框
@@ -10410,7 +10426,7 @@ function selectOrderForAftersale(orderId){
       <label style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
         <input type="checkbox" class="aftersale-item-cb" value="${i}" data-order-id="${orderId}">
         <div style="flex:1">
-          <div style="font-weight:500">${it.name}</div>
+          <div style="font-weight:500">${escapeHtml(it.name)}</div>
           <div style="font-size:12px;color:var(--text-muted)">数量：${it.qty}</div>
         </div>
       </label>
@@ -10438,7 +10454,7 @@ function renderAftersaleImagePreview(){
   if(!el) return;
   el.innerHTML = aftersaleImages.map((img,i)=>`
     <div class="image-thumb-wrap">
-      <img src="${img}" class="image-thumb" onclick="viewImage('${img}')">
+      <img src="${img}" class="image-thumb" onclick="viewImage(escapeJsStr(img))">
       <div class="image-thumb-remove" onclick="removeAftersaleImage(${i})">×</div>
     </div>
   `).join('');
@@ -10524,14 +10540,14 @@ function editAftersale(id){
         <div class="modal-body" style="max-height:70vh;overflow-y:auto">
           <div class="info-grid" style="margin-bottom:16px">
             <div class="info-item"><div class="info-label">关联订单</div><div class="info-value">${as.orderId}</div></div>
-            <div class="info-item"><div class="info-label">客户</div><div class="info-value">${as.customerName}</div></div>
+            <div class="info-item"><div class="info-label">客户</div><div class="info-value">${escapeHtml(as.customerName)}</div></div>
             <div class="info-item"><div class="info-label">当前状态</div><div class="info-value">${aftersaleStatusTag(as.status)}</div></div>
             <div class="info-item"><div class="info-label">创建时间</div><div class="info-value">${as.createdAt||'-'}</div></div>
           </div>
           <div class="form-group">
             <label class="form-label">售后商品</label>
             <div style="border:1px solid var(--border);border-radius:6px;padding:10px 14px">
-              ${as.items.map(it=>`<div style="padding:4px 0">${it.name} x${it.qty}</div>`).join('')}
+              ${as.items.map(it=>`<div style="padding:4px 0">${escapeHtml(it.name)} x${it.qty}</div>`).join('')}
             </div>
           </div>
           <div class="form-group">
@@ -10541,7 +10557,7 @@ function editAftersale(id){
           </div>
           <div class="form-group">
             <label class="form-label">售后原因</label>
-            <textarea class="form-control" id="editAsReason" style="min-height:80px">${as.reason}</textarea>
+            <textarea class="form-control" id="editAsReason" style="min-height:80px">${escapeHtml(as.reason)}</textarea>
           </div>
           <div class="form-group">
             <label class="form-label">修改状态</label>
@@ -10715,8 +10731,8 @@ async function renderSchedule(){
   var html = '<div class="card"><div class="card-title"><span class="title-text">📅 上门订单</span><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="renderOrderNew(\'door\')">+ 新建上门订单</button><button class="btn btn-sm '+(viewMode==='calendar'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'calendar\';renderSchedule()">日历视图</button><button class="btn btn-sm '+(viewMode==='list'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'list\';renderSchedule()">列表视图</button><button class="btn btn-primary btn-sm" onclick="exportScheduleOrders()" style="display:inline-flex;align-items:center;gap:4px">📥 导出</button></div></div>';
   html += '<div class="admin-tab-bar" style="margin-bottom:14px">';
   schTabs.forEach(function(t){
-    var base = isAdmin ? allDoorOrders : orders;
-    var cnt = t.key==='' ? base.length : base.filter(function(o){ return doorStatusMap[t.key].indexOf(o.status) >= 0; }).length;
+    // 状态角标统一基于全部非删除上门订单，不受关键词/日期筛选影响
+    var cnt = t.key==='' ? allDoorOrders.length : allDoorOrders.filter(function(o){ return doorStatusMap[t.key].indexOf(o.status) >= 0; }).length;
     html += '<button class="btn '+(statusKey===t.key?'btn-primary':'btn-secondary')+' btn-sm" onclick="window._scheduleStatus=\''+t.key+'\';renderSchedule()" style="margin-right:6px">'+t.label+' ('+cnt+')</button>';
   });
   html += '</div>';
@@ -10796,7 +10812,7 @@ async function renderSchedule(){
     html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
       if(sorted.length){
       sorted.forEach(function(o){
-        var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDateTime(o.createdAt)+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+        var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+escapeHtml(o.customerName)+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDateTime(o.createdAt)+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
       });
     }
     html += '</tbody></table></div>';
@@ -10817,7 +10833,7 @@ function showScheduleDayOrders(dateStr){
   if(!dayOrders.length){ el.innerHTML = ''; return; }
   var html = '<div class="detail-section card"><h4 style="margin-bottom:10px">'+dateStr+' 的上门订单</h4><div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
   dayOrders.forEach(function(o){
-    var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+o.customerName+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDateTime(o.createdAt)+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+    var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+escapeHtml(o.customerName)+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDateTime(o.createdAt)+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
   });
   html += '</tbody></table></div></div>';
   el.innerHTML = html;
@@ -10981,7 +10997,7 @@ function renderSettings(){
     var isMe = u.id === currentUser.id;
     var roleTag = u.role === 'admin' ? '<span class="tag tag-completed">管理员</span>' : '<span class="tag tag-pending">销售</span>';
     html += '<tr'+(isMe?' style="background:#fffbeb"':'')+'>';
-    html += '<td>'+(isMe?'<b>'+u.name+'</b>':u.name)+'</td>';
+    html += '<td>'+(isMe?'<b>'+escapeHtml(u.name)+'</b>':u.name)+'</td>';
     html += '<td>'+u.username+'</td>';
     html += '<td>'+roleTag+'</td>';
     html += '<td>'+(u.createdAt||'-')+'</td>';
@@ -11045,7 +11061,7 @@ function renderUsers(){
     const isMe = u.id === currentUser.id;
     const roleTag = u.role === 'admin' ? '<span class="tag tag-completed">管理员</span>' : '<span class="tag tag-pending">销售</span>';
     html += `<tr${isMe?' style="background:#fffbeb"':''}>`;
-    html += `<td>${isMe?'<b>'+u.name+'</b>':u.name}</td>`;
+    html += `<td>${isMe?'<b>'+escapeHtml(u.name)+'</b>':u.name}</td>`;
     html += `<td>${u.username}</td>`;
     html += `<td>${roleTag}</td>`;
     html += `<td>${u.createdAt||'-'}</td>`;
@@ -11256,7 +11272,7 @@ function saveUserWechat(id){
 function deleteUser(id){
   if(id === currentUser.id){ showToast('不能删除自己的账号','error'); return; }
   const u = (DB.get('users') || []).find(x => x.id === id);
-  const label = u ? `${u.name}（${u.username}）` : '此人员';
+  const label = u ? `${escapeHtml(u.name)}（${u.username}）` : '此人员';
   showConfirm(`确定删除 ${label} 吗？\n删除后该账号无法登录，历史订单数据仍会保留。`, async () => {
     const ok = await _deleteUserPhysical(id);
     if(ok){
@@ -11366,7 +11382,7 @@ async function renderDashboard2(){
   html += `<div class="table-wrap"><table><thead><tr><th>销售员</th><th>订单数</th><th>营业额</th><th>利润</th></tr></thead><tbody>`;
   const sorted = Object.values(salesMap).sort((a,b) => b.revenue - a.revenue);
   sorted.forEach(s => {
-    html += `<tr><td>${s.name}</td><td>${s.orderCount}</td><td>${money(s.revenue)}</td><td>${money(s.profit)}</td></tr>`;
+    html += `<tr><td>${escapeHtml(s.name)}</td><td>${s.orderCount}</td><td>${money(s.revenue)}</td><td>${money(s.profit)}</td></tr>`;
   });
   html += `</tbody></table></div>`;
 
@@ -11380,7 +11396,7 @@ async function renderDashboard2(){
     top3.forEach((s,i) => {
       html += `<div style="text-align:center;min-width:100px;padding:12px 16px;border-radius:8px;background:${badgeColors[i]}22;border:1px solid ${badgeColors[i]}44">`;
       html += `<div style="font-size:20px;margin-bottom:4px">${badgeLabels[i]}</div>`;
-      html += `<div style="font-weight:600;font-size:14px">${s.name}</div>`;
+      html += `<div style="font-weight:600;font-size:14px">${escapeHtml(s.name)}</div>`;
       html += `<div style="font-size:13px;color:var(--text-muted)">${money(s.revenue)}</div>`;
       html += `</div>`;
     });
@@ -11421,7 +11437,7 @@ function renderProfitReport(){
             <label class="form-label" style="font-size:12px">销售人员</label>
             <select class="form-control" style="width:auto" onchange="window._prSalesId=this.value">
               <option value="">全部</option>
-              ${salesUsers.map(function(u){ return '<option value="'+u.id+'" '+(window._prSalesId===u.id?'selected':'')+'>'+u.name+'</option>'; }).join('')}
+              ${salesUsers.map(function(u){ return '<option value="'+u.id+'" '+(window._prSalesId===u.id?'selected':'')+'>'+escapeHtml(u.name)+'</option>'; }).join('')}
             </select>
           </div>
         ` : ''}
@@ -11588,9 +11604,9 @@ function renderProfitReport(){
     window._prDrillDownKeys = [];
     var sortedProducts = Object.keys(productMap).map(function(k){ var p = productMap[k]; p.pkey = k; return p; }).sort(function(a,b){ return b.profit - a.profit; });
     var productRowsHtml = sortedProducts.map(function(p){
-      var idx = window._prDrillDownKeys.push({type:'product', key:p.pkey, title:'商品: '+p.name}) - 1;
+      var idx = window._prDrillDownKeys.push({type:'product', key:p.pkey, title:'商品: '+escapeHtml(p.name)}) - 1;
       return '<tr style="cursor:pointer" onclick="showProfitDrillDown('+idx+')">' +
-        '<td>'+p.name+'</td>' +
+        '<td>'+escapeHtml(p.name)+'</td>' +
         '<td>'+p.category+'</td>' +
         '<td>'+p.qty+'</td>' +
         '<td>'+money(p.revenue)+'</td>' +
@@ -11789,7 +11805,7 @@ function showProfitDrillDown(idx){
     <div class="modal-mask" onclick="if(event.target===this)closeModal()">
       <div class="modal lg">
         <div class="modal-header">
-          <h3>📋 ${info.title} - 订单明细</h3>
+          <h3>📋 ${escapeHtml(info.title)} - 订单明细</h3>
           <button class="modal-close" onclick="closeModal()">×</button>
         </div>
         <div class="modal-body">
@@ -12032,7 +12048,7 @@ function copyOrderInfo(orderId){
   // 客户信息
   text += '客户：' + (order.contact || order.customerName || '') + ' ' + (order.phone || '') + '\n';
   text += '地址：' + (order.region || '') + (order.address || '') + '\n';
-  if(order.remark){ text += '备注：' + order.remark + '\n'; }
+  if(order.remark){ text += '备注：' + escapeHtml(order.remark) + '\n'; }
   text += '---\n';
   // 商品信息+物流单号
   order.items.forEach(it => {
@@ -12063,7 +12079,7 @@ function openLogiCollectModal(order, items){
   window._logiCollItems = items;
   const rows = items.map((it, i) => `
     <div style="padding:10px 0;border-bottom:1px dashed var(--border)">
-      <div style="font-weight:600">${it.name} x${it.qty} <span class="mono" style="font-size:12px;color:var(--text-muted)">#${it.trackingNo}</span></div>
+      <div style="font-weight:600">${escapeHtml(it.name)} x${it.qty} <span class="mono" style="font-size:12px;color:var(--text-muted)">#${escapeHtml(it.trackingNo)}</span></div>
       <div style="font-size:12px;color:var(--text-muted)" id="logiCollStatus_${i}">查询中...</div>
     </div>`).join('');
   const modalHtml = `
@@ -12598,7 +12614,7 @@ function renderLogisticsTimeline(trackingNo, nodes, container, expressCompany, s
       <div class="logi-timeline-header">
         <span class="logi-timeline-title">${expressCompany}</span>
         <span class="logi-timeline-no">运单号：${trackingNo}</span>
-        <button class="btn btn-sm" style="margin-left:auto;padding:2px 8px;font-size:11px;border:1px solid var(--border);background:var(--bg);color:var(--text-secondary);border-radius:4px;cursor:pointer" onclick="clearLogisticsCache('${trackingNo}')">清除缓存</button>
+        <button class="btn btn-sm" style="margin-left:auto;padding:2px 8px;font-size:11px;border:1px solid var(--border);background:var(--bg);color:var(--text-secondary);border-radius:4px;cursor:pointer" onclick="clearLogisticsCache(escapeJsStr(trackingNo))">清除缓存</button>
       </div>
       <div class="logi-timeline-body">
         ${timelineHtml}
@@ -12632,7 +12648,7 @@ function showLogiError(container, trackingNo, msg){
   const safe = (msg || '物流查询失败').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   container.innerHTML = `
     <div class="detail-note">⚠ ${safe}
-      <button class="btn btn-sm" style="margin-left:8px;padding:2px 8px;font-size:11px;border:1px solid var(--border);background:var(--bg);cursor:pointer" onclick="clearLogisticsCache('${trackingNo}')">清除缓存</button>
+      <button class="btn btn-sm" style="margin-left:8px;padding:2px 8px;font-size:11px;border:1px solid var(--border);background:var(--bg);cursor:pointer" onclick="clearLogisticsCache(escapeJsStr(trackingNo))">清除缓存</button>
     </div>`;
 }
 
@@ -12980,7 +12996,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：直接读取页面顶栏 #headerVersion
-  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0808-5';
+  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0808-7';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
