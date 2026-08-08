@@ -1265,7 +1265,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">2026-0808-16 版</div>
+          <div class="brand-sub">2026-0808-17 版</div>
         </div>
       </div>
     </div>
@@ -1307,7 +1307,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0808-16</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0808-17</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -1325,7 +1325,7 @@ html{scroll-behavior:smooth}
 
 <script>
 /* ============================================================
- * 销售订单管理系统 - 2026-0808-16
+ * 销售订单管理系统 - 2026-0808-17
  * 单文件 HTML，localStorage 模拟数据库
  * ============================================================ */
 
@@ -1345,7 +1345,8 @@ const DB = {
     fullPayment:'full_payment', finalPayment:'final_payment', completionDate:'completion_date',
     collectedAmount:'collected_amount', doorDate:'door_date', contactName:'contact_name',
     actorId:'actor_id', actorName:'actor_name', actorRole:'actor_role', action:'action',
-    targetType:'target_type', targetId:'target_id', targetLabel:'target_label', before:'before', after:'after', detail:'detail'
+    targetType:'target_type', targetId:'target_id', targetLabel:'target_label', before:'before', after:'after', detail:'detail',
+    lockedBy:'locked_by', lockedAt:'locked_at'
   },
   _snakeToCamel: {},
   // JSONB 字段（需要序列化/反序列化）
@@ -4117,7 +4118,7 @@ async function renderOrders(){
     html += `<div class="order-cards-h" style="margin-top:12px">`;
     if(filtered.length){
       filtered.forEach(o => {
-        const canEdit = isAdmin || o.salesId === currentUser.id;
+        const canEdit = (isAdmin || o.salesId === currentUser.id) && !isOrderLockedByOther(o);
         const hasOrderedItem = (o.items||[]).some(it => it.ordered === true);
         const opBtn = (o.status === 'pending' && canEdit && !hasOrderedItem)
           ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();editOrder('${o.id}')">编辑</button>`
@@ -4164,7 +4165,7 @@ async function renderOrders(){
           </thead>
           <tbody>
             ${filtered.length ? filtered.map(o=>{
-              const canEdit = isAdmin || o.salesId === currentUser.id;
+              const canEdit = (isAdmin || o.salesId === currentUser.id) && !isOrderLockedByOther(o);
               const hasOrderedItem = (o.items||[]).some(it => it.ordered === true);
               const opBtn = (o.status === 'pending' && canEdit && !hasOrderedItem)
                 ? `<button class="btn btn-primary btn-sm" onclick="editOrder('${o.id}')">编辑</button>`
@@ -6450,6 +6451,13 @@ function editOrder(orderId){
   var _o = DB.get('orders').find(function(o){ return o.id === orderId; });
   if(_o && currentUser.role !== 'admin' && (_o.status === 'completed')){
     showToast('该订单已完结，无法修改','error');
+    return;
+  }
+  // 销售进入编辑前：若订单已被管理员锁定（管理员正在下单/编辑损耗），禁止进入编辑，直接进只读详情
+  if(_o && currentUser.role !== 'admin' && isOrderLockedByOther(_o)){
+    showToast('🔒 管理员正在为该订单操作，暂时不可编辑','error');
+    window._currentOrderId = orderId;
+    navigate('order-detail');
     return;
   }
   window._currentOrderId = orderId;
@@ -13125,7 +13133,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：直接读取页面顶栏 #headerVersion
-  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0808-16';
+  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0808-17';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
