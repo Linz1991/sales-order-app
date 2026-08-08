@@ -1265,7 +1265,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">2026-0808-7 版</div>
+          <div class="brand-sub">2026-0808-8 版</div>
         </div>
       </div>
     </div>
@@ -1307,7 +1307,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0808-7</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0808-8</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -1325,7 +1325,7 @@ html{scroll-behavior:smooth}
 
 <script>
 /* ============================================================
- * 销售订单管理系统 - 2026-0808-7
+ * 销售订单管理系统 - 2026-0808-8
  * 单文件 HTML，localStorage 模拟数据库
  * ============================================================ */
 
@@ -1543,6 +1543,12 @@ const DB = {
         }
       }catch(e){
         console.warn('合并云端数据失败，改用本地数据 ['+key+']:', e.message);
+      }
+      // 账号表：迁移到 Supabase Auth 后，users 由 Auth/后台管理，前端只拉不推，
+      // 避免把本地旧的 sha256 密码误写回云端、或覆盖后台改过的角色/状态。
+      if(table === 'users'){
+        console.log('表 [users] 已同步（仅拉取，Auth 接管写权限）');
+        return;
       }
       if(!data || data.length === 0){
         // 本地与云端都为空：清空云端残留
@@ -2827,10 +2833,52 @@ function hashPassword(pwd){
   return sha256js('soms_salt_2024' + pwd);
 }
 
+// 登录成功后的统一收尾：用 authenticated 客户端拉取账号资料（受 RLS 约束），写入会话
+async function finishLoginViaAuth(username){
+  let profile = null;
+  try{
+    const { data, error } = await window._sbpbClient.from('users').select('*').eq('username', username).single();
+    if(data) profile = data;
+  }catch(e){ /* 资料缺失则降级用 Auth 元数据 */ }
+  if(!profile){
+    try{
+      const { data: au } = await window._sbpbClient.auth.getUser();
+      const meta = (au && au.user && au.user.app_metadata) || {};
+      profile = {
+        id: (au && au.user && au.user.id) || '',
+        username: meta.username || username,
+        name: (au && au.user && au.user.user_metadata && au.user.user_metadata.name) || meta.username || username,
+        role: meta.role || 'sales'
+      };
+    }catch(e){ profile = { id:'', username:username, name:username, role:'sales' }; }
+  }
+  const { password, ...safe } = profile;
+  currentUser = safe;
+  sessionStorage.setItem('soms_current_user', JSON.stringify(safe));
+  showApp();
+  showToast('登录成功，欢迎回来 ' + (safe.name || username),'success');
+  if(window._sbpbClient){ DB.syncFromCloud().catch(function(){}); }
+  else { setTimeout(function(){ DB.syncFromCloud().catch(function(){}); }, 2000); }
+}
+
 async function handleLogin(){
   const user = document.getElementById('loginUser').value.trim();
   const pass = document.getElementById('loginPass').value;
   if(!user || !pass){ showToast('请输入用户名和密码','error'); return; }
+  // —— 方案二(Auth)：优先走 Supabase 官方认证（密码哈希在服务端校验，绝不下发前端）——
+  if(window._sbpbClient){
+    try{
+      const { data, error } = await window._sbpbClient.auth.signInWithPassword({
+        email: user + '@soms.local',
+        password: pass
+      });
+      if(data && data.user){
+        await finishLoginViaAuth(user);
+        return;
+      }
+    }catch(e){ /* Auth 账号未迁移或网络异常，落到下方本地兼容逻辑 */ }
+  }
+  // 兼容期回退：Auth 账号尚未迁移时，用本地缓存的 sha256 校验（开通 RLS 后此分支自动失效，不会更不安全）
   // 登录前先强制从云端拉取最新账号（解决"在其他设备/浏览器刚创建的账号，本机缓存还没同步"导致登录不上的问题）
   try{
     if(window._sbpbClient){
@@ -2872,6 +2920,7 @@ async function handleLogin(){
 function handleLogout(){
   currentUser = null;
   sessionStorage.removeItem('soms_current_user');
+  if(window._sbpbClient){ try{ window._sbpbClient.auth.signOut(); }catch(e){} }
   document.getElementById('appPage').style.display = 'none';
   document.getElementById('loginPage').style.display = 'flex';
   document.getElementById('loginUser').value = '';
@@ -11026,7 +11075,13 @@ function changeUserRole(userId, role){
   if(idx >= 0){
     users[idx].role = role;
     DB.set('users', users);
-    showToast('用户角色已更新','success');
+    if(window._sbpbClient){
+      window._sbpbClient.from('users').update({ role: role }).eq('id', userId)
+        .then(function(){ showToast('用户角色已更新','success'); })
+        .catch(function(e){ showToast('本地已更新，云端失败：' + (e.message||''), 'warning'); });
+    } else {
+      showToast('用户角色已更新','success');
+    }
     renderSettings();
   }
 }
@@ -11219,40 +11274,9 @@ function toggleUserForm(){
 }
 
 async function addUser(){
-  const name = document.getElementById('newUserName').value.trim();
-  const account = document.getElementById('newUserAccount').value.trim();
-  const password = document.getElementById('newUserPassword').value.trim();
-  const role = document.getElementById('newUserRole').value;
-  const wEl = document.getElementById('newUserWechat');
-  const wechatAmount = wEl ? (parseInt(wEl.value) || 0) : 0;
-  if(!name){ showToast('请输入姓名','error'); return; }
-  if(!account){ showToast('请输入登录账号','error'); return; }
-  if(!password){ showToast('请输入密码','error'); return; }
-
-  // 先做一次云端同步，拉取其它设备最近创建的账号，防止多端同时添加同名账号
-  try{
-    await DB.syncFromCloud();
-  }catch(e){
-    console.warn('新增账号前同步失败:', e.message);
-  }
-
-  const users = DB.get('users');
-  // 查重排除已禁用的账号：被「删除」（软删除/禁用）的人员释放用户名，可重新添加
-  // 比较时忽略大小写与首尾空格
-  if(users.find(u => String(u.username || '').trim().toLowerCase() === account.toLowerCase() && !u.disabled)){
-    showToast('登录账号已存在','error'); return;
-  }
-  let hp = password;
-  try{ hp = await hashPassword(password); }catch(e){}
-  const now = nowStr();
-  const newUserId = DB.uid('u');
-  users.push({id:newUserId, username:account, password:hp, name:name, role:role, wechatAmount:wechatAmount, createdAt:now, updatedAt:now});
-  DB.set('users', users);
-  logAudit({action:'create_user', targetType:'user', targetId: newUserId, targetLabel: name, detail: '登录账号 '+account+' / 角色 '+(role==='admin'?'管理员':'销售')});
-  // 立即推云端，确保新增账号在其它设备/Pad 能立刻登录，不依赖定时同步
-  DB.pushToCloud().catch(e => console.warn('新增账号推云端失败:', e.message));
-  showToast('人员已添加','success');
-  renderUsers();
+  // 方案二(Auth)：账号由 Supabase Auth 统一管理，前端不再直写 users 表。请到后台添加。
+  window.open('https://supabase.com/dashboard/project/mfimcrzewhnlbtkjgqlq/auth/users', '_blank');
+  showToast('新建账号请到 Supabase 后台（已打开新标签页）→ Authentication → Users → Add user','info');
 }
 
 function saveUserWechat(id){
@@ -11265,7 +11289,13 @@ function saveUserWechat(id){
   if(idx >= 0){
     users[idx].wechatAmount = v;
     DB.set('users', users);
-    showToast('微信金额已更新','success');
+    if(window._sbpbClient){
+      window._sbpbClient.from('users').update({ wechatAmount: v }).eq('id', id)
+        .then(function(){ showToast('微信金额已更新','success'); })
+        .catch(function(e){ showToast('本地已更新，云端失败：' + (e.message||''), 'warning'); });
+    } else {
+      showToast('微信金额已更新','success');
+    }
   }
 }
 
@@ -11285,46 +11315,9 @@ function deleteUser(id){
 }
 
 async function resetUserPassword(id){
-  const users = DB.get('users');
-  const idx = users.findIndex(u => u.id === id);
-  if(idx < 0) return;
-  const u = users[idx];
-  // 关键修复：改为弹窗输入新密码，不再硬编码 123456；留空则仍重置为 123456（向后兼容）
-  const np = window.prompt('请输入 [' + (u.name || u.username) + '] 的新密码（留空则重置为 123456）', '123456');
-  if(np === null) return; // 用户取消
-  const newP = (np.trim() || '123456');
-  if(newP.length < 4){ showToast('密码至少4位','error'); return; }
-  let hp;
-  try{ hp = await hashPassword(newP); }catch(e){
-    showToast('密码加密失败，请重试','error');
-    return;
-  }
-  u.password = hp;
-  u.updatedAt = nowStr();
-  DB.set('users', users);
-  logAudit({action:'reset_password', targetType:'user', targetId: id, targetLabel: u.name||u.username||'-', detail: '管理员重置密码'});
-  // 关键修复：立即同步到云端并提示结果，不再静默
-  let synced = false;
-  let errMsg = '';
-  try{
-    if(window._sbpbClient){
-      // 先尝试轻量单条 upsert，避免 syncTable 全量拉取时受旧 Service Worker 缓存/网络抖动影响
-      try{
-        await DB.upsertUser(u);
-        synced = true;
-      }catch(e1){
-        console.warn('单条 upsert 用户失败，fallback 到全量同步:', e1.message);
-        await DB.syncTable('users');
-        synced = true;
-      }
-    } else {
-      schedulePushToCloud();
-    }
-  }catch(e){
-    errMsg = e.message || '';
-    schedulePushToCloud();
-  }
-  showToast(synced ? '密码已重置并同步到云端' : '密码已本地重置，但云端同步失败' + (errMsg ? '：'+errMsg : '，请稍后重试'), synced ? 'success' : 'warning');
+  // 方案二(Auth)：重置密码需要 service_role 权限，前端不能持有，故跳转到 Supabase 后台操作。
+  window.open('https://supabase.com/dashboard/project/mfimcrzewhnlbtkjgqlq/auth/users', '_blank');
+  showToast('重置密码请到 Supabase 后台（已打开新标签页）→ 对应用户 → Reset password','info');
 }
 
 /* ============ 销售看板（管理员） ============ */
@@ -12208,47 +12201,49 @@ function submitChangePassword(){
   if(idx < 0){ showToast('账号异常','error'); return; }
   const cur = users[idx];
   (async () => {
-    let oldOk = false;
-    try{
-      const h = await hashPassword(oldPass);
-      if(cur.password === h) oldOk = true;
-      else if(cur.password === oldPass) oldOk = true; // 兼容旧明文
-    }catch(e){ if(cur.password === oldPass) oldOk = true; }
-    if(!oldOk){ showToast('原密码错误','error'); return; }
-    let nh;
-    try{ nh = await hashPassword(newPass); }catch(e){
-      showToast('密码加密失败，请重试','error');
-      return;
-    }
-    cur.password = nh;
-    cur.updatedAt = nowStr();
-    DB.set('users', users);
-    logAudit({action:'change_password', targetType:'user', targetId: currentUser.id, targetLabel: currentUser.name, detail: '本人修改密码'});
-    // 关键修复：改完立即同步到云端（不再依赖 800ms 防抖），确保其他设备能马上用新密码登录；
-    // 同步结果显式提示，不再静默丢失。
-    let synced = false;
-    let errMsg = '';
-    try{
-      if(window._sbpbClient){
-        // 先尝试轻量单条 upsert，避免 syncTable 全量拉取时受旧 Service Worker 缓存/网络抖动影响
+      // 方案二(Auth)：用官方接口改密码。先校验原密码（重新登录一次），再 updateUser。
+      if(window._sbpbClient && currentUser && currentUser.username){
         try{
-          await DB.upsertUser(cur);
-          synced = true;
-        }catch(e1){
-          console.warn('单条 upsert 用户失败，fallback 到全量同步:', e1.message);
-          await DB.syncTable('users');
-          synced = true;
-        }
-      } else {
-        schedulePushToCloud();
+          const { error: verr } = await window._sbpbClient.auth.signInWithPassword({
+            email: currentUser.username + '@soms.local',
+            password: oldPass
+          });
+          if(verr){ showToast('原密码错误','error'); return; }
+          const { error: uerr } = await window._sbpbClient.auth.updateUser({ password: newPass });
+          if(uerr){ showToast('修改失败：' + (uerr.message||''), 'error'); return; }
+          closeModal();
+          showToast('密码修改成功','success');
+          return;
+        }catch(e){ /* 落到本地兼容逻辑 */ }
       }
-    }catch(e){
-      errMsg = e.message || '';
-      schedulePushToCloud();
-    }
-    closeModal();
-    showToast(synced ? '密码修改成功，已同步到云端' : '密码已本地更新，但云端同步失败' + (errMsg ? '：'+errMsg : '，请稍后点“同步到云端”重试'), synced ? 'success' : 'warning');
-  })();
+      // 兼容期回退（Auth 账号未迁移时）：本地 sha256 校验 + 写本地缓存
+      let oldOk = false;
+      try{
+        const h = await hashPassword(oldPass);
+        if(cur.password === h) oldOk = true;
+        else if(cur.password === oldPass) oldOk = true; // 兼容旧明文
+      }catch(e){ if(cur.password === oldPass) oldOk = true; }
+      if(!oldOk){ showToast('原密码错误','error'); return; }
+      let nh;
+      try{ nh = await hashPassword(newPass); }catch(e){
+        showToast('密码加密失败，请重试','error');
+        return;
+      }
+      cur.password = nh;
+      cur.updatedAt = nowStr();
+      DB.set('users', users);
+      logAudit({action:'change_password', targetType:'user', targetId: currentUser.id, targetLabel: currentUser.name, detail: '本人修改密码'});
+      let synced = false;
+      let errMsg = '';
+      try{
+        if(window._sbpbClient){
+          try{ await DB.upsertUser(cur); synced = true; }
+          catch(e1){ console.warn('单条 upsert 用户失败:', e1.message); await DB.syncTable('users'); synced = true; }
+        } else { schedulePushToCloud(); }
+      }catch(e){ errMsg = e.message || ''; schedulePushToCloud(); }
+      closeModal();
+      showToast(synced ? '密码修改成功，已同步到云端' : '密码已本地更新，但云端同步失败' + (errMsg ? '：'+errMsg : '，请稍后点“同步到云端”重试'), synced ? 'success' : 'warning');
+    })();
 }
 
 /* ============ 通用：状态选项（按订单类型） ============ */
@@ -12748,10 +12743,20 @@ window.onload = async function(){
   }
 
   // 恢复正常登录流程
+  // 优先用 Supabase Auth 会话恢复登录（方案二）
+  if(window._sbpbClient){
+    try{
+      const { data: sess } = await window._sbpbClient.auth.getSession();
+      if(sess && sess.session && sess.session.user){
+        const meta = (sess.session.user.app_metadata) || {};
+        const uname = meta.username || '';
+        if(uname){ await finishLoginViaAuth(uname); return; }
+      }
+    }catch(e){ /* 客户端未就绪，走下方 sessionStorage 兜底 */ }
+  }
   const saved = sessionStorage.getItem('soms_current_user');
   if(saved){
-    currentUser = JSON.parse(saved);
-    showApp();
+    try{ currentUser = JSON.parse(saved); showApp(); }catch(e){}
   }else{
     document.getElementById('loginPage').style.display = 'flex';
     document.getElementById('appPage').style.display = 'none';
@@ -12996,7 +13001,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：直接读取页面顶栏 #headerVersion
-  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0808-7';
+  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0808-8';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
