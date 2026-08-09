@@ -1272,7 +1272,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">2026-0809-12 版</div>
+          <div class="brand-sub">2026-0809-13 版</div>
         </div>
       </div>
     </div>
@@ -1314,7 +1314,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0809-12</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0809-13</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -1332,7 +1332,7 @@ html{scroll-behavior:smooth}
 
 <script>
 /* ============================================================
- * 销售订单管理系统 - 2026-0809-12
+ * 销售订单管理系统 - 2026-0809-13
  * 单文件 HTML，localStorage 模拟数据库
  * ============================================================ */
 
@@ -5124,6 +5124,7 @@ function confirmManualAddProduct(){
       productId: newProdId,
       name: name,
       price: price,
+      cost: price, // 成本默认等于售价
       qty: 1,
       subtotal: price,
       stock: '否',
@@ -5550,18 +5551,32 @@ function submitOrder(){
     let changed = false;
     (cart||[]).forEach(c => {
       if(!c || !c.name) return;
-      const exists = (c.productId && lib.some(p => p.id === c.productId)) || lib.some(p => p.name === c.name);
-      if(!exists){
+      const byId = c.productId ? lib.find(p => p.id === c.productId) : null;
+      const byName = lib.find(p => p.name === c.name);
+      const prod = byId || byName;
+      if(!prod){
         const np = { id: DB.uid('p_'), name: c.name, category: '自定义', price: c.price||0, cost: c.price||0, status: 'on', createdBy: currentUser.id, auto_added: true, createdAt: nowStr() };
         lib.push(np);
         changed = true;
         c.productId = np.id; // 重映射到新商品，便于后续利润/详情计算
+        c.cost = np.cost;    // 成本默认等于售价
         c.auto_added = true; // 标记为销售临时新增，供管理员审核订单时提示校准（即使商品被云端拉回丢了自身标记，订单项仍保留）
         pushSingleProductToCloud(np);
+      }else{
+        // 商品已存在：补齐 productId / cost / auto_added，防止手动新增时漏写成本
+        c.productId = prod.id;
+        if(c.cost == null || c.cost === 0) c.cost = prod.cost || c.price || 0;
+        if(prod.auto_added === true) c.auto_added = true;
       }
     });
     if(changed) DB.set('products', lib);
   })();
+
+  // 确保订单 items 快照里的 cost 与 cart 一致（手动新增商品在 ensureProductsInLibrary 中补了 cost）
+  (newOrder.items||[]).forEach(it => {
+    const c = (cart||[]).find(x => x.productId && x.productId === it.productId);
+    if(c && (it.cost == null || (it.cost === 0 && c.cost > 0))) it.cost = c.cost;
+  });
 
   logAudit({action:'create_order', targetType:'order', targetId: orderId, targetLabel: contact, before: '', after: total, detail: '金额 '+money(total)+' / 类型 '+(newOrder.type==='warehouse'?'留仓':newOrder.type==='door'?'上门':'普通')});
 
@@ -5871,8 +5886,11 @@ function renderOrderDetail(){
           <tbody>
             ${order.items.map((it,i) => {
               const prod = products.find(p => p.id === it.productId);
-              // 成本优先用下单时快照(it.cost)，保证改商品库不影响已下单订单利润；旧订单无快照时回退商品库
-              const cost = (it.cost != null) ? it.cost : (prod ? (prod.cost || 0) : 0);
+              // 成本优先用下单时快照(it.cost)，保证改商品库不影响已下单订单利润；
+              // 旧订单/手动新增商品若快照缺失或为0，回退商品库真实成本（修复临时新增商品成本漏写为0）
+              const prodCost = prod ? (prod.cost || 0) : 0;
+              const shouldFallback = (it.cost == null || it.cost === 0) && prodCost > 0 && (it.auto_added === true || prod.auto_added === true);
+              const cost = shouldFallback ? prodCost : (it.cost != null ? it.cost : prodCost);
               const waste = it.waste || 0;
               const itemProfit = (it.price || 0) * (it.qty || 0) - cost * (it.qty || 0) - waste;
               return `
@@ -13369,7 +13387,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：直接读取页面顶栏 #headerVersion
-  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0809-12';
+  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0809-13';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
