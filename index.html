@@ -1269,7 +1269,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">2026-0809-8 版</div>
+          <div class="brand-sub">2026-0809-9 版</div>
         </div>
       </div>
     </div>
@@ -1311,7 +1311,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0809-8</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0809-9</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -1329,7 +1329,7 @@ html{scroll-behavior:smooth}
 
 <script>
 /* ============================================================
- * 销售订单管理系统 - 2026-0809-8
+ * 销售订单管理系统 - 2026-0809-9
  * 单文件 HTML，localStorage 模拟数据库
  * ============================================================ */
 
@@ -1514,8 +1514,13 @@ const DB = {
       //  ② 仍保证他人删除的订单/商品能从本端移除（删除传播），不回归“清理后订单又出现”的旧 bug。
       const local = this.get(key, []);
       let merged = this._mergeById(local, cloud, excludeIds);
-      // 删除传播：云端已不存在、又不在本端排除集的本地行，视为被他人删除 → 移除
-      merged = merged.filter(r => !r || !r.id || cloudIds.has(r.id));
+      // 删除传播：云端已不存在、又不在本端排除集的本地行，视为被他人删除 → 移除。
+      // 但 customers 表不执行此过滤：提交订单时自动建档的客户是“本地新建、尚未推上云”的行，
+      // 若云端此刻还没它（异步上推未落地 / 云端本就为空），会被误判为“他人已删除”而整条抹掉，
+      // 导致“提交订单后客户没进客户管理”。客户以本地新建为准、云端只做补充，故跳过过滤。
+      if(key === 'orders' || key === 'products'){
+        merged = merged.filter(r => !r || !r.id || cloudIds.has(r.id));
+      }
       localStorage.setItem('soms_'+key, JSON.stringify(key === 'users' ? this._scrubUserPasswords(merged) : merged));
       if(key === 'products') window._lastCloudProducts = cloud || [];
       return merged;
@@ -1617,6 +1622,29 @@ const DB = {
         return;
       }
       let snakeData = this._toSnake(data);
+      // 客户表：upsert 容错 + 不云端反删（与 products 同理，避免误删其它设备刚建档的客户）。
+      // ① 若云端缺某些列（如 email/province/city/district——手动建客户无这些列），全字段 upsert 会整批报
+      //    “column does not exist” 失败，导致“提交订单自动建档的客户”永远到不了云端。故退化为核心列同步。
+      // ② customers 不做“云端按本地清单反删”，否则一端提交会把另一端客户从云端清掉。
+      if(table === 'customers'){
+        const coreCols = new Set(['id','name','contact','phone','region','address','remark','owner_id','gender','created_at','status','updated_at']);
+        const _upsertCustomers = async function(rows){
+          for(let i=0;i<rows.length;i+=batchSize){
+            const batch = rows.slice(i, i+batchSize);
+            const { error } = await window._sbpbClient.from(table).upsert(batch, { onConflict:'id' });
+            if(error) throw error;
+          }
+        };
+        try{
+          await _upsertCustomers(snakeData);
+        }catch(e){
+          console.warn('客户全字段同步失败，退化为核心列同步:', e.message);
+          const slim = snakeData.map(function(o){ const f={}; Object.keys(o).forEach(function(k){ if(coreCols.has(k)) f[k]=o[k]; }); return f; });
+          await _upsertCustomers(slim);
+        }
+        console.log('表 [customers] 同步完成，共 '+data.length+' 条');
+        return; // 客户表不执行下方通用云端反删逻辑
+      }
       // aftersales 表：云端历史建表仅含基础列（缺 loss/remark/tracking_no/updated_at 等）。
       // 若把本地多余字段一并 upsert，PostgREST 报「列不存在」导致整批失败，表现为
       // 「售后状态改为已处理后刷新又变回待处理」。这里只 upsert 云端确定存在的列，
@@ -3054,7 +3082,17 @@ function startAutoSync(){
       // 让销售在详情页也能看到管理员刚填的物流单号/状态（编辑模式不刷新，避免丢失未保存输入）
       if(window._currentOrderId && !window._orderEditMode && document.getElementById('orderDetailPanel') && before['orders'] !== after['orders']){
         const _od = DB.get('orders').find(o => o.id === window._currentOrderId);
-        if(_od) renderOrderDetail();
+        if(_od){
+          // 仅当「当前正在查看的订单」自身数据变化才重建详情：避免其他订单变动（Realtime/多销售录单）误伤当前详情，造成按钮抖动
+          const _sig = (function(){ try{ return JSON.stringify(_od); }catch(e){ return null; } })();
+          if(_sig !== (window._lastRenderedOrderSig || null)){
+            const _c = document.getElementById('mainContent') || document.getElementById('orderDetailPanel');
+            const _inPanel = !!(_c && _c.contains(document.activeElement));
+            const _ae = document.activeElement;
+            const _typing = _ae && (_ae.tagName === 'INPUT' || _ae.tagName === 'TEXTAREA');
+            if(!_typing && !_inPanel) renderOrderDetail();
+          }
+        }
       }
       // 订单变化同步刷新侧边栏徽章（待处理/上门未完成等计数），避免数据一致但角标在各设备显示不一致
       if(before['orders'] !== after['orders'] && typeof renderSidebar === 'function'){
@@ -3176,13 +3214,20 @@ function refreshCurrentViewForTable(table){
         // 编辑模式（销售/管理员正在编辑）不重建详情：避免按钮频闪、输入框丢焦点、未保存输入被覆盖；
         // 与 15s 轮询(3054 块)的 !_orderEditMode 守卫保持一致。
         if(!window._orderEditMode){
-          // 内联编辑（损耗/物流单号等 INPUT/TEXTAREA）进行中时跳过整页重建：否则每次按键触发
-          // afterWriteRefresh / Realtime / 15s轮询 重渲染会使输入框丢焦点、刚输入的数字被刷新、按钮抖动。
-          // 数据已即时落库（saveItemWaste 等会 DB.set）并推送云端，不会丢失；待用户失焦或后续同步再刷新。
-          const _ae = document.activeElement;
-          const _typing = _ae && (_ae.tagName === 'INPUT' || _ae.tagName === 'TEXTAREA');
-          if(!_typing){
-            try{ renderOrderDetail(); }catch(e){}
+          // 仅当「当前正在查看的订单」自身数据变化才重建详情：其他订单变动（Realtime/多销售录单/15s轮询拉到别的单）
+          // 不再误伤当前详情，从根上消除「只是看着详情、按钮就一直抖」的问题。
+          const _od = DB.get('orders').find(o => o.id === window._currentOrderId);
+          const _sig = (function(){ try{ return _od ? JSON.stringify(_od) : null; }catch(e){ return null; } })();
+          if(_sig !== (window._lastRenderedOrderSig || null)){
+            // 焦点在详情面板内（INPUT/TEXTAREA 或按钮）时跳过整页重建：避免正在操作（输入/点按钮）时按钮抖动、
+            // 输入框丢焦点、未保存输入被覆盖。数据已即时落库并推送云端，不会丢失；待失焦或后续同步再刷新。
+            const _ae = document.activeElement;
+            const _typing = _ae && (_ae.tagName === 'INPUT' || _ae.tagName === 'TEXTAREA');
+            const _c = document.getElementById('mainContent') || document.getElementById('orderDetailPanel');
+            const _inPanel = !!(_c && _c.contains(_ae));
+            if(!_typing && !_inPanel){
+              try{ renderOrderDetail(); }catch(e){}
+            }
           }
         }
       }
@@ -5360,8 +5405,10 @@ function submitOrder(){
       city: city,
       district: district,
       remark: '',
+      gender: 'unknown',
       ownerId: salesId,
-      createdAt: nowStr()
+      createdAt: nowStr(),
+      updatedAt: nowStr() // 刷新时间戳，保证合并时本地较新、不被云端旧值冲掉
     };
     customers.push(customer);
     DB.set('customers', customers);
@@ -5374,6 +5421,7 @@ function submitOrder(){
     if(province) customer.province = province;
     if(city) customer.city = city;
     if(district) customer.district = district;
+    customer.updatedAt = nowStr(); // 刷新时间戳，避免被云端旧值覆盖
     DB.set('customers', customers);
   }
   // 立即把客户同步到云端，确保新建/更新后的客户可靠进入「客户管理」板块（不依赖 800ms 防抖推送）
@@ -6128,6 +6176,8 @@ function renderOrderDetail(){
   }
 
   document.getElementById('mainContent').innerHTML = html;
+  // 记录当前订单快照签名：供同步刷新判断"仅当前订单真变化才重建详情"，避免其他订单变动/Realtime/15s轮询导致详情按钮抖动
+  try{ const _od = DB.get('orders').find(o => o.id === window._currentOrderId); window._lastRenderedOrderSig = _od ? JSON.stringify(_od) : null; }catch(e){}
 
   // 编辑模式下初始化付款模式联动（与新建订单一致：收款金额自动带出且只读）
   if(!viewOnly && document.getElementById('doorCollected')){
@@ -8271,12 +8321,12 @@ function saveCustomer(){
   if(id){
     const idx = customers.findIndex(c => c.id === id);
     if(idx >= 0){
-      customers[idx] = {...customers[idx], name, contact, phone, region, address, remark, ownerId, gender};
+      customers[idx] = {...customers[idx], name, contact, phone, region, address, remark, ownerId, gender, updatedAt: nowStr()};
     }
   }else{
-    customers.push({
-      id: DB.uid('c_'), name, contact, phone, region, address, remark, ownerId, gender, createdAt: nowStr()
-    });
+      customers.push({
+        id: DB.uid('c_'), name, contact, phone, region, address, remark, ownerId, gender, createdAt: nowStr(), updatedAt: nowStr()
+      });
   }
   DB.set('customers', customers);
   closeModal();
@@ -9628,6 +9678,10 @@ function _productRowToSnake(p){
     cost: p.cost,
     status: p.status || 'on',
     category: p.category || '',
+    // 关键修复：必须带上 updated_at（带毫秒，与全局 nowStr() 一致），
+    // 否则 pushSingleProductToCloud 这条上推路径不更新云端 updated_at，
+    // 云端旧时间戳会在 pullTableAuthoritative 合并时把本地刚改的售价/成本冲掉（表现：编辑保存后列表仍是旧价）。
+    updated_at: p.updatedAt || p.updated_at || p.createdAt || p.created_at || new Date().toISOString().slice(0,19).replace('T',' '),
     created_at: p.createdAt || p.created_at || new Date().toISOString().slice(0,19).replace('T',' ')
   };
 }
@@ -9649,7 +9703,7 @@ function saveProduct(){
   if(isNaN(cost) || cost < 0){ showToast('请输入有效成本','error'); return; }
 
   const products = DB.get('products');
-  const nowStr = new Date().toISOString().slice(0,19).replace('T',' ');
+  const nowStr = window.nowStr(); // 必须带毫秒，否则 _mergeById 判本地更旧→云端旧价覆盖刚改的售价/成本
   let savedProduct = null;
   if(id){
     const idx = products.findIndex(p => p.id === id);
@@ -13264,7 +13318,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：直接读取页面顶栏 #headerVersion
-  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0809-8';
+  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0809-9';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
