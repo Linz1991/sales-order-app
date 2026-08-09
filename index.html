@@ -1269,7 +1269,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">2026-0808-23 版</div>
+          <div class="brand-sub">2026-0809-01 版</div>
         </div>
       </div>
     </div>
@@ -1311,7 +1311,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0808-23</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0809-01</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -1329,7 +1329,7 @@ html{scroll-behavior:smooth}
 
 <script>
 /* ============================================================
- * 销售订单管理系统 - 2026-0808-23
+ * 销售订单管理系统 - 2026-0809-01
  * 单文件 HTML，localStorage 模拟数据库
  * ============================================================ */
 
@@ -3421,7 +3421,7 @@ async function navigate(route){
   fn();
   // 管理员进入待下单订单详情页时立即加编辑锁，阻止销售并发编辑；
   // 同步上云确保销售端（含其它设备）实时收到锁状态。
-  if(route === 'order-detail' && currentUser && currentUser.role === 'admin' && window._currentOrderId){
+  if((route === 'order-detail' || route === 'order-edit') && currentUser && currentUser.role === 'admin' && window._currentOrderId){
     const order = DB.get('orders').find(o => o.id === window._currentOrderId);
     if(order && order.status === 'pending'){
       acquireOrderLock(window._currentOrderId).then(function(){
@@ -5510,7 +5510,8 @@ function renderOrderDetail(){
   }
 
   // 待下单状态销售可编辑（所有类型），管理员不可编辑
-  // 只要有任一商品已被管理员标记“已下单”，该订单即不可再被销售编辑（订单仍处于待下单，直到全部商品下单）
+  // 销售能否编辑待下单订单，唯一门槛是「管理员是否正在该订单内（加锁）」；
+  // 只要管理员未点进去（未加锁），销售即可编辑商品数量/客户信息等（含已有部分商品被下单的情况，见需求第2点）。
   const hasOrderedItem = order.items.some(it => it.ordered === true);
   // 已全款（已收金额 >= 订单总额）则不再需要记录收款
   const isFullyPaid = getOrderRemaining(order) === 0;
@@ -5522,7 +5523,7 @@ function renderOrderDetail(){
     window._orderEditMode = false;
     showToast('🔒 管理员正在为该订单操作，已退出编辑模式','warning');
   }
-  const canEdit = !viewOnly && !isAdmin && order.status==='pending' && order.salesId === currentUser.id && !hasOrderedItem;
+  const canEdit = !viewOnly && !isAdmin && order.status==='pending' && order.salesId === currentUser.id;
   // 待下单订单默认进入「查看」态：由底部「编辑订单」按钮进入编辑（销售可编辑且非强制只读时）
   let editMode = !viewOnly && (window._orderEditMode || false);
   const isPending = order.status === 'pending';
@@ -5564,7 +5565,7 @@ function renderOrderDetail(){
   let html = `
     <div id="orderDetailPanel" hidden></div>
     <div class="back-link" onclick="backToOrders()">← 返回订单列表</div>
-    ${_lockedByOther ? '<div style="margin:10px 0;padding:10px 12px;background:#fffbe6;border:1px solid #ffe58f;border-radius:8px;color:#ad6800;font-size:13px">🔒 管理员「'+(order.lockedBy||'')+'」正在为该订单下单，暂时不可编辑</div>' : ''}
+    ${_lockedByOther ? '<div style="margin:10px 0;padding:10px 12px;background:#fffbe6;border:1px solid #ffe58f;border-radius:8px;color:#ad6800;font-size:13px">🔒 管理员正在为该订单下单，暂时不可编辑</div>' : ''}
     <div class="detail-section card">
       ${isAdminOrderView ? '' : '<h4>📋 订单信息</h4>'}
       ${isPending && editMode ? `
@@ -5959,7 +5960,7 @@ function renderOrderDetail(){
     }
     // 记录收款：仅管理员或本单提交人可操作（上门订单所有人可见但仅 admin/提交者可编辑）
     const canRecordPayment = isAdmin || order.salesId === currentUser.id;
-    if(!isAdmin && canRecordPayment && !canEdit && !isFullyPaid){
+    if(!isAdmin && canRecordPayment && !isFullyPaid){
       html += `<button class="btn btn-success btn-sm" onclick="openAddPayment('${order.id}')">+ 记录收款</button>`;
     }
     // 管理员：修改状态
@@ -6065,6 +6066,13 @@ function renderOrderEdit(){
   const isAdmin = currentUser.role === 'admin';
   if(!isAdmin){
     // 仅管理员可访问编辑页，销售端跳转详情页
+    window._orderEditMode = false;
+    navigate('order-detail');
+    return;
+  }
+  // 已下单/待反馈/已完成：订单锁定为只读，管理员亦不可编辑商品/地址/数量/支付方式
+  // （仅可在详情只读视图改损耗、物流、日期）。需求：已下单之后无论管理员还是销售都不能改。
+  if(order.status !== 'pending'){
     window._orderEditMode = false;
     navigate('order-detail');
     return;
@@ -6621,7 +6629,7 @@ function enterEditMode(){
   }
   // 销售进入编辑前：若订单已被管理员锁定，禁止进入编辑
   if(currentUser.role !== 'admin' && isOrderLockedByOther(_o)){
-    showToast('🔒 管理员正在为该订单操作，暂时不可编辑','error');
+    showToast('🔒 管理员正在为该订单下单，暂时不可编辑','error');
     renderOrderDetail();
     return;
   }
@@ -13156,7 +13164,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：直接读取页面顶栏 #headerVersion
-  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0808-23';
+  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0809-01';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
