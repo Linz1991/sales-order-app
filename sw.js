@@ -1,5 +1,5 @@
 // Service Worker - 销售订单管理系统 PWA
-const CACHE_NAME = 'sales-mgmt-v2';
+const CACHE_NAME = 'sales-mgmt-v3';
 const CORE_ASSETS = [
   './',
   './index.html',
