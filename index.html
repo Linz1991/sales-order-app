@@ -1272,7 +1272,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">2026-0809-13 版</div>
+          <div class="brand-sub">2026-0809-14 版</div>
         </div>
       </div>
     </div>
@@ -1314,7 +1314,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0809-13</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0809-14</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -1332,7 +1332,7 @@ html{scroll-behavior:smooth}
 
 <script>
 /* ============================================================
- * 销售订单管理系统 - 2026-0809-13
+ * 销售订单管理系统 - 2026-0809-14
  * 单文件 HTML，localStorage 模拟数据库
  * ============================================================ */
 
@@ -1671,6 +1671,17 @@ const DB = {
         snakeData = snakeData.map(function(o){
           const f = {};
           Object.keys(o).forEach(function(k){ if(asCols.has(k)) f[k] = o[k]; });
+          return f;
+        });
+      }
+      // 商品表：云端实际列 id,name,price,cost,status,category,created_at（无 updated_at/auto_added），
+      // 本地商品对象可能含 auto_added（销售临时新增标记）等云端不存在字段，全字段 upsert 会整批 400 失败，
+      // 导致“销售新增商品推不上云、管理员查不到”。此处只推送云端存在的列（与 _productRowToSnake 一致）。
+      if(table === 'products'){
+        const prodCols = new Set(['id','name','price','cost','status','category','created_at']);
+        snakeData = snakeData.map(function(o){
+          const f = {};
+          Object.keys(o).forEach(function(k){ if(prodCols.has(k)) f[k] = o[k]; });
           return f;
         });
       }
@@ -9728,6 +9739,10 @@ function openProductModal(productId){
 // 把单个商品变更（新增/编辑/上下架）实时推送到云端，避免依赖整表批量同步（批量同步已排除商品表）。
 // 商品表只有 id/name/price/cost/status/category/created_at 七列，必须只传这些，否则 upsert 会因多余列报错。
 function _productRowToSnake(p){
+  // 云端 products 表实测实际列：id,name,price,cost,status,category,created_at（无 updated_at / auto_added 列！）。
+  // 推送必须只包含云端存在的列，否则 PostgREST 报 PGRST204「列不存在」导致整批 400 失败，
+  // 表现为“销售新增/编辑的商品推不上云、管理员在商品管理查不到”（这是比成本漏写更底层的同步 bug）。
+  // 合并时间戳（_mergeById）对云端商品回退用 created_at，本地商品用 updatedAt（毫秒，本地优先），编辑仍能跨端收敛。
   return {
     id: p.id,
     name: p.name,
@@ -9735,13 +9750,6 @@ function _productRowToSnake(p){
     cost: p.cost,
     status: p.status || 'on',
     category: p.category || '',
-    // 关键修复：必须带上 updated_at（带毫秒，与全局 nowStr() 一致），
-    // 否则 pushSingleProductToCloud 这条上推路径不更新云端 updated_at，
-    // 云端旧时间戳会在 pullTableAuthoritative 合并时把本地刚改的售价/成本冲掉（表现：编辑保存后列表仍是旧价）。
-    updated_at: p.updatedAt || p.updated_at || p.createdAt || p.created_at || new Date().toISOString().slice(0,19).replace('T',' '),
-    // 校准标记：销售在订单中临时新增的商品标记 auto_added，管理员在商品库校准售价/成本后由 saveProduct 删除。
-    // 持久化到云端 products 表（需先用 SQL 加 auto_added 列），使“待校准”状态跨设备一致。
-    auto_added: !!(p.auto_added),
     created_at: p.createdAt || p.created_at || new Date().toISOString().slice(0,19).replace('T',' ')
   };
 }
@@ -9752,12 +9760,7 @@ async function pushSingleProductToCloud(product){
   try{
     await sbp.from('products').upsert(snake, { onConflict: 'id' });
   }catch(e){
-    // 兜底：若云端 products 表尚未加 auto_added 列（未执行加列 SQL），去掉该字段后重试，
-    // 保证“商品仍能同步到云端、出现在商品管理档案”，只是跨设备的校准标记暂不可见（订单级提示不受影响）。
-    try{
-      const slim = Object.assign({}, snake); delete slim.auto_added;
-      await sbp.from('products').upsert(slim, { onConflict: 'id' });
-    }catch(e2){ console.warn('商品推云端失败:', e2.message); }
+    console.warn('商品推云端失败:', e.message);
   }
 }
 
@@ -13387,7 +13390,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：直接读取页面顶栏 #headerVersion
-  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0809-13';
+  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0809-14';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
