@@ -1314,7 +1314,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0810-2</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0810-3</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -1687,7 +1687,10 @@ const DB = {
       // 商品表：云端实际列 id,name,price,cost,status,category,created_at,auto_added（auto_added 为待校准标记，2026-0810-2 加列）。
       // 只推送云端存在的列（与 _productRowToSnake 一致），避免含云端不存在字段导致整批 400 失败。
       if(table === 'products'){
-        const prodCols = new Set(['id','name','price','cost','status','category','created_at','auto_added']);
+        // 含 updated_at：商品改售价/成本时本地刷新 updatedAt，必须随商品上推云端，否则拉取合并时
+        // 云端商品只剩 created_at（旧），永远比本地更旧→本地刚改的售价/成本被云端旧值覆盖回去
+        // （与 users 改密码同一类根因，2026-0810-3 修复）。
+        const prodCols = new Set(['id','name','price','cost','status','category','created_at','auto_added','updated_at']);
         snakeData = snakeData.map(function(o){
           const f = {};
           Object.keys(o).forEach(function(k){ if(prodCols.has(k)) f[k] = o[k]; });
@@ -1699,7 +1702,10 @@ const DB = {
       // 否则 PostgREST 会报 "column users.xxx does not exist" 导致整批账号同步失败。
       // 同时按登录名去重（保留创建时间最早的一条），避免云端出现同名账号。
       if(table === 'users'){
-        const allowed = new Set(['id','username','password','name','role','phone','created_at']);
+        // 含 updated_at：用户改密/建号时本地刷新 updatedAt，必须随账号上推云端，否则拉取合并时
+        // 云端 u_ceshi 只剩 created_at(凌晨)，永远比本地旧缓存“更旧”→ 本地旧哈希覆盖云端新哈希，
+        // 表现为“改了密码原密码还能登、多端密码不一致”（2026-0810-3 修复）。
+        const allowed = new Set(['id','username','password','name','role','phone','created_at','updated_at']);
         const seen = new Set();
         snakeData = snakeData
           .sort((a, b) => {
@@ -9806,10 +9812,12 @@ function openProductModal(productId){
 // 把单个商品变更（新增/编辑/上下架）实时推送到云端，避免依赖整表批量同步（批量同步已排除商品表）。
 // 商品表只有 id/name/price/cost/status/category/created_at 七列，必须只传这些，否则 upsert 会因多余列报错。
 function _productRowToSnake(p){
-  // 云端 products 表实际列：id,name,price,cost,status,category,created_at,auto_added。
+  // 云端 products 表实际列：id,name,price,cost,status,category,created_at,auto_added,updated_at。
   // auto_added 为销售在订单中临时新增、成本默认等于售价、待管理员校准真实采购成本的标记（2026-0810-2 加列）。
-  // 推送需包含该列，否则“待校准”标记无法跨设备/账号保留——其他端会把商品当成已校准、管理员收不到校准提示。
-  // 合并时间戳（_mergeById）对云端商品回退用 created_at，本地商品用 updatedAt（毫秒，本地优先），编辑仍能跨端收敛。
+  // updated_at 为最后编辑时间（2026-0810-3 加列）：保存/改成本时本地刷新 updatedAt，必须随商品上推云端，
+  // 否则拉取合并时云端商品只剩 created_at（旧），永远比本地较新缓存“更旧”→ 本地刚改的售价/成本被云端旧值覆盖回去，
+  // 表现为“管理员改了成本价保存后，成本还是原来的（甚至等于售价）”（与 users 改密码同一类根因）。
+  // 合并时间戳（_mergeById）对云端商品用 updated_at（优先）、回退用 created_at，本地商品用 updatedAt（毫秒，本地优先）。
   return {
     id: p.id,
     name: p.name,
@@ -9818,7 +9826,8 @@ function _productRowToSnake(p){
     status: p.status || 'on',
     category: p.category || '',
     auto_added: p.auto_added === true,
-    created_at: p.createdAt || p.created_at || new Date().toISOString().slice(0,19).replace('T',' ')
+    created_at: p.createdAt || p.created_at || new Date().toISOString().slice(0,19).replace('T',' '),
+    updated_at: p.updatedAt || p.createdAt || p.created_at || new Date().toISOString().slice(0,19).replace('T',' ')
   };
 }
 async function pushSingleProductToCloud(product){
@@ -13541,7 +13550,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：直接读取页面顶栏 #headerVersion
-  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0810-2';
+  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0810-3';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
