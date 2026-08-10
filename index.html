@@ -1314,7 +1314,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0810-3</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0810-4</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -3029,7 +3029,46 @@ async function handleLogin(){
   const user = document.getElementById('loginUser').value.trim();
   const pass = document.getElementById('loginPass').value;
   if(!user || !pass){ showToast('请输入用户名和密码','error'); return; }
-  // —— 方案二(Auth)：优先走 Supabase 官方认证（密码哈希在服务端校验，绝不下发前端）——
+  // 登录校验优先级（2026-0810-4 修正「改密码原密码仍能登」）：
+  //   以「自定义 users 表」的密码为唯一权威——密码重置 / 修改只写自定义表，必须全端立即生效。
+  //   仅当自定义表中「查无此账号」或「该账号无本地密码（纯 Auth 老迁移账号）」时，才回退 Supabase Auth。
+  // 1) 登录前先从云端拉取最新账号（解决"刚在其他设备重置的密码本机还没同步"导致旧密码能登的问题）
+  try{
+    if(window._sbpbClient){ await DB._loadTable('users'); }
+  }catch(e){ /* 云端不可用则降级用本地缓存，不阻断登录 */ }
+  cleanupDuplicateUsers();
+  cleanupDuplicateCustomers();
+  const users = DB.get('users');
+  const target = users.find(function(u){ return u.username === user; }); // 不在此处过滤 disabled，单独判断
+  // 2) 自定义表命中且本地有密码 → 仅以自定义表为准，绝不再回退 Auth（否则旧 Auth 密码仍能登）
+  if(target && target.password){
+    if(target.disabled){ showToast('该账号已被禁用，无法登录','error'); return; }
+    let ok = false;
+    try{
+      const h = await hashPassword(pass);
+      if(target.password === h) ok = true;
+      else if(target.password === pass){ // 兼容旧明文：首次登录自动升级为哈希
+        target.password = h; DB.set('users', users); ok = true;
+      }
+    }catch(e){
+      // 非安全上下文（如 http）Web Crypto 不可用，降级明文比对，保证可登录
+      if(target.password === pass) ok = true;
+    }
+    if(!ok){ showToast('用户名或密码错误','error'); return; }
+    // 不把密码（即使是哈希）存入会话，降低泄露风险
+    const {password, ...safe} = target;
+    currentUser = safe;
+    sessionStorage.setItem('soms_current_user', JSON.stringify(safe));
+    showApp();
+    showToast('登录成功，欢迎回来 '+safe.name,'success');
+    // 擦除本地缓存中残留的密码哈希（历史版本写入的）
+    DB.set('users', DB.get('users', []));
+    // 登录后立即从云端拉取全部数据（含订单），确保销售即登即见自己名下订单
+    if(window._sbpbClient){ DB.syncFromCloud().catch(function(){}); }
+    else { setTimeout(function(){ DB.syncFromCloud().catch(function(){}); }, 2000); } // CDN兜底加载中，稍后重试
+    return;
+  }
+  // 3) 自定义表无此账号 / 无本地密码 → 回退 Supabase Auth（兼容尚未迁移到自定义表的老账号）
   if(window._sbpbClient){
     try{
       const { data, error } = await window._sbpbClient.auth.signInWithPassword({
@@ -3040,50 +3079,9 @@ async function handleLogin(){
         await finishLoginViaAuth(user);
         return;
       }
-      // Auth 校验未通过（账号不存在 / 密码错误 / 该账号是本地自建、不在 Auth 中）：
-      // 不再直接拦截，降级到下方「本地自定义账号表」校验，使前端本地创建的账号也能登录。
-      console.log('Supabase Auth 校验未通过，尝试本地账号校验');
-    }catch(e){ /* 真正的异常（网络中断/客户端未就绪）：降级到下方本地离线兜底 */ }
+    }catch(e){ /* Auth 也失败 → 下方统一报错 */ }
   }
-  // 兼容期回退：Auth 账号尚未迁移时，用本地缓存的 sha256 校验（开通 RLS 后此分支自动失效，不会更不安全）
-  // 登录前先强制从云端拉取最新账号（解决"在其他设备/浏览器刚创建的账号，本机缓存还没同步"导致登录不上的问题）
-  try{
-    if(window._sbpbClient){
-      await DB._loadTable('users');
-    }
-  }catch(e){ /* 云端不可用则降级用本地缓存，不阻断登录 */ }
-  // 用户数据已通过 DB.syncFromCloud() + 上面强制刷新 从 Supabase 同步到 localStorage 缓存
-  // 清理重复/残留账号，确保同名账号只保留最新（含最新密码）的一条
-  cleanupDuplicateUsers();
-  // 清理重复客户：避免多次下单/录入手机号不一致产生重复客户
-  cleanupDuplicateCustomers();
-  const users = DB.get('users');
-  const target = users.find(u => u.username === user && !u.disabled);
-  if(!target){ showToast('用户名或密码错误','error'); return; }
-  if(target.disabled){ showToast('该账号已被禁用，无法登录','error'); return; }
-  let ok = false;
-  try{
-    const h = await hashPassword(pass);
-    if(target.password === h) ok = true;
-    else if(target.password === pass){ // 兼容旧明文：首次登录自动升级为哈希
-      target.password = h; DB.set('users', users); ok = true;
-    }
-  }catch(e){
-    // 非安全上下文（如 http）Web Crypto 不可用，降级明文比对，保证可登录
-    if(target.password === pass) ok = true;
-  }
-  if(!ok){ showToast('用户名或密码错误','error'); return; }
-  // 不把密码（即使是哈希）存入会话，降低泄露风险
-  const {password, ...safe} = target;
-  currentUser = safe;
-  sessionStorage.setItem('soms_current_user', JSON.stringify(safe));
-  showApp();
-  showToast('登录成功，欢迎回来 '+safe.name,'success');
-  // 擦除本地缓存中残留的密码哈希（历史版本写入的）
-  DB.set('users', DB.get('users', []));
-  // 登录后立即从云端拉取全部数据（含订单），确保销售即登即见自己名下订单，不依赖15秒轮询
-  if(window._sbpbClient){ DB.syncFromCloud().catch(function(){}); }
-  else { setTimeout(function(){ DB.syncFromCloud().catch(function(){}); }, 2000); } // CDN兜底加载中，稍后重试
+  showToast('用户名或密码错误','error');
 }
 
 function handleLogout(){
@@ -12755,9 +12753,16 @@ function submitChangePassword(){
             email: currentUser.username + '@soms.local',
             password: oldPass
           });
-          if(!verr){ // Auth 校验通过：用官方接口改密码
+          if(!verr){ // Auth 校验通过：用官方接口改密码（同时更新自定义表，保持与“登录自定义表优先”一致，避免自改后新密码反而登不上）
             const { error: uerr } = await window._sbpbClient.auth.updateUser({ password: newPass });
             if(uerr){ showToast('修改失败：' + (uerr.message||''), 'error'); return; }
+            let localHash;
+            try{ localHash = await hashPassword(newPass); }catch(e){ localHash = newPass; }
+            cur.password = localHash;
+            cur.updatedAt = nowStr();
+            DB.set('users', users);
+            try{ await DB.syncTable('users'); }catch(e){ schedulePushToCloud(); }
+            logAudit({action:'change_password', targetType:'user', targetId: currentUser.id, targetLabel: currentUser.name, detail: '本人修改密码'});
             closeModal();
             showToast('密码修改成功','success');
             return;
@@ -13550,7 +13555,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：直接读取页面顶栏 #headerVersion
-  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0810-3';
+  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0810-4';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
