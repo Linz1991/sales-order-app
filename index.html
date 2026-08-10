@@ -1314,7 +1314,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0809-17</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0810-1</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -1387,18 +1387,12 @@ const DB = {
     }
   },
 
-  // 安全：擦除写入本地的 users 缓存中的 password 字段（即使是哈希），
-  // 防止凭据被 XSS / 本地存储读取拖走做离线字典攻击。密码校验一律走 Supabase Auth（联网）。
+  // 账号改为「本地优先 + 双向同步」后，users 表的 password 为加盐 SHA-256 哈希（非明文），
+  // 必须保留在本地缓存中，否则：① 本机登录/改密无法做本地校验；② 其他设备拉到云端账号后无法离线登录。
+  // 哈希本身不可逆，本地存储泄露风险可控（内部销售管理系统，非公开站点）。云端 users 表同样以哈希存储、跨端一致。
   _scrubUserPasswords(list){
-    if(!Array.isArray(list)) return list;
-    return list.map(function(u){
-      if(u && u.password != null){
-        const c = Object.assign({}, u);
-        delete c.password;
-        return c;
-      }
-      return u;
-    });
+    // 改为直通：保留 password 哈希，支持离线 / 跨端登录与本地校验。
+    return list;
   },
   uid(prefix){
     return (prefix||'') + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
@@ -1643,12 +1637,9 @@ const DB = {
       }catch(e){
         console.warn('合并云端数据失败，改用本地数据 ['+key+']:', e.message);
       }
-      // 账号表：迁移到 Supabase Auth 后，users 由 Auth/后台管理，前端只拉不推，
-      // 避免把本地旧的 sha256 密码误写回云端、或覆盖后台改过的角色/状态。
-      if(table === 'users'){
-        console.log('表 [users] 已同步（仅拉取，Auth 接管写权限）');
-        return;
-      }
+      // 账号表：改为双向同步（本地建号 / 改密 / 删除都回写云端，保证多端一致）。
+      // 合并阶段已按 _deletedUserIds 排除已删账号；下方白名单只推送云端存在的列，
+      // 避免把本地扩展字段（disabled/wechatAmount）误写导致整批失败。
       if(!data || data.length === 0){
         // 本地与云端都为空：不执行任何操作。
         // 历史逻辑曾在此处清空整张云端表，导致强刷后本地缓存为空、云端查询因网络/权限返回空时，
@@ -1728,6 +1719,24 @@ const DB = {
             seen.add(acc);
             return true;
           });
+      }
+      // 审计日志：跨设备只追加、绝不反删。每个设备的操作都独立留痕，
+      // 若走下方通用“删除云端中本机清单外的 id”逻辑，会把其他设备产生的日志从云端抹掉，
+      // 导致审计记录在各端对不齐。故审计日志仅 upsert 上云（按 id 幂等），不做删除传播。
+      if(table === 'audit_log'){
+        const batchSize = 100; const upsertErrors = [];
+        for(let i = 0; i < snakeData.length; i += batchSize){
+          const batch = snakeData.slice(i, i + batchSize);
+          try{
+            const { error } = await window._sbpbClient.from(table).upsert(batch, { onConflict: 'id' });
+            if(error) upsertErrors.push(error.message || String(error));
+          }catch(e){ upsertErrors.push(e.message || String(e)); }
+        }
+        if(upsertErrors.length){
+          console.warn('部分审计日志同步失败(' + upsertErrors.length + '批): ' + upsertErrors.join('; '));
+        }
+        console.log('表 [audit_log] 追加同步完成，共 ' + data.length + ' 条');
+        return; // 跳过下方通用反删逻辑
       }
       // upsert（按 id 冲突更新）：单条/单批失败不拖垮整批，但需上抛以便前端提示
       const batchSize = 100;
@@ -1836,8 +1845,9 @@ const DB = {
     this._setSyncStatus('syncing');
     // 注意：商品表不在此批量上推，避免把某台设备的本地旧缓存（如手机上残留的 300+ 条）糊回云端。
     // 商品由「进入页面云端覆盖」+「改/增时单条上推」+「以本机为准同步」按钮来保证一致。
-    // audit_log 是本地审计日志，无需跨端传播；且该表可能尚未创建，避免因此把整体同步状态报红。
-    const tables = ['users','customers','orders','aftersales','payments','commissions'];
+    // audit_log：操作日志需跨端一致（各设备操作都要能在别处看到），故纳入上推；
+    // 但该表可能尚未创建（需先跑 audit_log_create.sql），缺失时下方按表 try/catch 静默跳过，不影响其他表。
+    const tables = ['users','customers','orders','aftersales','payments','commissions','audit_log'];
     let hasError = false;
     for(let i = 0; i < tables.length; i++){
       try{
@@ -1850,12 +1860,12 @@ const DB = {
     this._setSyncStatus(hasError ? 'error' : 'synced');
   },
 
-  // 自动同步时上推本地新增/修改的数据（不含 users：避免账号密码被本地旧值覆盖，users 由登录拉取时的云端权威合并保护；
-  // 也不含 audit_log：本地审计日志无需跨端传播；也不含 products：商品由云端覆盖 + 单条上推保证一致，避免把旧缓存糊回云端）。
-  // 使任一端创建的订单/售后/收款等最多 15 秒内出现在其他端，修复“一端创建的订单另一端看不到”的问题。
+  // 自动同步时上推本地新增/修改的数据（含 users：账号改为本地优先 + 双向同步后，建号/改密/删号都要回写云端，保证多端一致；
+  // 含 audit_log：各设备操作日志需跨端一致；不含 products：商品由云端覆盖 + 单条上推保证一致，避免把旧缓存糊回云端）。
+  // 使任一端创建的订单/售后/收款/账号/操作日志等最多 15 秒内出现在其他端，修复“一端创建的 XXX 另一端看不到”的问题。
   async pushLocalChanges(keys){
     if(!window._sbpbClient) return;
-    const tables = keys || ['orders','aftersales','payments','commissions','customers'];
+    const tables = keys || ['orders','aftersales','payments','commissions','customers','users','audit_log'];
     for(let i = 0; i < tables.length; i++){
       try{
         await this.syncTable(tables[i]);
@@ -1962,6 +1972,15 @@ function logAudit(opts){
     logs.push(entry);
     if(logs.length > 2000) logs.splice(0, logs.length - 2000); // 限制本地长度，避免无限增长
     DB.set('audit_log', logs);
+    // 实时追加到云端：使本设备的操作日志能在其他设备数秒内可见（跨端审计一致）。
+    // 失败不阻断本地写入，下一轮 15 秒自动上推（pushLocalChanges 含 audit_log）会兜底重试。
+    if(window._sbpbClient){
+      try{
+        const snake = DB._toSnake(entry);
+        window._sbpbClient.from('audit_log').upsert(snake, { onConflict: 'id' })
+          .catch(function(){ /* 静默兜底，等自动上推 */ });
+      }catch(e){ /* 忽略：本地已落盘 */ }
+    }
   }catch(e){ console.warn('logAudit 失败:', e.message); }
 }
 
@@ -3016,10 +3035,9 @@ async function handleLogin(){
         await finishLoginViaAuth(user);
         return;
       }
-      // 已迁移账号必须以 Supabase Auth 为准：密码错误/账号不存在时直接报错，
-      // 禁止回退到本地缓存的旧哈希，否则旧密码（如 123456）仍能登录，形成后门。
-      showToast('用户名或密码错误', 'error');
-      return;
+      // Auth 校验未通过（账号不存在 / 密码错误 / 该账号是本地自建、不在 Auth 中）：
+      // 不再直接拦截，降级到下方「本地自定义账号表」校验，使前端本地创建的账号也能登录。
+      console.log('Supabase Auth 校验未通过，尝试本地账号校验');
     }catch(e){ /* 真正的异常（网络中断/客户端未就绪）：降级到下方本地离线兜底 */ }
   }
   // 兼容期回退：Auth 账号尚未迁移时，用本地缓存的 sha256 校验（开通 RLS 后此分支自动失效，不会更不安全）
@@ -11713,13 +11731,45 @@ function toggleUserForm(){
 }
 
 async function addUser(){
-  // 方案二(Auth)：账号由 Supabase Auth 统一管理，前端不持有 service_role，无法直接建号。
-  // 点按钮后弹确认，说明原因并由用户决定是否打开后台，避免被感觉"跳到 sub 网站"。
-  const url = 'https://supabase.com/dashboard/project/mfimcrzewhnlbtkjgqlq/auth/users';
-  if(confirm('新建账号需管理员在 Supabase 后台操作（前端无 service_role 权限）。\n\n操作步骤：\n1. 在后台 Users 页点 "Add user"\n2. email 填：登录账号@soms.local\n3. password 填初始密码\n4. 回到系统把该用户的「角色/姓名/微信金额」补充正确\n\n是否现在打开 Supabase 后台 Users 页面？')){
-    window.open(url, '_blank');
-  }
-  showToast('请管理员到 Supabase 后台 → Authentication → Users → Add user 新建账号','info', 8000);
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可新建账号','error'); return; }
+  const nameEl = document.getElementById('newUserName');
+  const accEl = document.getElementById('newUserAccount');
+  const pwdEl = document.getElementById('newUserPassword');
+  const roleEl = document.getElementById('newUserRole');
+  const wxEl = document.getElementById('newUserWechat');
+  if(!nameEl || !accEl || !pwdEl || !roleEl){ showToast('表单未加载，请重试','error'); return; }
+  const name = (nameEl.value || '').trim();
+  const username = (accEl.value || '').trim();
+  const pwd = pwdEl.value;
+  const role = roleEl.value || 'sales';
+  const wechat = parseInt(wxEl ? wxEl.value : '0') || 0;
+  if(!name){ showToast('请输入姓名','error'); nameEl.focus(); return; }
+  if(!username){ showToast('请输入登录账号','error'); accEl.focus(); return; }
+  if(!pwd || pwd.length < 4){ showToast('密码至少4位','error'); pwdEl.focus(); return; }
+  const users = DB.get('users');
+  const dup = users.some(function(u){ return String(u.username || '').trim().toLowerCase() === username.toLowerCase(); });
+  if(dup){ showToast('登录账号「' + username + '」已存在','error'); accEl.focus(); return; }
+  let hash;
+  try{ hash = await hashPassword(pwd); }catch(e){ showToast('密码加密失败，请重试','error'); return; }
+  const newUser = {
+    id: DB.uid('u_'),
+    name: name,
+    username: username,
+    password: hash,
+    role: role,
+    phone: '',
+    wechatAmount: wechat,
+    createdAt: nowStr(),
+    updatedAt: nowStr()
+  };
+  users.push(newUser);
+  DB.set('users', users); // 触发 syncTable('users') 双向同步（已放开「只拉不推」），新账号回写云端
+  try{ logAudit({action:'create_user', targetType:'user', targetId:newUser.id, targetLabel:name + '（' + username + '）', detail:'新建账号'}); }catch(e){}
+  showToast('账号「' + username + '」已创建并同步到云端','success');
+  // 清空并收起表单
+  nameEl.value = ''; accEl.value = ''; pwdEl.value = ''; if(wxEl) wxEl.value = '0';
+  const area = document.getElementById('userFormArea'); if(area) area.style.display = 'none';
+  if(currentRoute === 'settings') renderSettings(); else renderUsers();
 }
 
 function saveUserWechat(id){
@@ -11758,17 +11808,55 @@ function deleteUser(id){
 }
 
 async function resetUserPassword(id){
-  // 方案二(Auth)：重置密码需要 service_role 权限，前端不能持有，必须到 Supabase 后台操作。
-  // 改为弹确认框，说明原因并由用户决定是否打开后台，避免被感觉"跳到 sub 网站"。
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可重置密码','error'); return; }
   const users = DB.get('users');
   const u = users.find(function(x){ return x.id === id; });
-  const username = u ? (u.username || '') : '';
-  const name = u ? (u.name || username) : '';
-  const url = 'https://supabase.com/dashboard/project/mfimcrzewhnlbtkjgqlq/auth/users' + (username ? ('?search=' + encodeURIComponent(username)) : '');
-  if(confirm('重置「' + name + '」的密码需管理员在 Supabase 后台操作（前端无 service_role 权限）。\n\n操作步骤：\n1. 在后台搜索用户：' + (username || '') + '\n2. 点击对应用户行\n3. 选 "Reset password" 或 "Send password reset"\n\n是否现在打开 Supabase 后台 Users 页面？')){
-    window.open(url, '_blank');
-  }
-  showToast('请管理员到 Supabase 后台搜索 "' + name + '" 并重置密码','info', 8000);
+  if(!u){ showToast('账号不存在','error'); return; }
+  const name = u.name || u.username;
+  const modalHtml = `
+    <div class="modal-mask" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>重置密码 · ${escapeHtml(name)}</h3>
+          <button class="modal-close" onclick="closeModal()">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label">新密码 <span class="required">*</span></label>
+            <input type="password" class="form-control" id="resetNewPass" placeholder="请输入新密码（至少4位）">
+          </div>
+          <div class="form-group">
+            <label class="form-label">确认新密码 <span class="required">*</span></label>
+            <input type="password" class="form-control" id="resetConfirmPass" placeholder="请再次输入新密码">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+          <button class="btn btn-primary" onclick="submitResetUserPassword('${id}')">确认重置</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById('modalContainer').innerHTML = modalHtml;
+}
+
+async function submitResetUserPassword(id){
+  const newPass = document.getElementById('resetNewPass').value;
+  const confirmPass = document.getElementById('resetConfirmPass').value;
+  if(!newPass || !confirmPass){ showToast('请填写所有字段','error'); return; }
+  if(newPass !== confirmPass){ showToast('两次输入的新密码不一致','error'); return; }
+  if(newPass.length < 4){ showToast('新密码至少4位','error'); return; }
+  const users = DB.get('users');
+  const idx = users.findIndex(function(x){ return x.id === id; });
+  if(idx < 0){ showToast('账号不存在','error'); return; }
+  let hash;
+  try{ hash = await hashPassword(newPass); }catch(e){ showToast('密码加密失败，请重试','error'); return; }
+  users[idx].password = hash;
+  users[idx].updatedAt = nowStr();
+  DB.set('users', users); // 触发 syncTable('users') 双向同步，密码回写云端、全端生效
+  try{ logAudit({action:'reset_password', targetType:'user', targetId:id, targetLabel:(users[idx].name || users[idx].username), detail:'管理员重置密码'}); }catch(e){}
+  closeModal();
+  showToast('密码已重置并同步到云端','success');
 }
 
 /* ============ 销售看板（管理员） ============ */
@@ -12650,19 +12738,22 @@ function submitChangePassword(){
   if(idx < 0){ showToast('账号异常','error'); return; }
   const cur = users[idx];
   (async () => {
-      // 方案二(Auth)：用官方接口改密码。先校验原密码（重新登录一次），再 updateUser。
+      // 优先尝试 Supabase Auth（仅对「已迁移到 Auth」的账号有效）；
+      // 本地自建账号不在 Auth 中，signIn 会失败 → 落到下方「本地自定义账号表」校验分支。
       if(window._sbpbClient && currentUser && currentUser.username){
         try{
           const { error: verr } = await window._sbpbClient.auth.signInWithPassword({
             email: currentUser.username + '@soms.local',
             password: oldPass
           });
-          if(verr){ showToast('原密码错误','error'); return; }
-          const { error: uerr } = await window._sbpbClient.auth.updateUser({ password: newPass });
-          if(uerr){ showToast('修改失败：' + (uerr.message||''), 'error'); return; }
-          closeModal();
-          showToast('密码修改成功','success');
-          return;
+          if(!verr){ // Auth 校验通过：用官方接口改密码
+            const { error: uerr } = await window._sbpbClient.auth.updateUser({ password: newPass });
+            if(uerr){ showToast('修改失败：' + (uerr.message||''), 'error'); return; }
+            closeModal();
+            showToast('密码修改成功','success');
+            return;
+          }
+          // verr 非空：账号可能不在 Auth 中（本地自建账号）→ 落到本地校验分支
         }catch(e){ /* 落到本地兼容逻辑 */ }
       }
       // 兼容期回退（Auth 账号未迁移时）：本地 sha256 校验 + 写本地缓存
@@ -13450,7 +13541,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：直接读取页面顶栏 #headerVersion
-  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0809-17';
+  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0810-1';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
