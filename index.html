@@ -1277,7 +1277,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">2026-0810-33 版</div>
+          <div class="brand-sub">2026-0810-34 版</div>
         </div>
       </div>
     </div>
@@ -1319,7 +1319,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0810-33</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0810-34</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -1344,6 +1344,17 @@ html{scroll-behavior:smooth}
 /* ============ 全局状态 ============ */
 let currentUser = null;   // 当前登录用户
 let currentRoute = 'dashboard'; // 当前页面路由
+
+// 订单表与 Supabase 同步的列白名单（2026-0810-34 起含编辑锁列 locked_by/locked_at）。
+// 云端需先 ALTER TABLE 加这两列；若暂缺，syncTable/pushOrdersOnly 的 upsert 会按 42703 容错自动剔除锁字段重试，同步不崩。
+const ORDER_SYNC_COLS = new Set([
+  'id','customer_id','customer_name','contact','phone','region','address',
+  'sales_id','sales_name','items','total','status','type','order_date','remark',
+  'created_at','shipped_at','feedback_at','synced_at','updated_at',
+  'province','city','district','completion_date','images',
+  'payment_method','collected_amount','full_payment','deposit','final_payment',
+  'locked_by','locked_at'
+]);
 
 /* ============ 数据层：Supabase + localStorage 混合缓存 ============ */
 const DB = {
@@ -1643,6 +1654,14 @@ const DB = {
         // 否则（云端不新，或相等且内容相同）→ 保留本地，避免刚保存的修改被旧云端数据冲掉
       }
     });
+    // 2026-0810-34：编辑锁下行——锁是全局协调状态（非个人数据），合并后以云端锁为准，
+    // 使「甲正在编辑」能被乙的设备看到，配合 enterEditMode 的冲突检测实现跨设备编辑互斥。
+    // 仅当云端该单有未超时锁时覆盖本地；云端无锁时保留本地（本地可能刚 acquire 待上推）。
+    (cloud || []).forEach(function(cr){
+      if(!cr || cr.id == null || !cr.lockedBy) return;
+      const lr = map[cr.id];
+      if(lr){ lr.lockedBy = cr.lockedBy; lr.lockedAt = cr.lockedAt; }
+    });
     return Object.keys(map).map(id => map[id]);
   },
 
@@ -1736,18 +1755,13 @@ const DB = {
           return f;
         });
       }
-      // 订单表：云端实际列 30 个（含 2026-0809 补的 city/district/completion_date/collected_amount/deposit 等）。
-      // 本地订单对象含 lock/lockedBy/lockedAt 等编辑锁字段（云端不存在），若一并 upsert 会报
-      // "column orders.lock does not exist" 导致整批订单同步失败 → 显示"同步失败"、下单状态无法上云。
-      // 故只推送云端存在的列，与 customers/aftersales/products 同一策略。
+      // 订单表：云端实际列（含 2026-0809 补的 city/district/completion_date/collected_amount/deposit 等）。
+      // 编辑锁字段 locked_by/locked_at 自 v2026-0810-34 起纳入上云：需先在 Supabase 执行
+      //   ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS locked_by text; ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS locked_at timestamptz;
+      // 若云端尚缺这两列，下方 upsert 会捕获 42703 自动剔除锁字段重试（降级：锁仅本机生效，同步不崩）；
+      // 一旦加列完成，锁自动跨设备上云生效，无需再次部署前端。
       if(table === 'orders'){
-        const orderCols = new Set([
-          'id','customer_id','customer_name','contact','phone','region','address',
-          'sales_id','sales_name','items','total','status','type','order_date','remark',
-          'created_at','shipped_at','feedback_at','synced_at','updated_at',
-          'province','city','district','completion_date','images',
-          'payment_method','collected_amount','full_payment','deposit','final_payment'
-        ]);
+        const orderCols = ORDER_SYNC_COLS;
         // 外键防御：sales_id 指向 users，若本地无此用户（多为跨端删号的残留订单）则置空，
         // 避免整批 upsert 触发 orders_sales_id_fkey → 报 409，导致“同步失败”、订单全上不去云。
         // 仅改上云副本，不动本地数据。
@@ -1818,7 +1832,20 @@ const DB = {
         const batch = snakeData.slice(i, i + batchSize);
         try{
           const { error } = await window._sbpbClient.from(table).upsert(batch, { onConflict: 'id' });
-          if(error) upsertErrors.push(error.message || String(error));
+          if(error) {
+            const emsg = (error.message || '') + '|' + (error.code || '');
+            // 2026-0810-34：云端 orders 表若尚未加 locked_by/locked_at 列，upsert 会报 42703。
+            // 降级剔除锁字段重试该批，保证其余字段正常上云、整批同步不崩（锁仅本机生效）。
+            if(table === 'orders' && /42703|locked_by|locked_at/.test(emsg)){
+              const slim = batch.map(function(o){ const f = Object.assign({}, o); delete f.locked_by; delete f.locked_at; return f; });
+              try{
+                const { error: e2 } = await window._sbpbClient.from(table).upsert(slim, { onConflict: 'id' });
+                if(e2) upsertErrors.push(e2.message || String(e2));
+              }catch(e2){ upsertErrors.push(e2.message || String(e2)); }
+            } else {
+              upsertErrors.push(error.message || String(error));
+            }
+          }
         }catch(e){ upsertErrors.push(e.message || String(e)); }
       }
       if(upsertErrors.length){
@@ -2025,6 +2052,37 @@ const DB = {
     return this._syncStatus;
   }
 };
+
+// 只上推 orders 到云端（不拉取、不合并），用于关键状态变更后确保云端立即收到最新状态，
+// 彻底避免 syncTable「先拉后推」在极短网络延迟下把刚设的状态被云端陈旧副本覆盖（状态回退）。
+// 列白名单复用 ORDER_SYNC_COLS（含锁列）；云端缺 locked_by/locked_at 列时按 42703 容错剔除重试。
+async function pushOrdersOnly(){
+  if(!window._sbpbClient) return;
+  try{
+    const local = DB.get('orders') || [];
+    const snake = DB._toSnake(local);
+    const snakeData = snake.map(function(o){
+      const f = {};
+      Object.keys(o).forEach(function(k){ if(ORDER_SYNC_COLS.has(k)) f[k] = o[k]; });
+      return f;
+    });
+    const batchSize = 100;
+    for(let i = 0; i < snakeData.length; i += batchSize){
+      const batch = snakeData.slice(i, i + batchSize);
+      try{
+        const { error } = await window._sbpbClient.from('orders').upsert(batch, { onConflict: 'id' });
+        if(error){
+          const emsg = (error.message || '') + '|' + (error.code || '');
+          if(/42703|locked_by|locked_at/.test(emsg)){
+            const slim = batch.map(function(o){ const f = Object.assign({}, o); delete f.locked_by; delete f.locked_at; return f; });
+            const { error: e2 } = await window._sbpbClient.from('orders').upsert(slim, { onConflict: 'id' });
+            if(e2) console.warn('pushOrdersOnly 批次降级仍失败:', e2.message);
+          } else { console.warn('pushOrdersOnly 批次失败:', error.message); }
+        }
+      }catch(e){ console.warn('pushOrdersOnly 异常:', e.message); }
+    }
+  }catch(e){ console.warn('pushOrdersOnly 失败:', e.message); }
+}
 
 // 初始化映射
 DB._initMapping();
@@ -3433,25 +3491,52 @@ function onRealtimeChange(table){
 }
 
 // 订单编辑锁：管理员对“待下单”订单进行下单操作时加锁，禁止销售编辑（Req7）
+// 仅把锁字段（id + locked_by/locked_at）上推云端，不拉取、不推整单。
+// 云端缺 locked_by 列时静默降级（锁仅本机生效），不影响整单同步。
+async function pushOrderLock(orderId){
+  if(!orderId || !window._sbpbClient) return;
+  const o = (DB.get('orders')||[]).find(function(x){ return x.id === orderId; });
+  if(!o) return;
+  const snake = DB._toSnake(o);
+  const payload = { id: o.id, locked_by: snake.locked_by || null, locked_at: snake.locked_at || null };
+  try{
+    await window._sbpbClient.from('orders').update(payload).eq('id', orderId);
+  }catch(e){
+    console.warn('上推编辑锁失败(可能云端未加 locked_by/locked_at 列):', e && e.message);
+  }
+}
+
+// 获取订单编辑锁（跨设备编辑互斥）。
+// 返回 true=获取成功（可编辑）；false=已被他人锁定且未超时（拒绝进入编辑）。
 async function acquireOrderLock(orderId){
-  if(!orderId) return;
+  if(!orderId || !currentUser) return false;
   const orders = DB.get('orders');
   const o = orders.find(x => x.id === orderId);
-  if(!o) return;
-  o.lockedBy = (currentUser && currentUser.name) || '管理员';
+  if(!o) return false;
+  // 冲突检测：若已被他人锁定且未超时 → 拒绝进入编辑，避免多人同时编辑同一单互相覆盖
+  if(o.lockedBy && o.lockedBy !== currentUser.name){
+    const t = Date.parse(((o.lockedAt||'').replace(' ','T'))||0);
+    if(!isNaN(t) && (Date.now() - t) < ORDER_LOCK_TTL_MS){
+      showToast('⚠️ 该订单正由「'+o.lockedBy+'」编辑中，暂时无法编辑', 'error');
+      return false;
+    }
+  }
+  o.lockedBy = currentUser.name;
   o.lockedAt = nowStr();
-  o.updatedAt = nowStr();
-  DB.set('orders', orders); // 经 DB.set → 同步云端 + 写后重拉，其它设备经 Realtime/自动同步获取锁
+  // 注意：有意不刷新 updatedAt——获取锁不应改变订单时间戳，否则会影响 LWW 合并、把他人较新的改动冲掉。
+  localStorage.setItem('soms_orders', JSON.stringify(orders)); // 直接写本地缓存（绕过 DB.set 的先拉，避免锁被云端旧值覆盖）
+  await pushOrderLock(orderId).catch(function(){});            // 立即上推锁，使其它设备可见
+  return true;
 }
 async function releaseOrderLock(orderId){
-  if(!orderId) return;
+  if(!orderId || !currentUser) return;
   const orders = DB.get('orders');
   const o = orders.find(x => x.id === orderId);
   if(!o || !o.lockedBy) return;
-  // 仅释放“本人持有”的锁，避免误清他人（如销售）正在持有的锁
-  if(currentUser && o.lockedBy !== currentUser.name) return;
-  o.lockedBy = null; o.lockedAt = null; o.updatedAt = nowStr();
-  DB.set('orders', orders);
+  if(o.lockedBy !== currentUser.name) return; // 只释放本人持有的锁
+  o.lockedBy = null; o.lockedAt = null;
+  localStorage.setItem('soms_orders', JSON.stringify(orders));
+  await pushOrderLock(orderId).catch(function(){}); // 上推释放，使其它设备立即解锁
 }
 // 订单是否正被“其它人”锁定（锁定者非本人且未超时）
 function isOrderLockedByOther(order){
@@ -6944,7 +7029,7 @@ function salesSubmitFeedback(orderId){
     orders[idx].updatedAt = nowStr();
     DB.set('orders', orders);
     // 立即同步到云端，避免销售刷新页面后状态回退到待反馈
-    await syncOrdersNow().catch(function(){});
+    await pushOrdersOnly().catch(function(){});
     if(orders[idx].type === 'warehouse'){
       window._warehouseStatus = 'completed';
       navigate('warehouse');
@@ -6982,7 +7067,7 @@ function markOrderFeedbackDone(orderId){
     orders[idx].lockedBy = null; orders[idx].lockedAt = null; // 清除可能残留的管理员锁，避免影响已完成后同步
     orders[idx].updatedAt = nowStr();
     DB.set('orders', orders);
-    await syncOrdersNow().catch(function(){});
+    await pushOrdersOnly().catch(function(){});
     if(orders[idx].type === 'warehouse'){
       window._warehouseStatus = 'completed';
       navigate('warehouse');
@@ -7067,7 +7152,7 @@ function toggleNoTracking(orderId, checked){
 }
 
 // 进入编辑模式
-function enterEditMode(){
+async function enterEditMode(){
   // 路由守卫：无论入口（列表/详情）都确保 currentRoute=order-detail，
   // 否则在「订单列表」点编辑后 currentRoute 仍停留 orders，后台订单表刷新会把编辑页重渲染回列表。
   if(currentRoute !== 'order-detail') currentRoute = 'order-detail';
@@ -7083,12 +7168,12 @@ function enterEditMode(){
     renderOrderDetail();
     return;
   }
-  // 2026-0808：管理员进入编辑模式即对订单加编辑锁，禁止销售（提交人）编辑，
-  // 直到退出/保存/离开（覆盖「下单」与「编辑损耗」等非保存态的编辑过程）。
-  if(currentUser.role === 'admin'){
-    acquireOrderLock(window._currentOrderId).then(function(){
-      return syncOrdersNow().catch(function(){});
-    }).catch(function(){});
+  // 2026-0810-34：任何角色进入编辑都先获取编辑锁（跨设备编辑互斥，防多人同时改同一单互相覆盖）。
+  // 锁冲突（被他人锁定且未超时）→ acquire 返回 false，阻止进入编辑。
+  const locked = await acquireOrderLock(window._currentOrderId);
+  if(locked === false){
+    renderOrderDetail();
+    return;
   }
   window._orderEditMode = true;
   renderOrderDetail();
@@ -7748,7 +7833,7 @@ async function updateOrderStatus(orderId, status){
     orders[idx].updatedAt = nowStr();
     DB.set('orders', orders);
     logAudit({action:'edit_status', targetType:'order', targetId: orderId, targetLabel: orders[idx].customerName||'-', before: auditOldStatus, after: status});
-    await syncOrdersNow().catch(function(){});
+    await pushOrdersOnly().catch(function(){});
     showToast('订单状态已更新','success');
     window._orderEditMode = false;
     renderOrderDetail();
@@ -7845,7 +7930,7 @@ async function markItemOrdered(orderId, idx){
   o.updatedAt = nowStr();
   DB.set('orders', orders);
   // 立即同步订单到云端，防止 debounce 期间刷新/切页/自动同步把改动冲掉
-  syncOrdersNow().catch(function(){});
+  pushOrdersOnly().catch(function(){});
   renderOrderDetail();
   if(allOrdered && wasPending){
     // 全部商品已下单：直接将整单状态置为「已下单」，无需再弹确认框。
@@ -7857,7 +7942,7 @@ async function markItemOrdered(orderId, idx){
       o2.confirmedAt = nowStr();
       o2.updatedAt = nowStr();
       DB.set('orders', orders2);
-      await syncOrdersNow().catch(function(){});
+      await pushOrdersOnly().catch(function(){});
       showToast('✅ 订单状态已改为「已下单」','success');
       // 保持下单锁直到离开详情页（navigate 会自动释放），防止销售端陈旧副本把 confirmed 推回 pending
       window._orderTab = 'confirmed';
@@ -7894,7 +7979,7 @@ async function markItemUnordered(orderId, idx){
     showToast('已撤销「' + (o.items[idx].name || '商品') + '」的下单标记', 'info');
   }
   DB.set('orders', orders);
-  syncOrdersNow().catch(function(){});
+  pushOrdersOnly().catch(function(){});
   releaseOrderLock(orderId).catch(function(){}); // 管理员撤销下单，释放锁（Req7）
   if(currentRoute === 'order-detail') renderOrderDetail();
   else renderOrders();
@@ -8014,7 +8099,7 @@ async function saveItemStock(orderId, itemIndex, value) {
     navigate('orders');
   } else {
     // 仅部分备货：正常双向同步即可
-    syncOrdersNow().catch(function(){});
+    pushOrdersOnly().catch(function(){});
     renderOrderDetail();
     showToast('备货状态已更新', 'success');
   }
@@ -8054,7 +8139,7 @@ async function saveDoorDetail(orderId){
     navigate('orders');
   } else {
     // 仅部分备货：正常双向同步即可
-    syncOrdersNow().catch(function(){});
+    pushOrdersOnly().catch(function(){});
     const stocked = o.items.filter(it => isStocked(it)).length;
     showToast('已保存（' + stocked + '/' + o.items.length + ' 个商品已备货，全部备货后订单自动转为「已下单」）', 'success');
     renderOrderDetail();
@@ -13856,7 +13941,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：直接读取页面顶栏 #headerVersion
-  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0810-33';
+  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0810-34';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
