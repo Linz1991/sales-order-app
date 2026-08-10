@@ -1277,7 +1277,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">2026-0810-27 版</div>
+          <div class="brand-sub">2026-0810-28 版</div>
         </div>
       </div>
     </div>
@@ -1319,7 +1319,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0810-27</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0810-28</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -4229,8 +4229,7 @@ async function renderOrders(){
           html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(o.customerName)||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span></td>`;
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/><col/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
-            const prod = productList.find(p => p.id === it.productId);
-            const cost = (it.cost != null) ? it.cost : (prod ? prod.cost : 0);
+            const cost = orderItemCost(o, it);
             const waste = it.waste || 0;
             const profit = it.price * it.qty - cost * it.qty - waste;
             html += `<tr><td>${escapeHtml(it.name)}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
@@ -4258,8 +4257,7 @@ async function renderOrders(){
           html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(o.customerName)||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span></td>`;
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/><col/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
-            const prod = (products||[]).find(p => p.id === it.productId);
-            const cost = (it.cost != null) ? it.cost : (prod ? prod.cost : 0);
+            const cost = orderItemCost(o, it);
             const waste = it.waste || 0;
             const profit = it.price * it.qty - cost * it.qty - waste;
             html += `<tr><td>${escapeHtml(it.name)}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
@@ -5324,6 +5322,16 @@ function getLiveProductPrice(item){
   return (item.price != null) ? Number(item.price) || 0 : 0;
 }
 
+// 订单项成本取值（统一入口）：
+//  - 仅「待下单(pending)」状态实时跟随商品库校准成本（管理员改成本后随之变化）；
+//  - 其余所有状态（已下单/已完成/售后等）一律用下单时快照 it.cost，商品库后续校准不影响，成本固定不变。
+function orderItemCost(order, item){
+  if(order && order.status === 'pending'){
+    return getLiveProductCost(item);
+  }
+  return (item && item.cost != null) ? Number(item.cost) || 0 : 0;
+}
+
 function renderCart(){
   const list = document.getElementById('cartList');
   const summary = document.getElementById('cartSummary');
@@ -6088,12 +6096,8 @@ function renderOrderDetail(){
           </tr></thead>
           <tbody>
             ${order.items.map((it,i) => {
-              const prod = products.find(p => p.id === it.productId);
-              // 成本优先用下单时快照(it.cost)，保证改商品库不影响已下单订单利润；
-              // 旧订单/手动新增商品若快照缺失或为0，回退商品库真实成本（修复临时新增商品成本漏写为0）
-              const prodCost = prod ? (prod.cost || 0) : 0;
-              const shouldFallback = (it.cost == null || it.cost === 0) && prodCost > 0 && (it.auto_added === true || prod.auto_added === true);
-              const cost = shouldFallback ? prodCost : (it.cost != null ? it.cost : prodCost);
+              // 成本取值：仅「待下单(pending)」实时跟随商品库校准成本；其余状态用下单快照(it.cost)，固定不变
+              const cost = orderItemCost(order, it);
               const waste = it.waste || 0;
               const itemProfit = (it.price || 0) * (it.qty || 0) - cost * (it.qty || 0) - waste;
               return `
@@ -7736,8 +7740,7 @@ function calcOrderProfit(order) {
   if (!order || !order.items) return 0;
   const products = DB.get('products');
   const grossProfit = order.items.reduce((total, it) => {
-    const prod = products.find(p => p.id === it.productId);
-    const cost = (it.cost != null) ? it.cost : (prod ? prod.cost : 0);
+    const cost = orderItemCost(order, it);
     const itemProfit = it.price * it.qty - cost * it.qty - (it.waste || 0);
     return total + itemProfit;
   }, 0);
@@ -7882,8 +7885,7 @@ function recalcAdminProfit(orderId){
   o.items.forEach((it, i) => {
     const wEl = document.getElementById('wasteItem_' + i);
     const waste = wEl ? (parseInt(wEl.value) || 0) : (it.waste || 0);
-    const prod = products.find(p => p.id === it.productId);
-    const cost = (it.cost != null) ? it.cost : (prod ? prod.cost : 0);
+    const cost = orderItemCost(o, it);
     const itemProfit = it.price * it.qty - cost * it.qty - waste;
     profit += itemProfit;
     // 同步更新逐行利润单元格（管理员端上门订单明细布局）
@@ -8697,7 +8699,7 @@ function exportOrders(){
       // 损耗跟着商品走：每个商品单独显示自己的损耗（单个商品单个计算）
       const itemWaste = Math.round(it.waste || 0);
       // 成本和利润按每个商品单独计算；售后损耗按商品数均摊到每行
-      const itemCost = (it.cost != null) ? Math.round(it.cost * qty) : (p ? Math.round(p.cost * qty) : 0);
+      const itemCost = Math.round(orderItemCost(o, it) * qty);
       const afterSaleLossPerItem = items.length > 0 ? Math.round(afterSaleLoss / items.length) : 0;
       // 最后一行承担余数，确保总和精确
       const isLastRow = idx === items.length - 1;
@@ -8867,7 +8869,7 @@ function exportScheduleOrders(){
       var p = products.find(function(x){return x.id===it.productId});
       var qty = it.qty||0;
       var price = it.price||0;
-      var itemCost = (it.cost != null) ? Math.round(it.cost * qty) : (p ? Math.round(p.cost * qty) : 0);
+      var itemCost = Math.round(orderItemCost(o, it) * qty);
       var itemWaste = Math.round(it.waste || 0);
       var afterSaleLossPerItem = items.length > 0 ? Math.round(afterSaleLoss / items.length) : 0;
       var isLastRow = idx === items.length - 1;
@@ -8952,7 +8954,7 @@ function exportWarehouseOrders(){
       var p = products.find(function(x){return x.id===it.productId});
       var qty = it.qty||0;
       var price = it.price||0;
-      var itemCost = (it.cost != null) ? Math.round(it.cost * qty) : (p ? Math.round(p.cost * qty) : 0);
+      var itemCost = Math.round(orderItemCost(o, it) * qty);
       var itemWaste = Math.round(it.waste || 0);
       var afterSaleLossPerItem = items.length > 0 ? Math.round(afterSaleLoss / items.length) : 0;
       var isLastRow = idx === items.length - 1;
@@ -12133,8 +12135,7 @@ async function renderDashboard2(){
     s.orderCount++;
     totalOrders++;
     (o.items||[]).forEach(it => {
-      const prod = products.find(p => p.id === it.productId);
-      const cost = (it.cost != null) ? it.cost : (prod ? (prod.cost||0) : 0);
+      const cost = orderItemCost(o, it);
       const rev = it.price * it.qty;
       const prof = rev - cost * it.qty;
       s.revenue += rev;
@@ -12266,8 +12267,7 @@ function renderProfitReport(){
       s.orderCount++;
       s.orderList.push(o);
       (o.items||[]).forEach(function(it){
-        var prod = products.find(function(p){ return p.id === it.productId; });
-        var cost = (it.cost != null) ? it.cost : (prod ? (prod.cost||0) : 0);
+        var cost = orderItemCost(o, it);
         s.revenue += it.price * it.qty;
         s.cost += cost * it.qty;
         s.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
@@ -12425,8 +12425,7 @@ function renderProfitReport(){
       d.orderCount++;
       d.orderList.push(o);
       (o.items||[]).forEach(function(it){
-        var prod = products.find(function(p){ return p.id === it.productId; });
-        var cost = (it.cost != null) ? it.cost : (prod ? (prod.cost||0) : 0);
+        var cost = orderItemCost(o, it);
         d.revenue += it.price * it.qty;
         d.cost += cost * it.qty;
         d.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
@@ -12597,9 +12596,7 @@ function showProfitDrillDown(idx){
                   ${filteredOrders.map(function(o){
                     var profit = calcOrderProfit(o);
                     var cost = (o.items||[]).reduce(function(s,it){
-                      var prod = products.find(function(p){ return p.id === it.productId; });
-                      var c = (it.cost != null) ? it.cost : (prod ? prod.cost : 0);
-                      return s + c * it.qty;
+                      return s + orderItemCost(o, it) * it.qty;
                     }, 0);
                     return '<tr>' +
                       '<td><a class="btn-link" onclick="closeModal();viewOrder(\''+o.id+'\')">'+o.id+'</a></td>' +
@@ -12684,8 +12681,7 @@ function exportProfitCSV(){
       s.orderCount++;
       s.orderList.push(o);
       (o.items||[]).forEach(function(it){
-        var prod = products.find(function(p){ return p.id === it.productId; });
-        var cost = (it.cost != null) ? it.cost : (prod ? (prod.cost||0) : 0);
+        var cost = orderItemCost(o, it);
         s.revenue += it.price * it.qty;
         s.cost += cost * it.qty;
         s.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
@@ -12737,8 +12733,7 @@ function exportProfitCSV(){
       var d = dateMap[pd];
       d.count++;
       (o.items||[]).forEach(function(it){
-        var prod = products.find(function(p){ return p.id === it.productId; });
-        var cost = (it.cost != null) ? it.cost : (prod ? (prod.cost||0) : 0);
+        var cost = orderItemCost(o, it);
         d.revenue += it.price * it.qty;
         d.cost += cost * it.qty;
         d.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
@@ -13787,7 +13782,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：直接读取页面顶栏 #headerVersion
-  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0810-27';
+  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0810-28';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
