@@ -1351,7 +1351,9 @@ const ORDER_SYNC_COLS = new Set([
   'id','customer_id','customer_name','contact','phone','region','address',
   'sales_id','sales_name','items','total','status','type','order_date','remark',
   'created_at','shipped_at','feedback_at','synced_at','updated_at',
+  'completed_at','confirmed_at','no_tracking',
   'province','city','district','completion_date','images',
+  'tracking_no','express_company',
   'payment_method','collected_amount','full_payment','deposit','final_payment',
   'locked_by','locked_at',
   '_deleted','_deleted_at','_deleted_by',
@@ -1375,7 +1377,8 @@ const DB = {
     _deleted:'_deleted', deletedAt:'_deleted_at', deletedBy:'_deleted_by',
     wechatAmount:'wechat_amount',
     afterSaleLoss:'after_sale_loss', afterSaleLossSyncedAt:'after_sale_loss_synced_at',
-    completedAt:'completed_at', confirmedAt:'confirmed_at', feedbackAt:'feedback_at', noTracking:'no_tracking'
+    completedAt:'completed_at', confirmedAt:'confirmed_at', feedbackAt:'feedback_at', noTracking:'no_tracking', shippedAt:'shipped_at',
+    trackingNo:'tracking_no', expressCompany:'express_company'
   },
   _snakeToCamel: {},
   // JSONB 字段（需要序列化/反序列化）
@@ -1873,8 +1876,8 @@ const DB = {
             const emsg = (error.message || '') + '|' + (error.code || '');
             // 2026-0810-34：云端 orders 表若尚未加 locked_by/locked_at 列，upsert 会报 42703。
             // 降级剔除锁字段重试该批，保证其余字段正常上云、整批同步不崩（锁仅本机生效）。
-            if(table === 'orders' && /42703|locked_by|locked_at|_deleted|after_sale_loss/.test(emsg)){
-              const slim = batch.map(function(o){ const f = Object.assign({}, o); delete f.locked_by; delete f.locked_at; delete f._deleted; delete f._deleted_at; delete f._deleted_by; delete f.after_sale_loss; delete f.after_sale_loss_synced_at; delete f.completed_at; delete f.confirmed_at; delete f.feedback_at; delete f.no_tracking; return f; });
+            if(table === 'orders' && /42703|locked_by|locked_at|_deleted|after_sale_loss|tracking_no|express_company/.test(emsg)){
+              const slim = batch.map(function(o){ const f = Object.assign({}, o); delete f.locked_by; delete f.locked_at; delete f._deleted; delete f._deleted_at; delete f._deleted_by; delete f.after_sale_loss; delete f.after_sale_loss_synced_at; delete f.completed_at; delete f.confirmed_at; delete f.feedback_at; delete f.no_tracking; delete f.tracking_no; delete f.express_company; return f; });
               try{
                 const { error: e2 } = await window._sbpbClient.from(table).upsert(slim, { onConflict: 'id' });
                 if(e2) upsertErrors.push(e2.message || String(e2));
@@ -2111,8 +2114,8 @@ async function pushOrdersOnly(){
         const { error } = await window._sbpbClient.from('orders').upsert(batch, { onConflict: 'id' });
         if(error){
           const emsg = (error.message || '') + '|' + (error.code || '');
-          if(/42703|locked_by|locked_at|after_sale_loss|completed_at|confirmed_at|feedback_at|no_tracking/.test(emsg)){
-            const slim = batch.map(function(o){ const f = Object.assign({}, o); delete f.locked_by; delete f.locked_at; delete f.after_sale_loss; delete f.after_sale_loss_synced_at; delete f.completed_at; delete f.confirmed_at; delete f.feedback_at; delete f.no_tracking; return f; });
+          if(/42703|locked_by|locked_at|after_sale_loss|completed_at|confirmed_at|feedback_at|no_tracking|tracking_no|express_company/.test(emsg)){
+            const slim = batch.map(function(o){ const f = Object.assign({}, o); delete f.locked_by; delete f.locked_at; delete f.after_sale_loss; delete f.after_sale_loss_synced_at; delete f.completed_at; delete f.confirmed_at; delete f.feedback_at; delete f.no_tracking; delete f.tracking_no; delete f.express_company; return f; });
             const { error: e2 } = await window._sbpbClient.from('orders').upsert(slim, { onConflict: 'id' });
             if(e2) console.warn('pushOrdersOnly 批次降级仍失败:', e2.message);
           } else { console.warn('pushOrdersOnly 批次失败:', error.message); }
