@@ -5237,15 +5237,20 @@ function doRecognize(){
   if(custDisplay.trim()){
     document.getElementById('custInfo').value = custDisplay.trim();
   }
-  // 填充商品
+  // 填充商品（2026-0811-46 fix：一键识别时即按商品库补齐 cost，避免后续依赖 submitOrder 兜底）
   if(parsed.items.length){
-    cart = parsed.items.map(it => ({
-      productId: it.productId,
-      name: it.name,
-      price: it.price,
-      qty: it.qty,
-      subtotal: it.subtotal
-    }));
+    const lib = DB.get('products') || [];
+    cart = parsed.items.map(it => {
+      const prod = (it.productId && lib.find(p => p.id === it.productId)) || lib.find(p => normName(p.name) === normName(it.name || ''));
+      return {
+        productId: it.productId,
+        name: it.name,
+        price: it.price,
+        cost: prod ? prod.cost : (it.cost != null ? it.cost : undefined),
+        qty: it.qty,
+        subtotal: it.subtotal
+      };
+    });
     renderCart();
   }
   // 填充备注
@@ -5528,6 +5533,24 @@ function orderItemCost(order, item){
     return getLiveProductCost(item);
   }
   var c = (item && item.cost != null) ? Number(item.cost) : null;
+  // 2026-0811-46 fix：历史订单若快照成本等于售价（多为识别/新建时默认用售价兜底），
+  // 尝试按商品库真实成本修正并回写快照，避免已确认订单长期显示错误成本。
+  if(c != null && !isNaN(c) && order && order.status !== 'pending'){
+    var price = Number(item.price || 0);
+    if(c === price && price > 0){
+      try{
+        const lib = DB.get('products') || [];
+        const p = (item.productId && lib.find(x => x.id === item.productId)) || lib.find(x => normName(x.name) === normName(item.name || ''));
+        if(p && p.cost != null && p.cost !== ''){
+          var libCost = Number(p.cost);
+          if(libCost > 0 && libCost !== price){
+            c = libCost;
+            item.cost = libCost;
+          }
+        }
+      }catch(e){}
+    }
+  }
   if(c != null && !isNaN(c)) return c || 0;
   // 兜底：历史数据缺 cost 字段（v29 前编辑页手动加商品未写 cost），用售价补并回写
   var fallback = (item && item.price != null) ? Number(item.price) || 0 : 0;
@@ -5987,7 +6010,14 @@ function submitOrder(){
       let prod = byId || byName;
       if(!prod){
         const exId = findExistingProductId(c.name); // 含云端快照，避免“本地无、云端有同名”时新建重复行
-        if(exId){ prod = lib.find(p => p.id === exId) || { id: exId, name: c.name, category: '自定义', price: c.price||0, cost: c.price||0, status: 'on', auto_added: true, createdAt: nowStr() }; }
+        if(exId){
+          // 2026-0811-46 fix：优先从本地库或云端快照取完整商品信息（含真实成本），
+          // 避免只用售价兜底，导致已有成本 135 的商品被错误保存为售价 150。
+          prod = lib.find(p => p.id === exId) || (typeof window._lastCloudProducts !== 'undefined' && (window._lastCloudProducts||[]).find(p => p.id === exId));
+          if(!prod){
+            prod = { id: exId, name: c.name, category: '自定义', price: c.price||0, cost: c.price||0, status: 'on', auto_added: true, createdAt: nowStr() };
+          }
+        }
       }
       if(!prod){
         const np = { id: DB.uid('p_'), name: c.name, category: '自定义', price: c.price||0, cost: c.price||0, status: 'on', createdBy: currentUser.id, auto_added: true, createdAt: nowStr() };
@@ -6010,9 +6040,10 @@ function submitOrder(){
   })();
 
   // 确保订单 items 快照里的 cost 与 cart 一致（手动新增商品在 ensureProductsInLibrary 中补了 cost）
+  // 2026-0811-46 fix：无条件以 cart 校准后的成本为准覆盖，避免一键识别/旧数据带入的售价快照冲掉真实成本。
   (newOrder.items||[]).forEach(it => {
     const c = (cart||[]).find(x => x.productId && x.productId === it.productId);
-    if(c && (it.cost == null || (it.cost === 0 && c.cost > 0))) it.cost = c.cost;
+    if(c && c.cost != null) it.cost = c.cost;
   });
 
   logAudit({action:'create_order', targetType:'order', targetId: orderId, targetLabel: contact, before: '', after: total, detail: '金额 '+money(total)+' / 类型 '+(newOrder.type==='warehouse'?'留仓':newOrder.type==='door'?'上门':'普通')});
@@ -8026,8 +8057,11 @@ function saveItemWaste(orderId, itemIndex, value) {
   schedulePushToCloud();
   // 保存后立即重算利润显示（详情页管理员视图）
   recalcAdminProfit(orderId);
-  // 如果当前在列表页，刷新列表以反映最新损耗
-  if(currentRoute === 'orders') renderOrders();
+  // 2026-0811-46 fix：输入过程中若当前焦点仍在损耗输入框，不重绘整表，避免输入框重建导致丢字符（如 11 变 1）。
+  // onchange 失焦后再刷新列表即可。
+  const active = document.activeElement;
+  const isTypingWaste = active && active.tagName === 'INPUT' && active.id && active.id.indexOf('wasteItem_') === 0;
+  if(currentRoute === 'orders' && !isTypingWaste) renderOrders();
 }
 
 // 管理员对订单逐商品标记"已下单"：点击后该商品 ordered=true；全部商品已下单则订单状态转为"已下单"(confirmed)
