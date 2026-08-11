@@ -1371,7 +1371,8 @@ const DB = {
     actorId:'actor_id', actorName:'actor_name', actorRole:'actor_role', action:'action',
     targetType:'target_type', targetId:'target_id', targetLabel:'target_label', before:'before', after:'after', detail:'detail',
     lockedBy:'locked_by', lockedAt:'locked_at',
-    _deleted:'_deleted', deletedAt:'_deleted_at', deletedBy:'_deleted_by'
+    _deleted:'_deleted', deletedAt:'_deleted_at', deletedBy:'_deleted_by',
+    wechatAmount:'wechat_amount'
   },
   _snakeToCamel: {},
   // JSONB 字段（需要序列化/反序列化）
@@ -1808,7 +1809,7 @@ const DB = {
         // 含 updated_at：用户改密/建号时本地刷新 updatedAt，必须随账号上推云端，否则拉取合并时
         // 云端 u_ceshi 只剩 created_at(凌晨)，永远比本地旧缓存“更旧”→ 本地旧哈希覆盖云端新哈希，
         // 表现为“改了密码原密码还能登、多端密码不一致”（2026-0810-3 修复）。
-        const allowed = new Set(['id','username','password','name','role','phone','created_at','updated_at']);
+        const allowed = new Set(['id','username','password','name','role','phone','created_at','updated_at','wechat_amount']);
         const seen = new Set();
         snakeData = snakeData
           .sort((a, b) => {
@@ -1925,6 +1926,7 @@ const DB = {
       name: user.name || '',
       role: user.role || 'sales',
       phone: user.phone || '',
+      wechat_amount: parseInt(user.wechatAmount) || 0,
       created_at: user.createdAt || user.created_at || new Date().toISOString()
     };
     const { error } = await window._sbpbClient.from('users').upsert(payload, { onConflict: 'id' });
@@ -12375,8 +12377,8 @@ function saveUserWechat(id){
     users[idx].wechatAmount = v;
     DB.set('users', users);
     if(window._sbpbClient){
-      window._sbpbClient.from('users').update({ wechatAmount: v }).eq('id', id)
-        .then(function(){ showToast('微信金额已更新','success'); })
+      window._sbpbClient.from('users').update({ wechat_amount: v }).eq('id', id)
+        .then(function(){ showToast('微信金额已更新并同步','success'); })
         .catch(function(e){ showToast('本地已更新，云端失败：' + (e.message||''), 'warning'); });
     } else {
       showToast('微信金额已更新','success');
