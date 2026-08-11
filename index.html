@@ -1353,7 +1353,8 @@ const ORDER_SYNC_COLS = new Set([
   'created_at','shipped_at','feedback_at','synced_at','updated_at',
   'province','city','district','completion_date','images',
   'payment_method','collected_amount','full_payment','deposit','final_payment',
-  'locked_by','locked_at'
+  'locked_by','locked_at',
+  '_deleted','_deleted_at','_deleted_by'
 ]);
 
 /* ============ 数据层：Supabase + localStorage 混合缓存 ============ */
@@ -1369,7 +1370,8 @@ const DB = {
     collectedAmount:'collected_amount', doorDate:'door_date', contactName:'contact_name',
     actorId:'actor_id', actorName:'actor_name', actorRole:'actor_role', action:'action',
     targetType:'target_type', targetId:'target_id', targetLabel:'target_label', before:'before', after:'after', detail:'detail',
-    lockedBy:'locked_by', lockedAt:'locked_at'
+    lockedBy:'locked_by', lockedAt:'locked_at',
+    _deleted:'_deleted', deletedAt:'_deleted_at', deletedBy:'_deleted_by'
   },
   _snakeToCamel: {},
   // JSONB 字段（需要序列化/反序列化）
@@ -1667,6 +1669,14 @@ const DB = {
             w.orderedAt = src.orderedAt;
           }
         }
+        // 软删除标记保护（2026-0811）：本地已软删除的订单，无论 LWW 谁胜，都必须保留 _deleted 标记与删除信息，
+        // 否则云端重拉（_deleted 列上云前，或合并按内容哈希决胜时）会把标记冲掉，导致“清理后订单又出现 / 上门留仓仍显示”。
+        if(lr && lr._deleted){
+          if(winner !== lr) winner = Object.assign({}, winner);
+          winner._deleted = true;
+          if(lr._deletedAt != null) winner._deletedAt = lr._deletedAt;
+          if(lr._deletedBy != null) winner._deletedBy = lr._deletedBy;
+        }
         map[r.id] = winner;
         // 否则（云端不新，或相等且内容相同）→ 保留本地，避免刚保存的修改被旧云端数据冲掉
       }
@@ -1853,8 +1863,8 @@ const DB = {
             const emsg = (error.message || '') + '|' + (error.code || '');
             // 2026-0810-34：云端 orders 表若尚未加 locked_by/locked_at 列，upsert 会报 42703。
             // 降级剔除锁字段重试该批，保证其余字段正常上云、整批同步不崩（锁仅本机生效）。
-            if(table === 'orders' && /42703|locked_by|locked_at/.test(emsg)){
-              const slim = batch.map(function(o){ const f = Object.assign({}, o); delete f.locked_by; delete f.locked_at; return f; });
+            if(table === 'orders' && /42703|locked_by|locked_at|_deleted/.test(emsg)){
+              const slim = batch.map(function(o){ const f = Object.assign({}, o); delete f.locked_by; delete f.locked_at; delete f._deleted; delete f._deleted_at; delete f._deleted_by; return f; });
               try{
                 const { error: e2 } = await window._sbpbClient.from(table).upsert(slim, { onConflict: 'id' });
                 if(e2) upsertErrors.push(e2.message || String(e2));
@@ -4848,7 +4858,9 @@ async function softDeleteOrders(ids){
   // 上云：upsert 带 _deleted 标记的订单，实时通道同步到管理员/销售端/不同设备
   if(window._sbpbClient){
     try{
-      const toPush = orders.filter(o => delSet.has(o.id));
+      const toPush = DB._toSnake(orders.filter(o => delSet.has(o.id))).map(function(o){
+        const f = {}; Object.keys(o).forEach(function(k){ if(ORDER_SYNC_COLS.has(k)) f[k] = o[k]; }); return f;
+      });
       const { error } = await window._sbpbClient.from('orders').upsert(toPush, { onConflict: 'id' });
       if(error) console.warn('云端清理同步失败:', error.message);
     }catch(e){ console.warn('云端清理同步异常:', e.message); }
@@ -11911,7 +11923,7 @@ async function renderSchedule(){
 function showScheduleDayOrders(dateStr){
   var isAdmin = currentUser.role === 'admin';
   // 上门订单：所有人可见（仅 admin 与提交者可编辑）
-  var orders = DB.get('orders').filter(function(o){ return o.type === 'door'; });
+  var orders = DB.get('orders').filter(function(o){ return o.type === 'door' && !o._deleted; });
   function doorDateOf(o){ return o.completionDate || o.orderDate || (o.createdAt||'').slice(0,10); }
   var dayOrders = orders.filter(function(o){ return doorDateOf(o) === dateStr; });
   var el = document.getElementById('scheduleDayOrders');
