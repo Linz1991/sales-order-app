@@ -1277,7 +1277,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">2026-0810-39 版</div>
+          <div class="brand-sub">2026-08-11 版</div>
         </div>
       </div>
     </div>
@@ -1319,7 +1319,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026-0810-39</span>
+        <span style="display:none" id="headerVersion">2026-08-11</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -2409,6 +2409,10 @@ function initData(){
 function todayStr(){
   const d = new Date();
   return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+// 统一日期键：取时间字符串前10位（YYYY-MM-DD），与订单列表/导出逻辑保持一致，避免 new Date 解析歧义
+function dateKey(d){
+  return (d || '').slice(0,10);
 }
 function nowStr(){
   const d = new Date();
@@ -3644,7 +3648,7 @@ function renderSidebar(){
 
   const nav = document.getElementById('sidebarNav');
   // 统计待处理数量
-  const allOrders = DB.get('orders');
+  const allOrders = DB.get('orders').filter(o => !o._deleted);
   const myOrders = isAdmin ? allOrders : allOrders.filter(o => o.salesId === currentUser.id);
   const pendingCount = myOrders.filter(o => o.status === 'pending').length;
   const feedbackCount = myOrders.filter(o => o.status === 'feedback').length;
@@ -3906,13 +3910,13 @@ async function renderDashboard(){
 
   let html = '';
   if(isAdmin){
-    // 今日统计（参考销售员首页）
-    const dateKey = (d) => { const dt = new Date(d); return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`; };
-    const todayStr = dateKey(new Date());
-    const todayOrders = orders.filter(o => dateKey(o.createdAt) === todayStr);
+    // 今日统计（参考销售员首页）：只统计未清理订单，按 createdAt 日期字符串前10位匹配，避免时区/解析歧义
+    const today = todayStr();
+    const activeOrders = orders.filter(o => !o._deleted);
+    const todayOrders = activeOrders.filter(o => dateKey(o.createdAt) === today);
     const todaySales = todayOrders.reduce((s,o)=>s+(o.total||0),0);
     const todayOrderCount = todayOrders.length;
-    const todayProfit = orders.filter(o => calcProfitDate(o) === todayStr).reduce((s,o)=>s+calcOrderProfit(o),0);
+    const todayProfit = activeOrders.filter(o => calcProfitDate(o) === today).reduce((s,o)=>s+calcOrderProfit(o),0);
     const afterSaleOpen = aftersales.filter(a => a.status==='pending' || a.status==='processing').length;
 
     html += `
@@ -3948,7 +3952,7 @@ async function renderDashboard(){
       </div>
     `;
 
-    const recentOrders = [...orders].filter(o => o.status === 'pending').sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,10);
+    const recentOrders = [...orders].filter(o => o.status === 'pending' && !o._deleted).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,10);
 
     html += `
       <div class="card">
@@ -3975,12 +3979,12 @@ async function renderDashboard(){
     `;
   }else{
     // 销售首页新版仪表盘
-    const myOrders = orders.filter(o => o.salesId === currentUser.id);
-    const dateKey = (d) => { const dt = new Date(d); return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`; };
-    const todayStr = dateKey(new Date());
-    const yest = new Date(); yest.setDate(yest.getDate()-1); const yestStr = dateKey(yest);
+    const myOrders = orders.filter(o => o.salesId === currentUser.id && !o._deleted);
+    const today = todayStr();
+    const yest = new Date(); yest.setDate(yest.getDate()-1);
+    const yestStr = dateKey(yest.getFullYear()+'-'+String(yest.getMonth()+1).padStart(2,'0')+'-'+String(yest.getDate()).padStart(2,'0'));
 
-    const todayOrders = myOrders.filter(o => dateKey(o.createdAt) === todayStr);
+    const todayOrders = myOrders.filter(o => dateKey(o.createdAt) === today);
     const yestOrders = myOrders.filter(o => dateKey(o.createdAt) === yestStr);
     const todayAmount = todayOrders.reduce((s,o)=>s+(o.total||0),0);
     const yestAmount = yestOrders.reduce((s,o)=>s+(o.total||0),0);
@@ -4728,73 +4732,132 @@ async function purgeOrdersForSales(salesIds){
   renderOrders();
 }
 
-// 打开清理面板：列出目标账号及其订单数，可勾选
+// ============ 清理订单：按订单号检索 → 勾选指定订单 → 软删除（跨端同步、可导出） ============
+
+// 打开清理面板：按订单号/客户名检索，勾选指定订单后软删除
 function openCleanupPanel(){
-  const users = DB.get('users') || [];
-  const orders = DB.get('orders');
-  // 动态汇总所有可能拥有订单的账号名（用户表 + 订单实际销售 id）
-  const nameSet = new Set();
-  users.forEach(u => { if(u.username) nameSet.add(u.username); });
-  orders.forEach(o => {
-    const u = users.find(x => x.id === o.salesId);
-    if(u && u.username) nameSet.add(u.username);
-  });
-  // admin 置顶，其余按中文拼音/字母排序
-  const names = Array.from(nameSet).sort((a,b) => {
-    if(a === 'admin') return -1;
-    if(b === 'admin') return 1;
-    return a.localeCompare(b, 'zh-CN');
-  });
-  const stats = names.map(un => {
-    const ids = users.filter(u => u.username === un).map(u => u.id);
-    const cnt = orders.filter(o => ids.includes(o.salesId)).length;
-    return { username: un, count: cnt, ids: ids };
-  });
-  const total = stats.reduce((s, x) => s + x.count, 0);
-  const rows = stats.map((s, i) => `
-    <tr>
-      <td style="text-align:center"><input type="checkbox" id="cleanupChk_${i}" ${s.count>0?'checked':''} ${s.count===0?'disabled':''}></td>
-      <td>${s.username}</td>
-      <td style="color:var(--text-muted)">${s.ids.length ? s.ids.length+' 个账号匹配' : '未找到账号'}</td>
-      <td style="text-align:right;font-weight:600">${s.count}</td>
-    </tr>`).join('');
+  window._cleanupSel = new Set();
+  window._cleanupKw = '';
   const modalHtml = `
     <div class="modal-mask" onclick="if(event.target===this)closeModal()">
-      <div class="modal" style="max-width:520px">
-        <div class="modal-header"><h3>🧹 清理订单数据</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+      <div class="modal" style="max-width:640px">
+        <div class="modal-header"><h3>🧹 清理订单（按订单号检索）</h3><button class="modal-close" onclick="closeModal()">×</button></div>
         <div class="modal-body">
           <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:10px;color:#b91c1c;font-size:13px;margin-bottom:12px">
-            ⚠ 此操作<b>不可恢复</b>：将永久删除下列账号名下的<b>所有状态</b>订单（云端 + 本地），并从所有导出中排除。请确认无误后执行。
+            ⚠ 清理采用<b>软删除</b>：订单将从各端列表隐藏、不再复现，但仍保留记录可导出（回收站可恢复）。请检索订单号后勾选要清理的指定订单，确认后执行。
           </div>
-          <table style="width:100%;font-size:13px;border-collapse:collapse">
-            <thead><tr style="background:#f8fafc"><th style="padding:6px">选择</th><th style="padding:6px;text-align:left">账号</th><th style="padding:6px;text-align:left">匹配</th><th style="padding:6px;text-align:right">订单数</th></tr></thead>
-            <tbody>${rows}</tbody>
-            <tfoot><tr style="border-top:2px solid var(--border)"><td colspan="3" style="padding:8px;font-weight:600">合计</td><td style="padding:8px;text-align:right;font-weight:700;color:var(--danger)">${total}</td></tr></tfoot>
-          </table>
+          <div style="display:flex;gap:8px;margin-bottom:10px">
+            <input type="text" class="form-control" id="cleanupSearch" placeholder="输入订单号或客户名检索…" oninput="onCleanupSearchInput(this.value)" style="flex:1">
+            <button class="btn btn-secondary btn-sm" onclick="cleanupSelectAll(true)">全选</button>
+            <button class="btn btn-secondary btn-sm" onclick="cleanupSelectAll(false)">清空</button>
+          </div>
+          <div id="cleanupResults" style="max-height:320px;overflow:auto;border:1px solid var(--border);border-radius:6px"></div>
+          <div id="cleanupSelTip" style="font-size:12px;color:var(--text-muted);margin-top:8px">已选 0 条</div>
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" onclick="closeModal()">取消</button>
-          <button class="btn btn-danger" onclick="confirmCleanupOrders()">执行删除（不可恢复）</button>
+          <button class="btn btn-danger" onclick="confirmCleanupOrders()">清理选中订单</button>
         </div>
       </div>
     </div>`;
   document.getElementById('modalContainer').innerHTML = modalHtml;
-  window._cleanupStats = stats;
+  renderCleanupResults();
 }
 
-// 确认清理：收集勾选账号的 id，二次确认后执行
+function onCleanupSearchInput(v){
+  window._cleanupKw = (v || '').trim();
+  renderCleanupResults();
+}
+
+function _cleanupMatched(){
+  const kw = (window._cleanupKw || '').toLowerCase();
+  return (DB.get('orders') || []).filter(o => {
+    if(!kw) return true;
+    return (o.id && o.id.toLowerCase().indexOf(kw) >= 0) ||
+           (o.customerName && o.customerName.toLowerCase().indexOf(kw) >= 0);
+  }).sort((a,b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+}
+
+function renderCleanupResults(){
+  const matched = _cleanupMatched();
+  const box = document.getElementById('cleanupResults');
+  if(!box) return;
+  if(!matched.length){
+    box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-muted);font-size:13px">未找到匹配订单</div>';
+    updateCleanupTip();
+    return;
+  }
+  box.innerHTML = '<table style="width:100%;font-size:13px;border-collapse:collapse"><thead><tr style="background:#f8fafc"><th style="padding:6px;text-align:center;width:36px">选</th><th style="padding:6px;text-align:left">订单号</th><th style="padding:6px;text-align:left">客户</th><th style="padding:6px;text-align:right">金额</th><th style="padding:6px;text-align:center">类型</th></tr></thead><tbody>' +
+    matched.map(o => {
+      const sel = window._cleanupSel.has(o.id);
+      const typeLabel = o.type === 'warehouse' ? '留仓' : (o.type === 'door' ? '上门' : '普通');
+      return '<tr>' +
+        '<td style="text-align:center;padding:6px"><input type="checkbox" ' + (sel ? 'checked' : '') + ' onchange="cleanupToggle(\'' + o.id + '\', this.checked)"></td>' +
+        '<td style="padding:6px;font-size:12px">' + escapeHtml(o.id) + '</td>' +
+        '<td style="padding:6px">' + escapeHtml(o.customerName || '-') + '</td>' +
+        '<td style="padding:6px;text-align:right;font-weight:600">' + money(parseInt(o.total) || 0) + '</td>' +
+        '<td style="padding:6px;text-align:center;color:var(--text-muted)">' + typeLabel + '</td>' +
+        '</tr>';
+    }).join('') + '</tbody></table>';
+  updateCleanupTip();
+}
+
+function cleanupToggle(id, checked){
+  if(checked) window._cleanupSel.add(id); else window._cleanupSel.delete(id);
+  updateCleanupTip();
+}
+
+function cleanupSelectAll(on){
+  _cleanupMatched().forEach(o => { if(on) window._cleanupSel.add(o.id); else window._cleanupSel.delete(o.id); });
+  renderCleanupResults();
+}
+
+function updateCleanupTip(){
+  const tip = document.getElementById('cleanupSelTip');
+  if(tip) tip.textContent = '已选 ' + (window._cleanupSel ? window._cleanupSel.size : 0) + ' 条';
+}
+
+// 确认清理：二次确认后软删除选中订单（跨端同步、列表隐藏、可导出）
 function confirmCleanupOrders(){
-  const stats = window._cleanupStats || [];
-  const salesIds = new Set();
-  stats.forEach((s, i) => {
-    const chk = document.getElementById('cleanupChk_'+i);
-    if(chk && chk.checked){ s.ids.forEach(id => salesIds.add(id)); }
+  const ids = Array.from(window._cleanupSel || []);
+  if(!ids.length){ showToast('请先勾选要清理的订单', 'error'); return; }
+  showConfirm('确定清理选中的 ' + ids.length + ' 条订单吗？清理后将从各端列表隐藏（不再复现），但仍可导出，回收站可恢复。', () => {
+    softDeleteOrders(ids);
   });
-  const idArr = Array.from(salesIds);
-  if(!idArr.length){ showToast('请至少选择一个账号','error'); return; }
-  showConfirm('确定永久删除所选账号的全部订单吗？此操作不可恢复！', () => {
-    purgeOrdersForSales(idArr);
+}
+
+// 软删除指定订单：保留记录(_deleted标记)，上云upsert + 实时通道同步到所有设备；列表通过 !o._deleted 隐藏
+async function softDeleteOrders(ids){
+  const orders = DB.get('orders');
+  const delSet = new Set(ids);
+  // 撤回关联的微信收款记录
+  const payments = DB.get('payments') || [];
+  DB.set('payments', payments.filter(p => !delSet.has(p.orderId)));
+  const now = nowStr();
+  let changed = 0;
+  orders.forEach(o => {
+    if(delSet.has(o.id) && !o._deleted){
+      o._deleted = true;
+      o._deletedAt = now;
+      o._deletedBy = (currentUser && currentUser.name) || 'admin';
+      o.updatedAt = now;
+      changed++;
+    }
   });
+  DB.set('orders', orders);
+  // 上云：upsert 带 _deleted 标记的订单，实时通道同步到管理员/销售端/不同设备
+  if(window._sbpbClient){
+    try{
+      const toPush = orders.filter(o => delSet.has(o.id));
+      const { error } = await window._sbpbClient.from('orders').upsert(toPush, { onConflict: 'id' });
+      if(error) console.warn('云端清理同步失败:', error.message);
+    }catch(e){ console.warn('云端清理同步异常:', e.message); }
+  }
+  schedulePushToCloud();
+  showToast('已清理 ' + changed + ' 条订单（各端同步隐藏，可在导出 / 回收站查看）', 'success');
+  closeModal();
+  if(currentRoute === 'orders' || currentRoute === 'warehouse' || currentRoute === 'schedule') renderOrders();
+  else if(typeof renderSidebar === 'function') renderSidebar();
 }
 
 // 回收站：列出已软删除的订单，可恢复或彻底删除
@@ -8211,7 +8274,7 @@ function adminConfirmOrder(orderId) {
 // 管理员单品标记已下单
 // 一键收集待下单订单信息（收集所有类型：普通/留仓/上门）
 function collectPendingOrdersInfo() {
-  const allOrders = DB.get('orders');
+  const allOrders = DB.get('orders').filter(o => !o._deleted);
   // 收集当前筛选结果中的待下单订单（与列表显示一致）
   const search = (document.getElementById('orderSearch') && document.getElementById('orderSearch').value) || '';
   const dFrom = (document.getElementById('dateFrom') && document.getElementById('dateFrom').value) || '';
@@ -8816,7 +8879,7 @@ function exportOrders(){
   const isAdmin = currentUser.role === 'admin';
   if(!isAdmin){ showToast('仅管理员可导出','error'); return; }
   const deletedIds = (DB.get('_deletedOrderIds') || []);
-  const orders = DB.get('orders').filter(o => deletedIds.indexOf(o.id) < 0);
+  const orders = DB.get('orders'); // 包含已清理(_deleted)订单，可在导出中查看
   const products = DB.get('products');
   // 订单管理页面固定排除上门订单（上门订单在「上门订单」页面导出）
   let activeTab = window._orderTab || 'pending';
@@ -8866,7 +8929,7 @@ function exportOrders(){
   };
 
   // 表头：每个商品一行；新增「地址」「数量」列
-  const header = ['订单号','订单类型','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','利润','创建时间'];
+  const header = ['订单号','订单类型','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','利润','创建时间','是否清理'];
   const rows = [];
   filtered.forEach(o => {
     const afterSaleLoss = o.afterSaleLoss || 0;
@@ -8893,7 +8956,7 @@ function exportOrders(){
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), subtotal,
         Math.round(o.total||0), itemCost, itemWaste, showAfterSaleLoss, itemProfit,
-        fmtExportDateTime(o.createdAt)
+        fmtExportDateTime(o.createdAt), o._deleted ? '是' : '否'
       ]);
     });
   });
@@ -9000,7 +9063,7 @@ function exportAftersales(){
 function exportScheduleOrders(){
   var isAdmin = currentUser.role === 'admin';
   var deletedIds = (DB.get('_deletedOrderIds') || []);
-  var allDoorOrders = DB.get('orders').filter(function(o){ return o.type === 'door' && deletedIds.indexOf(o.id) < 0; });
+  var allDoorOrders = DB.get('orders').filter(function(o){ return o.type === 'door'; });
   if(!isAdmin) allDoorOrders = allDoorOrders.filter(function(o){ return o.salesId === currentUser.id; });
   var statusKey = window._scheduleStatus || '';
   var schKeyword = window._scheduleFilter || '';
@@ -9040,7 +9103,7 @@ function exportScheduleOrders(){
     var s = String(cell == null ? '' : cell).replace(/"/g,'""');
     return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
   };
-  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','利润','订单日期','创建时间'];
+  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','利润','订单日期','创建时间','是否清理'];
   var rows = [];
   filtered.forEach(function(o){
     var afterSaleLoss = o.afterSaleLoss || 0;
@@ -9062,7 +9125,7 @@ function exportScheduleOrders(){
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), Math.round(price*qty),
         Math.round(o.total||0), itemCost, itemWaste, showAfterSaleLoss, itemProfit,
-        o.orderDate||'', fmtExportDateTime(o.createdAt)
+        o.orderDate||'', fmtExportDateTime(o.createdAt), o._deleted ? '是' : '否'
       ]);
     });
   });
@@ -9083,7 +9146,7 @@ function exportScheduleOrders(){
 function exportWarehouseOrders(){
   var isAdmin = currentUser.role === 'admin';
   var deletedIds = (DB.get('_deletedOrderIds') || []);
-  var orders = DB.get('orders').filter(function(o){ return o.type === 'warehouse' && deletedIds.indexOf(o.id) < 0; });
+  var orders = DB.get('orders').filter(function(o){ return o.type === 'warehouse'; });
   if(!isAdmin) orders = orders.filter(function(o){ return o.salesId === currentUser.id; });
   var statusKey = window._warehouseStatus || '';
   var keyword = window._warehouseFilter || '';
@@ -9125,7 +9188,7 @@ function exportWarehouseOrders(){
     var s = String(cell == null ? '' : cell).replace(/"/g,'""');
     return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
   };
-  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','利润','订单日期','创建时间'];
+  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','利润','订单日期','创建时间','是否清理'];
   var rows = [];
   filtered.forEach(function(o){
     var afterSaleLoss = o.afterSaleLoss || 0;
@@ -9147,7 +9210,7 @@ function exportWarehouseOrders(){
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), Math.round(price*qty),
         Math.round(o.total||0), itemCost, itemWaste, showAfterSaleLoss, itemProfit,
-        o.orderDate||'', fmtExportDateTime(o.createdAt)
+        o.orderDate||'', fmtExportDateTime(o.createdAt), o._deleted ? '是' : '否'
       ]);
     });
   });
@@ -11708,7 +11771,7 @@ async function renderSchedule(){
   // 排除本端已删除的订单 id（避免幽灵计数）
   var deletedIds = (DB.get('_deletedOrderIds') || []);
   // 上门订单：所有人可见（仅 admin 与提交者可编辑）；管理员仍看全部
-  var allDoorOrders = DB.get('orders').filter(function(o){ return o.type === 'door' && deletedIds.indexOf(o.id) < 0; });
+  var allDoorOrders = DB.get('orders').filter(function(o){ return o.type === 'door' && deletedIds.indexOf(o.id) < 0 && !o._deleted; });
   var orders = allDoorOrders;
   // 日历/筛选/列表统一按「上门日期」(completionDate) 归组；缺省回退到备货日期/创建日期
   function doorDateOf(o){ return o.completionDate || o.orderDate || (o.createdAt||'').slice(0,10); }
@@ -11868,7 +11931,7 @@ async function renderWarehouse(){
   if(typeof renderSidebar === 'function') renderSidebar();
   var isAdmin = currentUser.role === 'admin';
   var deletedIds = (DB.get('_deletedOrderIds') || []);
-  var orders = DB.get('orders').filter(function(o){ return o.type === 'warehouse' && deletedIds.indexOf(o.id) < 0; });
+  var orders = DB.get('orders').filter(function(o){ return o.type === 'warehouse' && deletedIds.indexOf(o.id) < 0 && !o._deleted; });
   if(!isAdmin) orders = orders.filter(function(o){ return o.salesId === currentUser.id; });
   var keyword = window._warehouseFilter || '';
   var statusKey = window._warehouseStatus || '';
@@ -12455,572 +12518,401 @@ async function renderDashboard2(){
   document.getElementById('mainContent').innerHTML = html;
 }
 
-/* ============ 利润报表 ============ */
+/* ============ 利润报表（专属销售数据统计工作台） ============ */
+
+// 固定销售人员名单
+const FIXED_SALES_NAMES = ['李超','大仙','邢勇','毛毛'];
+
+// 利润统计周期：每月10日 ~ 次月9日
+function getProfitPeriod(dateStr){
+  var ds = dateStr || todayStr();
+  var y = parseInt(ds.slice(0,4),10), m = parseInt(ds.slice(5,7),10), day = parseInt(ds.slice(8,10),10);
+  var sy = y, sm = m, ey = y, em = m;
+  if(day >= 10){
+    sm = m; em = m + 1;
+    if(em > 12){ em = 1; ey = y + 1; }
+  } else {
+    sm = m - 1; em = m;
+    if(sm < 1){ sm = 12; sy = y - 1; }
+  }
+  var start = sy + '-' + String(sm).padStart(2,'0') + '-10';
+  var end = ey + '-' + String(em).padStart(2,'0') + '-09';
+  var label = sy + '.' + String(sm).padStart(2,'0') + '.10 - ' + ey + '.' + String(em).padStart(2,'0') + '.09';
+  return { start:start, end:end, label:label };
+}
+
 function renderProfitReport(){
   var isAdmin = currentUser.role === 'admin';
   var users = DB.get('users');
-  var salesUsers = users.filter(function(u){ return u.role === 'sales' && !u.disabled; });
-  var orders = DB.get('orders');
+  var orders = DB.get('orders').filter(function(o){ return !o._deleted; });
   var products = DB.get('products');
 
-  if(!window._prStart) window._prStart = todayStr().slice(0,7)+'-01';
-  if(!window._prEnd) window._prEnd = todayStr();
-  if(!window._prTab) window._prTab = 'sales';
-  if(!window._prProduct) window._prProduct = '';
-  if(!window._prSalesId) window._prSalesId = isAdmin ? '' : currentUser.id;
+  // 视图状态：overview(今日概览) | monthly(月度汇总) | product(商品排行) | daily(单日明细) | person(人员报表)
+  if(!window._prView) window._prView = 'overview';
+  if(!window._prDate) window._prDate = todayStr();
+  if(!window._prSalesName) window._prSalesName = isAdmin ? FIXED_SALES_NAMES[0] : (currentUser.name || '');
 
-  var filterHtml = `
+  var today = todayStr();
+  var period = getProfitPeriod(window._prDate);
+
+  // 按名字匹配销售人员（兼容 salesName 或 salesId）
+  function findUserByName(name){ return users.find(function(u){ return u.name === name; }); }
+  function orderBelongsTo(order, name){
+    if(order.salesName === name) return true;
+    var u = findUserByName(name);
+    return u && order.salesId === u.id;
+  }
+
+  // 仅统计已完成订单
+  function isCompleted(o){ return o.status === 'completed' || o.status === 'feedback_done'; }
+  var completedOrders = orders.filter(function(o){ return isCompleted(o) && getProfitDate(o); });
+
+  function orderRevenue(o){
+    return (o.items||[]).reduce(function(s,it){ return s + (it.price||0)*(it.qty||0); },0);
+  }
+  function orderProfit(o){ return calcOrderProfit(o); }
+
+  // 今日概览
+  var todayRows = FIXED_SALES_NAMES.map(function(name){
+    var list = completedOrders.filter(function(o){ return orderBelongsTo(o,name) && getProfitDate(o) === today; });
+    var revenue = list.reduce(function(s,o){ return s + orderRevenue(o); },0);
+    var profit = list.reduce(function(s,o){ return s + orderProfit(o); },0);
+    return { name:name, count:list.length, revenue:revenue, profit:profit };
+  });
+  var todayTotal = { name:'合计', count:0, revenue:0, profit:0 };
+  todayRows.forEach(function(r){ todayTotal.count += r.count; todayTotal.revenue += r.revenue; todayTotal.profit += r.profit; });
+
+  // 月度汇总
+  var monthOrders = completedOrders.filter(function(o){ var pd = getProfitDate(o); return pd >= period.start && pd <= period.end; });
+  var monthRows = FIXED_SALES_NAMES.map(function(name){
+    var list = monthOrders.filter(function(o){ return orderBelongsTo(o,name); });
+    var revenue = list.reduce(function(s,o){ return s + orderRevenue(o); },0);
+    var profit = list.reduce(function(s,o){ return s + orderProfit(o); },0);
+    return { name:name, count:list.length, revenue:revenue, profit:profit };
+  });
+  var monthTotal = { name:'合计', count:0, revenue:0, profit:0 };
+  monthRows.forEach(function(r){ monthTotal.count += r.count; monthTotal.revenue += r.revenue; monthTotal.profit += r.profit; });
+
+  // 商品排行（基于当前周期）
+  var productMap = {};
+  monthOrders.forEach(function(o){
+    (o.items||[]).forEach(function(it){
+      var key = it.productId || it.name;
+      if(!productMap[key]) productMap[key] = { name:it.name, qty:0, revenue:0, profit:0 };
+      var p = productMap[key];
+      var cost = orderItemCost(o,it);
+      p.qty += (it.qty||0);
+      p.revenue += (it.price||0)*(it.qty||0);
+      p.profit += (it.price||0)*(it.qty||0) - cost*(it.qty||0) - (it.waste||0);
+    });
+  });
+  var productList = Object.keys(productMap).map(function(k){ return productMap[k]; });
+  var topByQty = productList.slice().sort(function(a,b){ return b.qty - a.qty; }).slice(0,5);
+  var topByRevenue = productList.slice().sort(function(a,b){ return b.revenue - a.revenue; }).slice(0,5);
+  var topByProfit = productList.slice().sort(function(a,b){ return b.profit - a.profit; }).slice(0,5);
+
+  // 单日明细数据
+  var dailyList = completedOrders.filter(function(o){ return getProfitDate(o) === window._prDate; })
+    .sort(function(a,b){ return (b.completedAt||'').localeCompare(a.completedAt||''); });
+
+  // 人员月度明细数据
+  var personList = [];
+  if(window._prSalesName){
+    personList = monthOrders.filter(function(o){ return orderBelongsTo(o, window._prSalesName); })
+      .sort(function(a,b){ return (getProfitDate(b)||'').localeCompare(getProfitDate(a)||''); });
+  }
+
+  // 视图切换
+  var views = [
+    {key:'overview', label:'今日概览'},
+    {key:'monthly', label:'月度汇总'},
+    {key:'product', label:'商品排行'},
+    {key:'daily', label:'单日明细'},
+    {key:'person', label:'人员报表'}
+  ];
+  var viewTabs = '<div class="admin-tab-bar" style="margin-bottom:14px">' + views.map(function(v){
+    return '<button class="btn '+(window._prView===v.key?'btn-primary':'btn-secondary')+' btn-sm" onclick="window._prView=\''+v.key+'\';renderProfitReport()" style="margin-right:6px">'+v.label+'</button>';
+  }).join('') + '</div>';
+
+  // 顶部控制栏
+  var controlHtml = `
     <div class="card" style="margin-bottom:16px;padding:16px">
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
         <div class="form-group" style="margin:0">
-          <label class="form-label" style="font-size:12px">开始日期</label>
-          <input type="date" class="form-control" style="width:auto" value="${window._prStart}" onchange="window._prStart=this.value">
+          <label class="form-label" style="font-size:12px">当前周期</label>
+          <div style="font-size:14px;font-weight:600;color:var(--primary);padding:6px 0">${period.label}</div>
         </div>
-        <div class="form-group" style="margin:0">
-          <label class="form-label" style="font-size:12px">结束日期</label>
-          <input type="date" class="form-control" style="width:auto" value="${window._prEnd}" onchange="window._prEnd=this.value">
-        </div>
-        ${isAdmin ? `
+        ${window._prView === 'daily' ? `
+          <div class="form-group" style="margin:0">
+            <label class="form-label" style="font-size:12px">选择日期</label>
+            <input type="date" class="form-control" style="width:auto" value="${window._prDate}" onchange="window._prDate=this.value;renderProfitReport()">
+          </div>
+        ` : ''}
+        ${window._prView === 'person' ? `
           <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:12px">销售人员</label>
-            <select class="form-control" style="width:auto" onchange="window._prSalesId=this.value">
-              <option value="">全部</option>
-              ${salesUsers.map(function(u){ return '<option value="'+u.id+'" '+(window._prSalesId===u.id?'selected':'')+'>'+escapeHtml(u.name)+'</option>'; }).join('')}
+            <select class="form-control" style="width:auto" onchange="window._prSalesName=this.value;renderProfitReport()">
+              ${FIXED_SALES_NAMES.map(function(n){ return '<option value="'+n+'" '+(window._prSalesName===n?'selected':'')+'>'+n+'</option>'; }).join('')}
             </select>
           </div>
         ` : ''}
-        <div class="form-group" style="margin:0">
-          <label class="form-label" style="font-size:12px">商品名称</label>
-          <input type="text" class="form-control" style="width:160px" placeholder="商品名称" value="${window._prProduct}" onchange="window._prProduct=this.value">
-        </div>
-        <button class="btn btn-primary btn-sm" onclick="renderProfitReport()">查询</button>
-        <button class="btn btn-sm btn-secondary" onclick="setProfitQuickDate('today')">今日</button>
-        <button class="btn btn-sm btn-secondary" onclick="setProfitQuickDate('month')">本月</button>
-        <button class="btn btn-sm btn-secondary" onclick="setProfitQuickDate('lastMonth')">上月</button>
+        <button class="btn btn-primary btn-sm" onclick="window._prDate=todayStr();renderProfitReport()">回到今天</button>
         <button class="btn btn-secondary btn-sm" onclick="exportProfitCSV()">📥 导出CSV</button>
       </div>
     </div>
   `;
 
-  var startD = window._prStart;
-  var endD = window._prEnd;
-
-  var filteredOrders = orders.filter(function(o){
-    var pd = getProfitDate(o);
-    if(!pd) return false;
-    if(pd < startD || pd > endD) return false;
-    if(!isAdmin && o.salesId !== currentUser.id) return false;
-    if(isAdmin && window._prSalesId && o.salesId !== window._prSalesId) return false;
-    if(window._prProduct){
-      var kw = window._prProduct.toLowerCase();
-      return (o.items||[]).some(function(it){ return (it.name||'').toLowerCase().indexOf(kw) >= 0; });
-    }
-    return true;
-  });
-
-  var tabs = [
-    {key:'sales', label:'按销售员'},
-    {key:'product', label:'按商品'},
-    {key:'date', label:'按日期趋势'}
-  ];
-  var tabHtml = `
-    <div class="admin-tab-bar" style="margin-bottom:14px">
-      ${tabs.map(function(t){ return '<button class="btn '+(window._prTab===t.key?'btn-primary':'btn-secondary')+' btn-sm" onclick="window._prTab=\''+t.key+'\';renderProfitReport()" style="margin-right:6px">'+t.label+'</button>'; }).join('')}
-    </div>
-  `;
-
   var contentHtml = '';
-  var sortedDates = [];
-
-  if(window._prTab === 'sales'){
-    var salesMap = {};
-    filteredOrders.forEach(function(o){
-      if(!salesMap[o.salesId]){
-        var user = users.find(function(u){ return u.id === o.salesId; });
-        salesMap[o.salesId] = { name: o.salesName || (user?user.name:'-'), orderCount:0, revenue:0, cost:0, loss:0, profit:0, commission:0, orderList:[] };
-      }
-      var s = salesMap[o.salesId];
-      s.orderCount++;
-      s.orderList.push(o);
-      (o.items||[]).forEach(function(it){
-        var cost = orderItemCost(o, it);
-        s.revenue += it.price * it.qty;
-        s.cost += cost * it.qty;
-        s.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
-      });
-      s.loss += o.afterSaleLoss || 0;
-      s.profit -= (o.afterSaleLoss || 0);
-    });
-    Object.keys(salesMap).forEach(function(sid){
-      var user = users.find(function(u){ return u.id === sid; });
-      var rate = (user && user.commission_rate != null) ? user.commission_rate : 9;
-      salesMap[sid].commission = salesMap[sid].orderList.reduce(function(sum, o){ return sum + calcCommission(o, rate); }, 0);
-    });
-
-    var totalRevenue = 0, totalCost = 0, totalLoss = 0, totalProfit = 0, totalCommission = 0;
-    Object.keys(salesMap).forEach(function(sid){
-      var s = salesMap[sid];
-      totalRevenue += s.revenue;
-      totalCost += s.cost;
-      totalLoss += s.loss;
-      totalProfit += s.profit;
-      totalCommission += s.commission;
-    });
-
-    window._prDrillDownKeys = [];
-    var sortedSalesRows = Object.keys(salesMap).map(function(sid){ var s = salesMap[sid]; s._sid = sid; return s; }).sort(function(a,b){ return b.profit - a.profit; });
-    var sortedSalesHtml = sortedSalesRows.map(function(s){
-      var idx = window._prDrillDownKeys.push({type:'sales', key:s._sid, title:'销售员: '+s.name}) - 1;
-      return '<tr style="cursor:pointer" onclick="showProfitDrillDown('+idx+')">' +
-        '<td>'+s.name+'</td>' +
-        '<td>'+s.orderCount+'</td>' +
-        '<td>'+money(s.revenue)+'</td>' +
-        (isAdmin ? '<td>'+money(s.cost)+'</td>' : '') +
-        '<td style="color:var(--danger)">'+money(s.loss)+'</td>' +
-        '<td style="font-weight:600;color:var(--success)">'+money(s.profit)+'</td>' +
-        '<td style="font-weight:600;color:var(--primary)">'+money(s.commission)+'</td>' +
-        '</tr>';
-    }).join('');
-
-    contentHtml = `
-      <div class="stat-grid" style="margin-bottom:16px">
-        <div class="stat-card"><div class="stat-label">总营业额</div><div class="stat-value">${money(totalRevenue)}</div></div>
-        ${isAdmin ? '<div class="stat-card"><div class="stat-label">总成本</div><div class="stat-value">'+money(totalCost)+'</div></div>' : ''}
-        <div class="stat-card"><div class="stat-label">总损耗</div><div class="stat-value" style="color:var(--danger)">${money(totalLoss)}</div></div>
-        <div class="stat-card"><div class="stat-label">净利润</div><div class="stat-value" style="color:var(--success)">${money(totalProfit)}</div></div>
-        <div class="stat-card"><div class="stat-label">总提成</div><div class="stat-value" style="color:var(--primary)">${money(totalCommission)}</div></div>
-      </div>
-      <div class="card">
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>销售员</th>
-                <th>订单数</th>
-                <th>营业额</th>
-                ${isAdmin ? '<th>成本</th>' : ''}
-                <th>损耗</th>
-                <th>净利润</th>
-                <th>提成</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${sortedSalesHtml}
-              <tr style="font-weight:bold;background:#f9fafb">
-                <td>合计</td>
-                <td>${filteredOrders.length}</td>
-                <td>${money(totalRevenue)}</td>
-                ${isAdmin ? '<td>'+money(totalCost)+'</td>' : ''}
-                <td>${money(totalLoss)}</td>
-                <td>${money(totalProfit)}</td>
-                <td>${money(totalCommission)}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    `;
-  } else if(window._prTab === 'product'){
-    var productMap = {};
-    filteredOrders.forEach(function(o){
-      (o.items||[]).forEach(function(it){
-        var key = it.productId || it.name;
-        if(!productMap[key]){
-          var prod = products.find(function(p){ return p.id === it.productId; });
-          productMap[key] = { name: it.name, category: prod?prod.category:'-', qty: 0, revenue: 0, cost: 0, profit: 0, pkey: key };
-        }
-        var p = productMap[key];
-        var prod2 = products.find(function(p2){ return p2.id === it.productId; });
-        var cost = prod2 ? (prod2.cost||0) : 0;
-        p.qty += it.qty;
-        p.revenue += it.price * it.qty;
-        p.cost += cost * it.qty;
-        p.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
-      });
-    });
-
-    var totalQty = 0, totalRev2 = 0, totalCost2 = 0, totalProfit2 = 0;
-    Object.keys(productMap).forEach(function(k){
-      var p = productMap[k];
-      totalQty += p.qty;
-      totalRev2 += p.revenue;
-      totalCost2 += p.cost;
-      totalProfit2 += p.profit;
-    });
-
-    window._prDrillDownKeys = [];
-    var sortedProducts = Object.keys(productMap).map(function(k){ var p = productMap[k]; p.pkey = k; return p; }).sort(function(a,b){ return b.profit - a.profit; });
-    var productRowsHtml = sortedProducts.map(function(p){
-      var idx = window._prDrillDownKeys.push({type:'product', key:p.pkey, title:'商品: '+escapeHtml(p.name)}) - 1;
-      return '<tr style="cursor:pointer" onclick="showProfitDrillDown('+idx+')">' +
-        '<td>'+escapeHtml(p.name)+'</td>' +
-        '<td>'+p.category+'</td>' +
-        '<td>'+p.qty+'</td>' +
-        '<td>'+money(p.revenue)+'</td>' +
-        (isAdmin ? '<td>'+money(p.cost)+'</td>' : '') +
-        '<td style="font-weight:600;color:var(--success)">'+money(p.profit)+'</td>' +
-        '</tr>';
-    }).join('');
-
-    contentHtml = `
-      <div class="stat-grid" style="margin-bottom:16px">
-        <div class="stat-card"><div class="stat-label">总销量</div><div class="stat-value">${num(totalQty)}</div></div>
-        <div class="stat-card"><div class="stat-label">总营业额</div><div class="stat-value">${money(totalRev2)}</div></div>
-        ${isAdmin ? '<div class="stat-card"><div class="stat-label">总成本</div><div class="stat-value">'+money(totalCost2)+'</div></div>' : ''}
-        <div class="stat-card"><div class="stat-label">总利润</div><div class="stat-value" style="color:var(--success)">${money(totalProfit2)}</div></div>
-      </div>
-      <div class="card">
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>商品名称</th>
-                <th>分类</th>
-                <th>销量</th>
-                <th>营业额</th>
-                ${isAdmin ? '<th>成本</th>' : ''}
-                <th>利润</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${productRowsHtml}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    `;
-  } else {
-    var dateMap = {};
-    filteredOrders.forEach(function(o){
-      var pd = getProfitDate(o);
-      if(!pd) return;
-      if(!dateMap[pd]){
-        dateMap[pd] = { date: pd, orderCount:0, revenue:0, cost:0, loss:0, profit:0, orderList:[] };
-      }
-      var d = dateMap[pd];
-      d.orderCount++;
-      d.orderList.push(o);
-      (o.items||[]).forEach(function(it){
-        var cost = orderItemCost(o, it);
-        d.revenue += it.price * it.qty;
-        d.cost += cost * it.qty;
-        d.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
-      });
-      d.loss += o.afterSaleLoss || 0;
-      d.profit -= (o.afterSaleLoss || 0);
-    });
-
-    sortedDates = Object.keys(dateMap).map(function(k){ return dateMap[k]; }).sort(function(a,b){ return a.date.localeCompare(b.date); });
-
-    var totalRev3 = 0, totalProfit3 = 0;
-    sortedDates.forEach(function(d){
-      totalRev3 += d.revenue;
-      totalProfit3 += d.profit;
-    });
-
-    window._prDrillDownKeys = [];
-    var dateRowsHtml = sortedDates.map(function(d){
-      var idx = window._prDrillDownKeys.push({type:'date', key:d.date, title:'日期: '+d.date}) - 1;
-      return '<tr style="cursor:pointer" onclick="showProfitDrillDown('+idx+')">' +
-        '<td>'+d.date+'</td>' +
-        '<td>'+d.orderCount+'</td>' +
-        '<td>'+money(d.revenue)+'</td>' +
-        (isAdmin ? '<td>'+money(d.cost)+'</td>' : '') +
-        '<td style="color:var(--danger)">'+money(d.loss)+'</td>' +
-        '<td style="font-weight:600;color:var(--success)">'+money(d.profit)+'</td>' +
-        '</tr>';
-    }).join('');
-
-    contentHtml = `
-      <div class="stat-grid" style="margin-bottom:16px">
-        <div class="stat-card"><div class="stat-label">总营业额</div><div class="stat-value">${money(totalRev3)}</div></div>
-        <div class="stat-card"><div class="stat-label">总利润</div><div class="stat-value" style="color:var(--success)">${money(totalProfit3)}</div></div>
-      </div>
-      <div class="card" style="margin-bottom:16px;padding:16px">
-        <h4 style="margin-bottom:12px;font-size:14px">利润趋势</h4>
-        <div style="position:relative;height:300px"><canvas id="profitTrendChart"></canvas></div>
-      </div>
-      <div class="card">
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>日期</th>
-                <th>订单数</th>
-                <th>营业额</th>
-                ${isAdmin ? '<th>成本</th>' : ''}
-                <th>损耗</th>
-                <th>利润</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${dateRowsHtml}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    `;
+  if(window._prView === 'overview'){
+    contentHtml = renderProfitOverview(todayRows, todayTotal, '今日');
+  } else if(window._prView === 'monthly'){
+    contentHtml = renderProfitMonthly(monthRows, monthTotal, period);
+  } else if(window._prView === 'product'){
+    contentHtml = renderProfitProductTop(topByQty, topByRevenue, topByProfit);
+  } else if(window._prView === 'daily'){
+    contentHtml = renderProfitDaily(dailyList, window._prDate);
+  } else if(window._prView === 'person'){
+    contentHtml = renderProfitPerson(personList, window._prSalesName, period);
   }
 
   var html = `
     <div class="card">
       <div class="card-title"><span class="title-text">📈 多维度利润报表</span></div>
     </div>
-    ${filterHtml}
-    ${tabHtml}
+    ${controlHtml}
+    ${viewTabs}
     ${contentHtml}
   `;
   document.getElementById('mainContent').innerHTML = html;
-
-  if(window._prTab === 'date' && typeof Chart !== 'undefined'){
-    renderProfitTrendChart(sortedDates);
-  }
 }
 
-var _profitTrendChart = null;
-
-function renderProfitTrendChart(dateData){
-  var ctx = document.getElementById('profitTrendChart');
-  if(!ctx) return;
-  if(_profitTrendChart) _profitTrendChart.destroy();
-  _profitTrendChart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: dateData.map(function(d){ return d.date; }),
-      datasets: [
-        {
-          label: '利润',
-          data: dateData.map(function(d){ return Math.round(d.profit); }),
-          borderColor: '#10b981',
-          backgroundColor: 'rgba(16,185,129,0.1)',
-          fill: true,
-          tension: 0.3
-        },
-        {
-          label: '营业额',
-          data: dateData.map(function(d){ return Math.round(d.revenue); }),
-          borderColor: '#0d7377',
-          backgroundColor: 'rgba(79,70,229,0.05)',
-          fill: false,
-          tension: 0.3
-        }
-      ]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { position: 'bottom' } },
-      scales: { y: { beginAtZero: true } }
-    }
-  });
-}
-
-function showProfitDrillDown(idx){
-  var info = (window._prDrillDownKeys || [])[idx];
-  if(!info) return;
-  var orders = DB.get('orders');
-  var products = DB.get('products');
-  var isAdmin = currentUser.role === 'admin';
-  var startD = window._prStart;
-  var endD = window._prEnd;
-
-  var filteredOrders = orders.filter(function(o){
-    var pd = getProfitDate(o);
-    if(!pd) return false;
-    if(pd < startD || pd > endD) return false;
-    if(!isAdmin && o.salesId !== currentUser.id) return false;
-    if(isAdmin && window._prSalesId && o.salesId !== window._prSalesId) return false;
-    if(window._prProduct){
-      var kw = window._prProduct.toLowerCase();
-      return (o.items||[]).some(function(it){ return (it.name||'').toLowerCase().indexOf(kw) >= 0; });
-    }
-    return true;
-  });
-
-  if(info.type === 'sales'){
-    filteredOrders = filteredOrders.filter(function(o){ return o.salesId === info.key; });
-  } else if(info.type === 'product'){
-    filteredOrders = filteredOrders.filter(function(o){
-      return (o.items||[]).some(function(it){ return (it.productId||it.name) === info.key; });
-    });
-  } else if(info.type === 'date'){
-    filteredOrders = filteredOrders.filter(function(o){ return getProfitDate(o) === info.key; });
-  }
-
-  var modalHtml = `
-    <div class="modal-mask" onclick="if(event.target===this)closeModal()">
-      <div class="modal lg">
-        <div class="modal-header">
-          <h3>📋 ${escapeHtml(info.title)} - 订单明细</h3>
-          <button class="modal-close" onclick="closeModal()">×</button>
-        </div>
-        <div class="modal-body">
-          ${filteredOrders.length ? `
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>订单号</th>
-                    <th>客户</th>
-                    <th>完成日期</th>
-                    <th>营业额</th>
-                    ${isAdmin ? '<th>成本</th>' : ''}
-                    <th>利润</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${filteredOrders.map(function(o){
-                    var profit = calcOrderProfit(o);
-                    var cost = (o.items||[]).reduce(function(s,it){
-                      return s + orderItemCost(o, it) * it.qty;
-                    }, 0);
-                    return '<tr>' +
-                      '<td><a class="btn-link" onclick="closeModal();viewOrder(\''+o.id+'\')">'+o.id+'</a></td>' +
-                      '<td>'+(o.customerName||'-')+'</td>' +
-                      '<td>'+(getProfitDate(o)||'-')+'</td>' +
-                      '<td>'+money(o.total)+'</td>' +
-                      (isAdmin ? '<td>'+money(cost)+'</td>' : '') +
-                      '<td style="font-weight:600;color:'+(profit>=0?'var(--success)':'var(--danger)')+'">'+money(profit)+'</td>' +
-                      '</tr>';
-                  }).join('')}
-                </tbody>
-              </table>
-            </div>
-          ` : '<div style="padding:40px;text-align:center;color:var(--text-muted)">暂无订单数据</div>'}
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="closeModal()">关闭</button>
-        </div>
+function renderProfitOverview(rows, total, label){
+  var rowHtml = rows.map(function(r){
+    return '<tr>' +
+      '<td>'+r.name+'</td>' +
+      '<td>'+r.count+'</td>' +
+      '<td>'+money(r.revenue)+'</td>' +
+      '<td style="font-weight:600;color:var(--success)">'+money(r.profit)+'</td>' +
+      '</tr>';
+  }).join('');
+  return `
+    <div class="stat-grid" style="margin-bottom:16px">
+      <div class="stat-card"><div class="stat-label">${label}总订单数</div><div class="stat-value">${num(total.count)}</div></div>
+      <div class="stat-card"><div class="stat-label">${label}总销售额</div><div class="stat-value">${money(total.revenue)}</div></div>
+      <div class="stat-card"><div class="stat-label">${label}总利润</div><div class="stat-value" style="color:var(--success)">${money(total.profit)}</div></div>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>销售人员</th><th>订单数</th><th>销售额</th><th>利润</th></tr></thead>
+          <tbody>
+            ${rowHtml}
+            <tr style="font-weight:bold;background:#f9fafb">
+              <td>${total.name}</td>
+              <td>${total.count}</td>
+              <td>${money(total.revenue)}</td>
+              <td>${money(total.profit)}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   `;
-  document.getElementById('modalContainer').innerHTML = modalHtml;
 }
 
-function setProfitQuickDate(type){
-  var d = new Date();
-  var today = todayStr();
-  if(type === 'today'){
-    window._prStart = today; window._prEnd = today;
-  }else if(type === 'yesterday'){
-    d.setDate(d.getDate()-1);
-    var yd = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-    window._prStart = yd; window._prEnd = yd;
-  }else if(type === 'week'){
-    var day = d.getDay() || 7;
-    var mon = new Date(d); mon.setDate(d.getDate() - day + 1);
-    window._prStart = mon.getFullYear()+'-'+String(mon.getMonth()+1).padStart(2,'0')+'-'+String(mon.getDate()).padStart(2,'0');
-    window._prEnd = today;
-  }else if(type === 'month'){
-    window._prStart = today.slice(0,7)+'-01';
-    window._prEnd = today;
-  }else if(type === 'lastMonth'){
-    d.setDate(0);
-    var lm = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-01';
-    window._prStart = lm; window._prEnd = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(new Date(d.getFullYear(),d.getMonth()+1,0).getDate());
+function renderProfitMonthly(rows, total, period){
+  var rowHtml = rows.map(function(r){
+    return '<tr>' +
+      '<td>'+r.name+'</td>' +
+      '<td>'+r.count+'</td>' +
+      '<td>'+money(r.revenue)+'</td>' +
+      '<td style="font-weight:600;color:var(--success)">'+money(r.profit)+'</td>' +
+      '</tr>';
+  }).join('');
+  return `
+    <div class="stat-grid" style="margin-bottom:16px">
+      <div class="stat-card"><div class="stat-label">月度总订单数</div><div class="stat-value">${num(total.count)}</div></div>
+      <div class="stat-card"><div class="stat-label">月度总销售额</div><div class="stat-value">${money(total.revenue)}</div></div>
+      <div class="stat-card"><div class="stat-label">月度总净利润</div><div class="stat-value" style="color:var(--success)">${money(total.profit)}</div></div>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>销售人员</th><th>订单数</th><th>月度销售额</th><th>月度利润</th></tr></thead>
+          <tbody>
+            ${rowHtml}
+            <tr style="font-weight:bold;background:#f9fafb">
+              <td>${total.name}</td>
+              <td>${total.count}</td>
+              <td>${money(total.revenue)}</td>
+              <td>${money(total.profit)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function renderProfitProductTop(topByQty, topByRevenue, topByProfit){
+  function renderList(title, list, valueKey, unit){
+    return `
+      <div class="card" style="flex:1;min-width:260px">
+        <div class="card-title"><span class="title-text">${title}</span></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th style="width:40px">排名</th><th>商品名称</th><th>${unit}</th></tr></thead>
+            <tbody>
+              ${list.length ? list.map(function(p,i){
+                return '<tr><td>'+(i+1)+'</td><td>'+escapeHtml(p.name)+'</td><td>'+(valueKey==='qty'?num(p.qty):money(p[valueKey]))+'</td></tr>';
+              }).join('') : '<tr><td colspan="3" class="table-empty">暂无数据</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
   }
-  renderProfitReport();
+  return `
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+      ${renderList('🏆 销量 TOP5', topByQty, 'qty', '销量')}
+      ${renderList('💰 销售额 TOP5', topByRevenue, 'revenue', '销售额')}
+      ${renderList('📈 利润 TOP5', topByProfit, 'profit', '利润')}
+    </div>
+  `;
+}
+
+function renderProfitDaily(list, date){
+  var totalRevenue = list.reduce(function(s,o){ return s + calcOrderProfit(o); },0);
+  // 营业额用商品小计，避免与 total 字段口径差异
+  var totalSales = list.reduce(function(s,o){ return s + (o.items||[]).reduce(function(ss,it){ return ss + (it.price||0)*(it.qty||0); },0); },0);
+  var rowHtml = list.map(function(o){
+    var rev = (o.items||[]).reduce(function(s,it){ return s + (it.price||0)*(it.qty||0); },0);
+    return '<tr>' +
+      '<td><a class="btn-link" onclick="viewOrder(\''+o.id+'\')">'+o.id+'</a></td>' +
+      '<td>'+(o.salesName||'-')+'</td>' +
+      '<td>'+(o.customerName||'-')+'</td>' +
+      '<td>'+money(rev)+'</td>' +
+      '<td style="font-weight:600;color:'+(calcOrderProfit(o)>=0?'var(--success)':'var(--danger)')+'">'+money(calcOrderProfit(o))+'</td>' +
+      '</tr>';
+  }).join('');
+  return `
+    <div class="stat-grid" style="margin-bottom:16px">
+      <div class="stat-card"><div class="stat-label">${date} 订单数</div><div class="stat-value">${num(list.length)}</div></div>
+      <div class="stat-card"><div class="stat-label">${date} 销售额</div><div class="stat-value">${money(totalSales)}</div></div>
+      <div class="stat-card"><div class="stat-label">${date} 利润</div><div class="stat-value" style="color:var(--success)">${money(totalRevenue)}</div></div>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>订单号</th><th>销售</th><th>客户</th><th>销售额</th><th>利润</th></tr></thead>
+          <tbody>
+            ${rowHtml || '<tr><td colspan="5" class="table-empty">该日无已完成订单</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function renderProfitPerson(list, name, period){
+  var totalRevenue = list.reduce(function(s,o){ return s + (o.items||[]).reduce(function(ss,it){ return ss + (it.price||0)*(it.qty||0); },0); },0);
+  var totalProfit = list.reduce(function(s,o){ return s + calcOrderProfit(o); },0);
+  var rowHtml = list.map(function(o){
+    var rev = (o.items||[]).reduce(function(s,it){ return s + (it.price||0)*(it.qty||0); },0);
+    return '<tr>' +
+      '<td><a class="btn-link" onclick="viewOrder(\''+o.id+'\')">'+o.id+'</a></td>' +
+      '<td>'+(getProfitDate(o)||'-')+'</td>' +
+      '<td>'+(o.customerName||'-')+'</td>' +
+      '<td>'+money(rev)+'</td>' +
+      '<td style="font-weight:600;color:'+(calcOrderProfit(o)>=0?'var(--success)':'var(--danger)')+'">'+money(calcOrderProfit(o))+'</td>' +
+      '</tr>';
+  }).join('');
+  return `
+    <div class="stat-grid" style="margin-bottom:16px">
+      <div class="stat-card"><div class="stat-label">${name} 月度订单数</div><div class="stat-value">${num(list.length)}</div></div>
+      <div class="stat-card"><div class="stat-label">${name} 月度销售额</div><div class="stat-value">${money(totalRevenue)}</div></div>
+      <div class="stat-card"><div class="stat-label">${name} 月度利润</div><div class="stat-value" style="color:var(--success)">${money(totalProfit)}</div></div>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>订单号</th><th>完成日期</th><th>客户</th><th>销售额</th><th>利润</th></tr></thead>
+          <tbody>
+            ${rowHtml || '<tr><td colspan="5" class="table-empty">该人员当前周期无已完成订单</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
 function exportProfitCSV(){
   var isAdmin = currentUser.role === 'admin';
   var users = DB.get('users');
-  var orders = DB.get('orders');
-  var products = DB.get('products');
-  var startD = window._prStart;
-  var endD = window._prEnd;
+  var orders = DB.get('orders').filter(function(o){ return !o._deleted; });
+  var period = getProfitPeriod(window._prDate || todayStr());
+  var today = todayStr();
 
-  var filteredOrders = orders.filter(function(o){
-    var pd = getProfitDate(o);
-    if(!pd) return false;
-    if(pd < startD || pd > endD) return false;
-    if(!isAdmin && o.salesId !== currentUser.id) return false;
-    if(isAdmin && window._prSalesId && o.salesId !== window._prSalesId) return false;
-    if(window._prProduct){
-      var kw = window._prProduct.toLowerCase();
-      return (o.items||[]).some(function(it){ return (it.name||'').toLowerCase().indexOf(kw) >= 0; });
-    }
-    return true;
-  });
+  function findUserByName(name){ return users.find(function(u){ return u.name === name; }); }
+  function orderBelongsTo(order, name){
+    if(order.salesName === name) return true;
+    var u = findUserByName(name);
+    return u && order.salesId === u.id;
+  }
+  function isCompleted(o){ return o.status === 'completed' || o.status === 'feedback_done'; }
+  var completedOrders = orders.filter(function(o){ return isCompleted(o) && getProfitDate(o); });
+
+  function orderRevenue(o){
+    return (o.items||[]).reduce(function(s,it){ return s + (it.price||0)*(it.qty||0); },0);
+  }
 
   var csv = '\uFEFF';
+  var view = window._prView || 'overview';
 
-  if(window._prTab === 'sales'){
-    csv += '销售员,订单数,营业额,' + (isAdmin?'成本,':'') + '损耗,净利润,提成\n';
-    var salesMap = {};
-    filteredOrders.forEach(function(o){
-      if(!salesMap[o.salesId]){
-        var user = users.find(function(u){ return u.id === o.salesId; });
-        salesMap[o.salesId] = { name: o.salesName||(user?user.name:'-'), orderCount:0, revenue:0, cost:0, loss:0, profit:0, commission:0, orderList:[] };
-      }
-      var s = salesMap[o.salesId];
-      s.orderCount++;
-      s.orderList.push(o);
-      (o.items||[]).forEach(function(it){
-        var cost = orderItemCost(o, it);
-        s.revenue += it.price * it.qty;
-        s.cost += cost * it.qty;
-        s.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
-      });
-      s.loss += o.afterSaleLoss || 0;
-      s.profit -= (o.afterSaleLoss || 0);
+  if(view === 'overview'){
+    csv += '销售人员,今日订单数,今日销售额,今日利润\n';
+    FIXED_SALES_NAMES.forEach(function(name){
+      var list = completedOrders.filter(function(o){ return orderBelongsTo(o,name) && getProfitDate(o) === today; });
+      var revenue = list.reduce(function(s,o){ return s + orderRevenue(o); },0);
+      var profit = list.reduce(function(s,o){ return s + calcOrderProfit(o); },0);
+      csv += name + ',' + list.length + ',' + Math.round(revenue) + ',' + Math.round(profit) + '\n';
     });
-    Object.keys(salesMap).forEach(function(sid){
-      var user = users.find(function(u){ return u.id === sid; });
-      var rate = (user && user.commission_rate != null) ? user.commission_rate : 9;
-      salesMap[sid].commission = salesMap[sid].orderList.reduce(function(sum, o){ return sum + calcCommission(o, rate); }, 0);
+    var totalList = completedOrders.filter(function(o){ return getProfitDate(o) === today; });
+    var totalRev = totalList.reduce(function(s,o){ return s + orderRevenue(o); },0);
+    var totalProfit = totalList.reduce(function(s,o){ return s + calcOrderProfit(o); },0);
+    csv += '合计,' + totalList.length + ',' + Math.round(totalRev) + ',' + Math.round(totalProfit) + '\n';
+  } else if(view === 'monthly' || view === 'person'){
+    csv += '销售人员,月度订单数,月度销售额,月度利润\n';
+    FIXED_SALES_NAMES.forEach(function(name){
+      var list = completedOrders.filter(function(o){ return orderBelongsTo(o,name) && getProfitDate(o) >= period.start && getProfitDate(o) <= period.end; });
+      var revenue = list.reduce(function(s,o){ return s + orderRevenue(o); },0);
+      var profit = list.reduce(function(s,o){ return s + calcOrderProfit(o); },0);
+      csv += name + ',' + list.length + ',' + Math.round(revenue) + ',' + Math.round(profit) + '\n';
     });
-    Object.keys(salesMap).map(function(k){ return salesMap[k]; }).sort(function(a,b){ return b.profit - a.profit; }).forEach(function(s){
-      csv += s.name + ',' + s.orderCount + ',' + Math.round(s.revenue) + ',';
-      if(isAdmin) csv += Math.round(s.cost) + ',';
-      csv += Math.round(s.loss) + ',' + Math.round(s.profit) + ',' + Math.round(s.commission) + '\n';
-    });
-  } else if(window._prTab === 'product'){
-    csv += '商品名称,分类,销量,营业额,' + (isAdmin?'成本,':'') + '利润\n';
+  } else if(view === 'product'){
     var productMap = {};
-    filteredOrders.forEach(function(o){
+    completedOrders.filter(function(o){ var pd = getProfitDate(o); return pd >= period.start && pd <= period.end; }).forEach(function(o){
       (o.items||[]).forEach(function(it){
         var key = it.productId || it.name;
-        if(!productMap[key]){
-          var prod = products.find(function(p){ return p.id === it.productId; });
-          productMap[key] = { name:it.name, category:prod?prod.category:'-', qty:0, revenue:0, cost:0, profit:0 };
-        }
+        if(!productMap[key]) productMap[key] = { name:it.name, qty:0, revenue:0, profit:0 };
         var p = productMap[key];
-        var prod2 = products.find(function(p2){ return p2.id === it.productId; });
-        var cost = prod2 ? (prod2.cost||0) : 0;
-        p.qty += it.qty;
-        p.revenue += it.price * it.qty;
-        p.cost += cost * it.qty;
-        p.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
+        var cost = orderItemCost(o,it);
+        p.qty += (it.qty||0);
+        p.revenue += (it.price||0)*(it.qty||0);
+        p.profit += (it.price||0)*(it.qty||0) - cost*(it.qty||0) - (it.waste||0);
       });
     });
-    Object.keys(productMap).map(function(k){ var p = productMap[k]; p.k = k; return p; }).sort(function(a,b){ return b.profit - a.profit; }).forEach(function(p){
-      csv += '"' + p.name.replace(/"/g,'""') + '",' + p.category + ',' + p.qty + ',' + Math.round(p.revenue) + ',';
-      if(isAdmin) csv += Math.round(p.cost) + ',';
-      csv += Math.round(p.profit) + '\n';
+    var list = Object.keys(productMap).map(function(k){ return productMap[k]; });
+    csv += '商品名称,销量,销售额,利润\n';
+    list.slice().sort(function(a,b){ return b.qty - a.qty; }).slice(0,5).forEach(function(p){
+      csv += '"' + p.name.replace(/"/g,'""') + '",' + p.qty + ',' + Math.round(p.revenue) + ',' + Math.round(p.profit) + '\n';
     });
-  } else {
-    csv += '日期,订单数,营业额,' + (isAdmin?'成本,':'') + '损耗,利润\n';
-    var dateMap = {};
-    filteredOrders.forEach(function(o){
-      var pd = getProfitDate(o);
-      if(!pd) return;
-      if(!dateMap[pd]) dateMap[pd] = { date:pd, count:0, revenue:0, cost:0, loss:0, profit:0 };
-      var d = dateMap[pd];
-      d.count++;
-      (o.items||[]).forEach(function(it){
-        var cost = orderItemCost(o, it);
-        d.revenue += it.price * it.qty;
-        d.cost += cost * it.qty;
-        d.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
-      });
-      d.loss += o.afterSaleLoss || 0;
-      d.profit -= (o.afterSaleLoss || 0);
-    });
-    Object.keys(dateMap).map(function(k){ return dateMap[k]; }).sort(function(a,b){ return a.date.localeCompare(b.date); }).forEach(function(d){
-      csv += d.date + ',' + d.count + ',' + Math.round(d.revenue) + ',';
-      if(isAdmin) csv += Math.round(d.cost) + ',';
-      csv += Math.round(d.loss) + ',' + Math.round(d.profit) + '\n';
+  } else if(view === 'daily'){
+    var date = window._prDate || today;
+    csv += '订单号,销售,客户,销售额,利润\n';
+    completedOrders.filter(function(o){ return getProfitDate(o) === date; }).forEach(function(o){
+      var rev = (o.items||[]).reduce(function(s,it){ return s + (it.price||0)*(it.qty||0); },0);
+      csv += o.id + ',' + (o.salesName||'-') + ',' + (o.customerName||'-') + ',' + Math.round(rev) + ',' + Math.round(calcOrderProfit(o)) + '\n';
     });
   }
 
@@ -13028,12 +12920,110 @@ function exportProfitCSV(){
   var url = URL.createObjectURL(blob);
   var a = document.createElement('a');
   a.href = url;
-  a.download = '利润报表_'+window._prTab+'_'+startD+'_'+endD+'.csv';
+  a.download = '利润报表_' + view + '_' + (window._prDate || today) + '.csv';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
   showToast('CSV文件已导出','success');
+}
+
+
+function openCommissionModal(){
+  const orders = DB.get('orders');
+  const users = DB.get('users');
+  const salesUsers = users.filter(u => u.role === 'sales' && !u.disabled);
+  const existingCommissions = DB.get('commissions');
+  const completedOrders = orders.filter(o => o.status === 'completed' &&
+    !existingCommissions.find(c => c.orderId === o.id));
+
+  const modalHtml = `
+    <div class="modal-mask" onclick="if(event.target===this)closeModal()">
+      <div class="modal lg">
+        <div class="modal-header">
+          <h3>生成销售提成</h3>
+          <button class="modal-close" onclick="closeModal()">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">提成周期 <span class="required">*</span></label>
+              <input type="month" class="form-control" id="comPeriod" value="${todayStr().slice(0,7)}">
+            </div>
+            <div class="form-group">
+              <label class="form-label">提成比例（%）<span class="required">*</span></label>
+              <input type="number" class="form-control" id="comRate" value="9" min="0" max="100" step="1">
+            </div>
+          </div>
+          <div style="background:#fef3c7;padding:10px 14px;border-radius:6px;font-size:13px;color:#92400e;margin-bottom:14px">
+            提示：仅展示"已完成"且尚未生成提成的订单。
+          </div>
+          <label class="form-label">选择订单</label>
+          <div style="max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:6px">
+            ${completedOrders.length ? completedOrders.map(o=>`
+              <label style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer">
+                <input type="checkbox" value="${o.id}" class="com-order-cb" checked>
+                <div style="flex:1">
+                  <div style="font-weight:500">${o.id} · ${escapeHtml(o.customerName)}</div>
+                  <div style="font-size:12px;color:var(--text-muted)">${escapeHtml(o.salesName)} · ${money(o.total)}</div>
+                </div>
+              </label>
+            `).join('') : '<div style="padding:20px;text-align:center;color:var(--text-muted)">暂无可生成提成的订单</div>'}
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+          <button class="btn btn-primary" onclick="generateCommissions()">生成提成</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById('modalContainer').innerHTML = modalHtml;
+}
+
+function generateCommissions(){
+  const period = document.getElementById('comPeriod').value;
+  const rate = parseInt(document.getElementById('comRate').value);
+  if(!period){ showToast('请选择提成周期','error'); return; }
+  if(isNaN(rate) || rate <= 0 || rate > 100){ showToast('请输入有效提成比例(0-100)','error'); return; }
+
+  const selected = Array.from(document.querySelectorAll('.com-order-cb:checked')).map(cb => cb.value);
+  if(selected.length === 0){ showToast('请至少选择一个订单','error'); return; }
+
+  const orders = DB.get('orders');
+  const commissions = DB.get('commissions');
+  selected.forEach(orderId => {
+    const order = orders.find(o => o.id === orderId);
+    if(order){
+      commissions.push({
+        id: DB.uid('com_'),
+        salesId: order.salesId,
+        salesName: order.salesName,
+        orderId: order.id,
+        customerName: order.customerName,
+        amount: Math.round(order.total * rate / 100),
+        rate,
+        period,
+        status: 'unsettled',
+        createdAt: nowStr()
+      });
+    }
+  });
+  DB.set('commissions', commissions);
+  closeModal();
+  showToast('成功生成 '+selected.length+' 条提成记录','success');
+  renderCommissions();
+}
+
+function settleCommission(commissionId){
+  const commissions = DB.get('commissions');
+  const idx = commissions.findIndex(c => c.id === commissionId);
+  if(idx >= 0){
+    commissions[idx].status = 'settled';
+    DB.set('commissions', commissions);
+    showToast('提成已结算','success');
+    renderCommissions();
+  }
 }
 
 /* ============ 物流状态与一键复制 ============ */
@@ -13174,14 +13164,22 @@ function copyCollectedLogi(){
 function copyLogisticsInfo(orderId){
   const order = DB.get('orders').find(o => o.id === orderId);
   if(!order){ showToast('订单不存在','error'); return; }
-  let text = '';
+  const circled = ['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟'];
+  let body = '';
   const missing = [];
-  order.items.forEach(it => {
+  (order.items || []).forEach((it, i) => {
     const tn = (it.trackingNo || '').trim();
     if(!tn) missing.push(it.name);
-    text += it.name + ' x' + it.qty + (tn ? ' #' + tn : ' #⚠️') + '\n';
+    const idx = i < circled.length ? circled[i] : (i + 1) + '.';
+    body += idx + (it.name || '') + '  *' + (it.qty || 0) + '  #' + (tn ? tn : '⚠️') + '\n';
   });
-  text = text.trim();
+  const text =
+    '哥/姐✨本次货品订单编号汇总来咯📋\n' +
+    '轻点🤏#开头单号直达物流页面，随时随地查看运输轨迹：\n' +
+    '\n' +
+    body +
+    '\n' +
+    '出库后物流信息自动更新🚚，有任何问题随时滴滴我~';
   const afterCopy = (ok) => {
     if(missing.length){
       showToast('⚠️ 已复制，但'+missing.length+'个商品暂无物流单号：'+missing.join('、'), 'warning');
@@ -14107,8 +14105,8 @@ function applyVirtualScroll(id){
 </div>
 <script>
 (function(){
-  // 版本号单一数据源：直接读取页面顶栏 #headerVersion
-  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-0810-39';
+  // 版本号单一数据源：直接读取页面顶栏 #headerVersion（已隐藏，仅左侧 sidebar 显示）
+  var APP_VERSION = ((document.getElementById('headerVersion')||{}).textContent || '').trim() || '2026-08-11';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
