@@ -1354,7 +1354,8 @@ const ORDER_SYNC_COLS = new Set([
   'province','city','district','completion_date','images',
   'payment_method','collected_amount','full_payment','deposit','final_payment',
   'locked_by','locked_at',
-  '_deleted','_deleted_at','_deleted_by'
+  '_deleted','_deleted_at','_deleted_by',
+  'after_sale_loss','after_sale_loss_synced_at'
 ]);
 
 /* ============ 数据层：Supabase + localStorage 混合缓存 ============ */
@@ -1372,7 +1373,8 @@ const DB = {
     targetType:'target_type', targetId:'target_id', targetLabel:'target_label', before:'before', after:'after', detail:'detail',
     lockedBy:'locked_by', lockedAt:'locked_at',
     _deleted:'_deleted', deletedAt:'_deleted_at', deletedBy:'_deleted_by',
-    wechatAmount:'wechat_amount'
+    wechatAmount:'wechat_amount',
+    afterSaleLoss:'after_sale_loss', afterSaleLossSyncedAt:'after_sale_loss_synced_at'
   },
   _snakeToCamel: {},
   // JSONB 字段（需要序列化/反序列化）
@@ -1678,6 +1680,12 @@ const DB = {
           if(lr._deletedAt != null) winner._deletedAt = lr._deletedAt;
           if(lr._deletedBy != null) winner._deletedBy = lr._deletedBy;
         }
+        // 售后损耗保护（2026-0811）：本地订单已有售后损耗时，合并结果不得被云端清零，否则利润报表损耗扣减失效（数据丢失后难恢复）。
+        if(lr && (lr.afterSaleLoss > 0 || lr.afterSaleLossSyncedAt)){
+          if(winner !== lr) winner = Object.assign({}, winner);
+          winner.afterSaleLoss = Math.max(winner.afterSaleLoss || 0, lr.afterSaleLoss || 0);
+          if(lr.afterSaleLossSyncedAt) winner.afterSaleLossSyncedAt = lr.afterSaleLossSyncedAt;
+        }
         map[r.id] = winner;
         // 否则（云端不新，或相等且内容相同）→ 保留本地，避免刚保存的修改被旧云端数据冲掉
       }
@@ -1864,8 +1872,8 @@ const DB = {
             const emsg = (error.message || '') + '|' + (error.code || '');
             // 2026-0810-34：云端 orders 表若尚未加 locked_by/locked_at 列，upsert 会报 42703。
             // 降级剔除锁字段重试该批，保证其余字段正常上云、整批同步不崩（锁仅本机生效）。
-            if(table === 'orders' && /42703|locked_by|locked_at|_deleted/.test(emsg)){
-              const slim = batch.map(function(o){ const f = Object.assign({}, o); delete f.locked_by; delete f.locked_at; delete f._deleted; delete f._deleted_at; delete f._deleted_by; return f; });
+            if(table === 'orders' && /42703|locked_by|locked_at|_deleted|after_sale_loss/.test(emsg)){
+              const slim = batch.map(function(o){ const f = Object.assign({}, o); delete f.locked_by; delete f.locked_at; delete f._deleted; delete f._deleted_at; delete f._deleted_by; delete f.after_sale_loss; delete f.after_sale_loss_synced_at; return f; });
               try{
                 const { error: e2 } = await window._sbpbClient.from(table).upsert(slim, { onConflict: 'id' });
                 if(e2) upsertErrors.push(e2.message || String(e2));
@@ -2102,8 +2110,8 @@ async function pushOrdersOnly(){
         const { error } = await window._sbpbClient.from('orders').upsert(batch, { onConflict: 'id' });
         if(error){
           const emsg = (error.message || '') + '|' + (error.code || '');
-          if(/42703|locked_by|locked_at/.test(emsg)){
-            const slim = batch.map(function(o){ const f = Object.assign({}, o); delete f.locked_by; delete f.locked_at; return f; });
+          if(/42703|locked_by|locked_at|after_sale_loss/.test(emsg)){
+            const slim = batch.map(function(o){ const f = Object.assign({}, o); delete f.locked_by; delete f.locked_at; delete f.after_sale_loss; delete f.after_sale_loss_synced_at; return f; });
             const { error: e2 } = await window._sbpbClient.from('orders').upsert(slim, { onConflict: 'id' });
             if(e2) console.warn('pushOrdersOnly 批次降级仍失败:', e2.message);
           } else { console.warn('pushOrdersOnly 批次失败:', error.message); }
@@ -7962,16 +7970,30 @@ function detectExpressCompany(trackingNo) {
 }
 
 // 利润计算
+function orderAfterSaleLoss(order){
+  // 订单售后损耗：优先用订单字段 afterSaleLoss；
+  // 若该字段因云端同步丢失为 0，则从 aftersales 表按 orderId 汇总兜底，
+  // 确保「已完成且有售后」的订单利润一定扣减损耗。
+  const lossFromField = order.afterSaleLoss || 0;
+  let loss = lossFromField;
+  try {
+    const asList = DB.get('aftersales') || [];
+    const asSum = asList
+      .filter(a => a.orderId === order.id)
+      .reduce((s, a) => s + (parseFloat(a.loss) || 0), 0);
+    if (asSum > loss) loss = asSum;
+  } catch (e) {}
+  return loss;
+}
+
 function calcOrderProfit(order) {
   if (!order || !order.items) return 0;
-  const products = DB.get('products');
   const grossProfit = order.items.reduce((total, it) => {
     const cost = orderItemCost(order, it);
     const itemProfit = it.price * it.qty - cost * it.qty - (it.waste || 0);
     return total + itemProfit;
   }, 0);
-  // 扣减售后损耗金额（财务联动）
-  return grossProfit - (order.afterSaleLoss || 0);
+  return grossProfit - orderAfterSaleLoss(order);
 }
 
 // 利润归属日期
@@ -12607,17 +12629,24 @@ function renderProfitReport(){
   var monthTotal = { name:'合计', count:0, revenue:0, profit:0 };
   monthRows.forEach(function(r){ monthTotal.count += r.count; monthTotal.revenue += r.revenue; monthTotal.profit += r.profit; });
 
-  // 商品排行（基于当前周期）
+  // 商品排行（基于当前周期）：单品利润分摊订单级售后损耗
   var productMap = {};
   monthOrders.forEach(function(o){
+    var oLoss = orderAfterSaleLoss(o);
+    var oRevenue = orderRevenue(o) || 1;
     (o.items||[]).forEach(function(it){
       var key = it.productId || it.name;
       if(!productMap[key]) productMap[key] = { name:it.name, qty:0, revenue:0, profit:0 };
       var p = productMap[key];
       var cost = orderItemCost(o,it);
+      var itemRevenue = (it.price||0)*(it.qty||0);
+      var itemProfit = itemRevenue - cost*(it.qty||0) - (it.waste||0);
+      // 订单售后损耗按该商品金额占比分摊到单品利润，保证商品榜也反映真实利润
+      var share = oRevenue > 0 ? itemRevenue / oRevenue : 0;
+      itemProfit -= oLoss * share;
       p.qty += (it.qty||0);
-      p.revenue += (it.price||0)*(it.qty||0);
-      p.profit += (it.price||0)*(it.qty||0) - cost*(it.qty||0) - (it.waste||0);
+      p.revenue += itemRevenue;
+      p.profit += itemProfit;
     });
   });
   var productList = Object.keys(productMap).map(function(k){ return productMap[k]; });
