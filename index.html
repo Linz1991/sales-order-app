@@ -10646,9 +10646,9 @@ function showPendingFinalPayments(){
   }).sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
 
   var total = calcAllPendingFinalPayments(orders);
-  var html = '<div class="modal-overlay" onclick="closeModal(\'pendingFinalPaymentsModal\')" style="z-index:10000">';
+  var html = '<div class="modal-overlay" onclick="closeModal()" style="z-index:10000">';
   html += '<div class="modal" style="max-width:900px;width:90%;max-height:80vh;overflow-y:auto" onclick="event.stopPropagation()">';
-  html += '<div class="modal-header"><h3>📋 待收尾款清单</h3><button class="modal-close" onclick="closeModal(\'pendingFinalPaymentsModal\')">✕</button></div>';
+  html += '<div class="modal-header"><h3>📋 待收尾款清单</h3><button class="modal-close" onclick="closeModal()">✕</button></div>';
   html += '<div class="modal-body">';
   html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding:12px 16px;background:#e0f2f1;border:1px solid #b8d8d6;border-radius:8px">';
   html += '<span style="font-size:15px;font-weight:600;color:var(--text)">待收尾款合计</span>';
@@ -10670,18 +10670,14 @@ function showPendingFinalPayments(){
       html += '<td style="color:var(--success)">' + money(Math.max(0,(o.total||0)-rem)) + '</td>';
       html += '<td style="color:var(--danger);font-weight:600">' + money(rem) + '</td>';
       html += '<td>' + statusTag(o.status) + '</td>';
-      html += '<td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="closeModal(\'pendingFinalPaymentsModal\');viewOrder(\'' + o.id + '\')">查看</button></td>';
+      html += '<td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="closeModal();viewOrder(\'' + o.id + '\')">查看</button></td>';
       html += '</tr>';
     });
     html += '</tbody></table></div>';
   }
   html += '</div></div></div>';
 
-  var wrap = document.getElementById('modalWrap') || document.body;
-  var div = document.createElement('div');
-  div.id = 'pendingFinalPaymentsModal';
-  div.innerHTML = html;
-  wrap.appendChild(div);
+  document.getElementById('modalContainer').innerHTML = html;
 }
 
 function openAddPayment(orderId, forceBalance){
