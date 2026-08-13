@@ -1282,7 +1282,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081306</div>
+          <div class="brand-sub">v2026081307</div>
         </div>
       </div>
     </div>
@@ -1324,7 +1324,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026081306</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026081307</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -1342,7 +1342,7 @@ html{scroll-behavior:smooth}
 
 <script>
 /* ============================================================
- * 销售订单管理系统 - 2026-0813-06
+ * 销售订单管理系统 - 2026-0813-07
  * 单文件 HTML，localStorage 模拟数据库
  * ============================================================ */
 
@@ -1642,6 +1642,19 @@ const DB = {
             key === 'products' ? this.get('_deletedProductIds', []) :
             key === 'users' ? this.get('_deletedUserIds', []) : null
           );
+          // 彻底删除跨端一致（2026-0813）：云端已不存在、但本地仍为软删除(_deleted=true)的订单，
+          // 视为被某端「彻底删除」（旧版物理删）后遗留的本地墓碑——补打 PURGED 哨兵，使其从回收站消失，
+          // 且不再被 syncTable 的 upsert 复活成活跃单 / 反复闪烁。正常的软删除订单云端仍有墓碑，不受影响。
+          if(key === 'orders'){
+            const _cloudSet = new Set((cloud||[]).map(function(r){ return r && r.id; }).filter(Boolean));
+            data = data.map(function(r){
+              if(r && r._deleted === true && !_cloudSet.has(r.id) && !String(r._deletedBy||'').startsWith('PURGED:')){
+                r = Object.assign({}, r);
+                r._deletedBy = 'PURGED:' + (r._deletedBy || '历史清理');
+              }
+              return r;
+            });
+          }
           // 写回本地缓存为合并后的全集（users 不写密码哈希）
           localStorage.setItem('soms_' + key, JSON.stringify(key === 'users' ? this._scrubUserPasswords(data) : data));
         }
@@ -4057,7 +4070,7 @@ async function renderOrders(){
   // 是否移动端（手机 ≤768px）：管理端与销售端列表统一用它切换「表格/卡片」布局
   const isMobile = window.innerWidth <= 768 || /Mobile|Android|iPhone/.test(navigator.userAgent);
   let orders = DB.get('orders').filter(o => !o._deleted);
-  const recycleCount = (DB.get('orders') || []).filter(o => o._deleted).length;
+  const recycleCount = (DB.get('orders') || []).filter(o => o._deleted && !String(o._deletedBy||'').startsWith('PURGED:')).length;
   if(!isAdmin) orders = orders.filter(o => o.salesId === currentUser.id);
 
   const keyword = window._orderFilter || '';
@@ -4590,28 +4603,17 @@ async function purgeOrdersForSales(salesIds){
   const toDelete = orders.filter(o => salesIds.includes(o.salesId));
   if(!toDelete.length){ showToast('没有匹配的订单','info'); closeModal(); return; }
   const delIds = toDelete.map(o => o.id);
+  const delName = (typeof currentUser !== 'undefined' && currentUser && currentUser.name) ? currentUser.name : '未知用户';
   // 撤回关联的微信收款记录（与单条 deleteOrder 行为一致）
   const payments = DB.get('payments') || [];
   DB.set('payments', payments.filter(p => !delIds.includes(p.orderId)));
-  // 云端批量删除（逐条记录，id 为主键）
-  let cloudOk = true;
-  if(window._sbpbClient){
-    try{
-      const { error } = await window._sbpbClient.from('orders').delete().in('id', delIds);
-      if(error){ cloudOk = false; console.warn('云端批量删除失败:', error.message); }
-    }catch(e){ cloudOk = false; console.warn('云端批量删除异常:', e.message); }
-  }
-  // 本地删除
-  DB.set('orders', orders.filter(o => !delIds.includes(o.id)));
-  // 记录已删除订单 id（防云端同步拉回）
-  try{
-    const delKey = 'soms__deletedOrderIds';
-    const set = JSON.parse(localStorage.getItem(delKey) || '[]');
-    delIds.forEach(id => { if(!set.includes(id)) set.push(id); });
-    localStorage.setItem(delKey, JSON.stringify(set));
-  }catch(e){ /* 忽略本地标记失败 */ }
+  // 改用「云端墓碑」而非物理删云端：打 _deleted + PURGED 哨兵，upsert 上云后所有设备一致隐藏，
+  // 不再像物理删那样被其它设备的 syncTable 重新 upsert 复活（彻底删除跨端生效）。
+  const now = nowStr();
+  toDelete.forEach(o => { o._deleted = true; o._deletedAt = now; o._deletedBy = 'PURGED:' + delName; });
+  DB.set('orders', orders); // 保留本地墓碑（与云端一致，列表/回收站均隐藏）
   schedulePushToCloud();
-  showToast('已删除 ' + delIds.length + ' 条订单' + (cloudOk ? '' : '（云端同步异常，请刷新重试）'), 'success');
+  showToast('已彻底删除 ' + delIds.length + ' 条订单（跨端生效）', 'success');
   closeModal();
   renderOrders();
 }
@@ -4688,7 +4690,7 @@ function confirmCleanupOrders(){
 // 回收站：列出已软删除的订单，可恢复或彻底删除
 function renderRecycleBin(){
   const isAdmin = currentUser.role === 'admin';
-  let deleted = DB.get('orders').filter(o => o._deleted);
+  let deleted = DB.get('orders').filter(o => o._deleted && !String(o._deletedBy||'').startsWith('PURGED:'));
   if(!isAdmin) deleted = deleted.filter(o => o.salesId === currentUser.id);
   deleted = deleted.slice().sort((a,b) => (b._deletedAt||'').localeCompare(a._deletedAt||''));
   let html = '<div class="card"><div class="card-title"><span class="title-text">🗑️ 回收站</span><button class="btn btn-sm" onclick="navigate(\'orders\')">返回订单</button></div>';
@@ -4715,8 +4717,10 @@ function renderRecycleBin(){
 
 // 恢复软删除的订单
 function restoreOrder(orderId){
+  const orders = DB.get('orders');
+  const ex = orders.find(o => o.id === orderId);
+  if(ex && String(ex._deletedBy||'').startsWith('PURGED:')){ showToast('该订单已彻底删除，无法恢复','error'); return; }
   showConfirm('确定恢复此订单吗？', () => {
-    const orders = DB.get('orders');
     const idx = orders.findIndex(o => o.id === orderId);
     if(idx >= 0){
       delete orders[idx]._deleted;
@@ -4732,23 +4736,21 @@ function restoreOrder(orderId){
 // 彻底删除（物理删除，不可恢复）
 function purgeOrder(orderId){
   showConfirm('彻底删除后不可恢复，确定吗？', () => {
-    DB.set('orders', DB.get('orders').filter(o => o.id !== orderId));
-    DB.set('payments', DB.get('payments').filter(p => p.orderId !== orderId));
-    // 显式物理删云端墓碑：本端已移出本地，syncTable 反向删除也会清理云端，
-    // 此处再删一次确保跨端彻底消失（不再出现在任何设备的回收站）。
-    if(window._sbpbClient){
-      window._sbpbClient.from('orders').delete().eq('id', orderId).then(function(res){
-        if(res && res.error) console.warn('彻底删除云端失败:', res.error.message);
-      }).catch(function(e){ console.warn('彻底删除云端异常:', e.message); });
+    const orders = DB.get('orders');
+    const idx = orders.findIndex(o => o.id === orderId);
+    const delName = (typeof currentUser !== 'undefined' && currentUser && currentUser.name) ? currentUser.name : '未知用户';
+    if(idx >= 0){
+      // 改用「云端墓碑」而非物理删云端：打 _deleted + PURGED 哨兵，经现有 upsert 同步到云端，
+      // 所有设备合并后按 !o._deleted 隐藏、且回收站也跳过 PURGED 哨兵，实现「彻底删除」跨端一致——
+      // 不再像物理删那样被其它设备的 syncTable 重新 upsert 复活（修复手机端残留 17 条 / 反复闪烁）。
+      orders[idx]._deleted = true;
+      orders[idx]._deletedAt = nowStr();
+      orders[idx]._deletedBy = 'PURGED:' + delName; // 哨兵：标记已彻底删除（不可恢复、不进回收站）
+      DB.set('orders', orders); // 保留本地墓碑（与云端一致，避免被同步再次拉回成活跃单）
     }
-    try{
-      const delKey = 'soms__deletedOrderIds';
-      const delSet = JSON.parse(localStorage.getItem(delKey) || '[]');
-      if(!delSet.includes(orderId)) delSet.push(orderId);
-      localStorage.setItem(delKey, JSON.stringify(delSet));
-    }catch(e){ /* 忽略本地标记失败 */ }
+    DB.set('payments', DB.get('payments').filter(p => p.orderId !== orderId));
     showToast('订单已彻底删除','success');
-    schedulePushToCloud();
+    schedulePushToCloud(); // 把墓碑（_deleted=true + PURGED 哨兵）upsert 上云，跨端生效
     renderRecycleBin();
   });
 }
