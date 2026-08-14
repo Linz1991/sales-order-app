@@ -1282,7 +1282,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081401</div>
+          <div class="brand-sub">v2026081402</div>
         </div>
       </div>
     </div>
@@ -1324,7 +1324,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026081401</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026081402</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -3569,6 +3569,8 @@ function renderSidebar(){
   const myOrders = isAdmin ? allOrders : allOrders.filter(o => o.salesId === currentUser.id);
   const pendingCount = myOrders.filter(o => o.status === 'pending').length;
   const feedbackCount = myOrders.filter(o => o.status === 'feedback').length;
+  // 留仓订单（warehouse 类型）待下单数量徽标：销售只看自己、管理员看全部
+  const whPendingCount = (isAdmin ? allOrders : myOrders).filter(function(o){ return o.type === 'warehouse' && o.status === 'pending'; }).length;
   // 上门未完成订单数（全员可见：统计全部上门订单中未完成的数量，不按销售过滤）
   const deletedIds = (DB.get('_deletedOrderIds') || []);
   const doorIncompleteCount = allOrders.filter(o =>
@@ -3596,6 +3598,7 @@ function renderSidebar(){
       if(m.route === 'aftersales') b = badge(asTotalCount);
       if(m.route === 'products' && isAdmin) b = calibBadge(calibCount);
       if(m.route === 'schedule') b = doorIncompleteCount > 0 ? badge(doorIncompleteCount) : '';
+      if(m.route === 'warehouse') b = whPendingCount > 0 ? badge(whPendingCount) : '';
       const click = m.route === 'orders' ? "gotoOrdersList()" : `navigate('${m.route}')`;
       return `
       <div class="nav-item ${currentRoute===m.route?'active':''}" onclick="${click}">
@@ -4234,7 +4237,7 @@ async function renderOrders(){
               <div class="card-row"><span class="card-label">状态</span>${statusTag(o.status)}${paymentSettledTag(o)}</div>
               <div class="card-row"><span class="card-label">金额</span><b style="color:var(--text)">${money(o.total)}</b></div>
               ${o.remark ? `<div class="card-row"><span class="card-label">备注</span><span style="text-align:right">${escapeHtml(o.remark)}</span></div>` : ''}
-              <div class="card-time" style="font-size:12px;color:var(--text-muted);margin:6px 0">${formatOrderDateTime(o.createdAt)}</div>
+              <div class="card-time" style="font-size:12px;color:var(--text-muted);margin:6px 0">发货日期：${o.orderDate ? formatOrderDate(o.orderDate) : '<span style="color:var(--text-muted)">未设置</span>'}</div>
               <div class="card-footer" style="justify-content:center;gap:8px">
                 <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewOrder('${o.id}', true)">查看</button>
                 ${o.status === 'feedback' ? `<button class="btn btn-warning btn-sm" onclick="event.stopPropagation();markOrderFeedbackDone('${o.id}')">确认已反馈</button>` : ''}
@@ -4309,7 +4312,7 @@ async function renderOrders(){
     } else {
       // 全部/待反馈/已完成：简单列表（含类型与状态列）
       const colCount = 6;
-      html += `<div class="table-wrap"><table><thead><tr><th>客户</th><th>金额</th><th>类型</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="adminSimpleTbody">`;
+      html += `<div class="table-wrap"><table><thead><tr><th>客户</th><th>金额</th><th>类型</th><th>状态</th><th>发货日期</th><th>操作</th></tr></thead><tbody id="adminSimpleTbody">`;
       if(filtered.length){
         filtered.forEach(o => {
           html += `<tr>`;
@@ -4317,7 +4320,7 @@ async function renderOrders(){
           html += `<td style="font-weight:600">${money(o.total)}</td>`;
           html += `<td>${orderTypeTag(o.type)}</td>`;
           html += `<td>${statusTag(o.status)}${paymentSettledTag(o)}</td>`;
-          html += `<td>${formatOrderDateTime(o.createdAt)}</td>`;
+          html += `<td>${o.orderDate ? formatOrderDate(o.orderDate) : '<span style="color:var(--text-muted)">未设置</span>'}</td>`;
           html += `<td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button>${o.status === 'feedback' ? ` <button class="btn btn-warning btn-sm" style="margin-left:4px" onclick="markOrderFeedbackDone('${o.id}')">确认已反馈</button>` : ''}</td>`;
           html += `</tr>`;
         });
@@ -4465,7 +4468,7 @@ async function renderOrders(){
             <div class="card-row"><span class="card-label">金额</span><b style="color:var(--text)">${money(o.total)}</b></div>
             <div class="card-row"><span class="card-label">电话</span><span style="color:var(--text)">${escapeHtml(o.phone)||'未填写'}</span></div>
             <div class="card-logistics"><span style="color:var(--text-muted)">备注：</span>${escapeHtml(o.remark)||'无'}</div>
-    <div class="card-time" style="font-size:12px;color:var(--text-muted);margin-bottom:6px">${formatOrderDateTime(o.createdAt)}</div>
+    <div class="card-time" style="font-size:12px;color:var(--text-muted);margin-bottom:6px">发货日期：${o.orderDate ? formatOrderDate(o.orderDate) : '<span style="color:var(--text-muted)">未设置</span>'}</div>
     <div class="card-footer" style="display:flex;justify-content:center;align-items:center">
       ${opBtn}
     </div>
@@ -4490,7 +4493,7 @@ async function renderOrders(){
               <th>电话</th>
               <th>状态</th>
               <th>备注</th>
-              <th>创建时间</th>
+              <th>发货日期</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -4509,7 +4512,7 @@ async function renderOrders(){
                 <td>${escapeHtml(o.phone) || '<span style="color:var(--text-muted)">未填写</span>'}</td>
                 <td>${salesStatusLabel(o.status)}</td>
                 <td style="font-size:12px">${remark}</td>
-                <td>${formatOrderDateTime(o.createdAt)}</td>
+                <td>${o.orderDate ? formatOrderDate(o.orderDate) : '<span style="color:var(--text-muted)">未设置</span>'}</td>
                 <td style="text-align:center">${opBtn}</td>
               </tr>`;
             }).join('') : `<tr><td colspan="6">
@@ -5966,11 +5969,10 @@ function renderOrderDetail(){
             <textarea class="form-control" id="custAddress" rows="2" style="resize:vertical;min-height:40px">${(order.address||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
           </div>
         </div>
-        ${(order.type==='warehouse'||order.type==='door') ? `
+        ${(order.type==='door') ? `
         <div class="form-group">
-          <label class="form-label">${dateLabel1}${order.type==='warehouse'?'（到期自动流转为待下单）':''}</label>
+          <label class="form-label">${dateLabel1}</label>
           <input type="date" class="form-control" id="editOrderDate" value="${order.orderDate||''}" style="max-width:200px" onchange="var c=document.getElementById('editCompletionDate');if(c)c.min=this.value;">
-          ${order.type==='warehouse' ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">设置后，到达该日期时订单将自动变为待下单状态</div>` : ''}
         </div>
         ${isDoor ? `
         <div class="form-group">
@@ -5978,7 +5980,13 @@ function renderOrderDetail(){
           <input type="date" class="form-control" id="editCompletionDate" value="${order.completionDate||''}" style="max-width:200px" onchange="var c=document.getElementById('editOrderDate');if(c)c.max=this.value;">
         </div>
         ` : ''}
-        ` : ``}
+        ` : `
+        <div class="form-group">
+          <label class="form-label">发货日期${order.type==='warehouse'?'（到期自动流转为待下单）':''}</label>
+          <input type="date" class="form-control" id="editOrderDate" value="${order.orderDate||''}" style="max-width:200px">
+          ${order.type==='warehouse' ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">设置后，到达该日期时订单将自动变为待下单状态</div>` : ''}
+        </div>
+        `}
         <div class="form-group">
           <label class="form-label">订单备注</label>
           <textarea class="form-control" id="editOrderRemark" style="min-height:50px">${escapeHtml(order.remark)||''}</textarea>
@@ -11595,13 +11603,13 @@ async function renderWarehouse(){
   html += '<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="搜索订单号/客户/电话/商品" value="'+keyword+'" oninput="window._warehouseFilter=this.value;renderWarehouse()"></div></div>';
 
   if(filtered.length){
-    html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th>'+(isAdmin?'<th>利润/损耗</th>':'')+'<th>创建时间</th><th>操作</th></tr></thead><tbody>';
+    html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th>'+(isAdmin?'<th>利润/损耗</th>':'')+'<th>发货日期</th><th>操作</th></tr></thead><tbody>';
     filtered.forEach(function(o){
       var totalWaste = (o.items||[]).reduce(function(s,it){ return s + (parseInt(it.waste)||0); }, 0);
       var profit = calcOrderProfit(o);
       var profitColor = profit >= 0 ? 'var(--success)' : 'var(--danger)';
       var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>';
-      html += '<tr><td>'+orderIdCell(o.id)+'<br>'+(o.customerName||'-')+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td>'+(isAdmin?'<td style="text-align:center"><div style="font-weight:600;color:'+profitColor+'">'+money(profit)+'</div><div style="font-size:11px;color:var(--text-muted)">损耗 '+money(totalWaste)+'</div></td>':'')+'<td>'+formatOrderDateTime(o.createdAt)+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+      html += '<tr><td>'+orderIdCell(o.id)+'<br>'+(o.customerName||'-')+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td>'+(isAdmin?'<td style="text-align:center"><div style="font-weight:600;color:'+profitColor+'">'+money(profit)+'</div><div style="font-size:11px;color:var(--text-muted)">损耗 '+money(totalWaste)+'</div></td>':'')+'<td>'+(o.orderDate ? formatOrderDate(o.orderDate) : '<span style="color:var(--text-muted)">未设置</span>')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
     });
     html += '</tbody></table></div>';
   } else {
