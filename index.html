@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081419</div>
+          <div class="brand-sub">v2026081420</div>
         </div>
       </div>
     </div>
@@ -1336,7 +1336,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026081419</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026081420</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -4636,8 +4636,31 @@ async function renderOrders(){
     }
     html += `</div>`;
   } else {
-    // 桌面端：表格布局（字段：客户/电话/状态/备注/创建时间/操作）
-    html += `
+    if(status === 'confirmed'){
+      // 销售端「已下单」：展开商品明细（客户 | 商品名称 | 数量 | 售价 | 操作），普通/留仓/上门统一
+      html += '<div class="table-wrap"><table><thead>';
+      html += '<tr><th rowspan="2">客户</th><th colspan="3" style="text-align:center">商品明细</th><th rowspan="2">操作</th></tr>';
+      html += '<tr><th>商品名称</th><th style="text-align:center">数量</th><th style="text-align:right">售价</th></tr>';
+      html += '</thead><tbody>';
+      if(filtered.length){
+        filtered.forEach(function(o){
+          html += '<tr>';
+          html += '<td style="vertical-align:top">'+orderIdCell(o.id)+'<br>'+escapeHtml(o.customerName||'-')+'<br><span style="font-size:11px;color:var(--text-muted)">'+escapeHtml(o.phone||'')+'</span></td>';
+          html += '<td colspan="3" style="padding:0;vertical-align:top"><table class="order-items-sub-table"><tbody>';
+          (o.items||[]).forEach(function(it){
+            var missingTracking = ['confirmed','shipped'].indexOf(o.status) >= 0 && o.type !== 'door' && !o.noTracking && !it.trackingNo;
+            html += '<tr><td style="'+(missingTracking?'border-left:3px solid #8b5cf6;padding-left:7px;color:#6d28d9;font-weight:600;':'')+'">'+escapeHtml(it.name||'-')+'</td><td style="text-align:center">'+it.qty+'</td><td style="text-align:right">'+money(it.price)+'</td></tr>';
+          });
+          html += '</tbody></table></td>';
+          html += '<td style="text-align:center;vertical-align:top"><button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button></td></tr>';
+        });
+      } else {
+        html += '<tr><td colspan="5"><div class="sales-empty"><div class="empty-icon">📦</div><div class="empty-text">'+(keyword||status||salesDateStart||salesDateEnd ? '暂无符合条件的订单' : '还没有订单')+'</div>'+(keyword||status||salesDateStart||salesDateEnd ? '' : '<button class="btn btn-primary" onclick="navigate(\'order-new\')">➕ 去新建订单</button>')+'</div></td></tr>';
+      }
+      html += '</tbody></table></div>';
+    } else {
+      // 桌面端：表格布局（字段：客户/电话/状态/备注/创建时间/操作）
+      html += `
       <div class="table-wrap">
         <table>
           <thead>
@@ -4678,6 +4701,7 @@ async function renderOrders(){
           </tbody>
         </table>
       </div>`;
+    }
   }
 
   // 加载更多：当匹配总数超出当前显示数量时显示（突破原 10 条上限）
