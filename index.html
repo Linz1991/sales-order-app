@@ -1282,7 +1282,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081307</div>
+          <div class="brand-sub">v2026081401</div>
         </div>
       </div>
     </div>
@@ -1324,7 +1324,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026081307</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026081401</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -1653,6 +1653,24 @@ const DB = {
                 r._deletedBy = 'PURGED:' + (r._deletedBy || '历史清理');
               }
               return r;
+            });
+          }
+          // 账号表业务扩展字段保护（2026-0814）：云端 users 表仅含基础列，
+          // 不含 commission_rate 等本地业务字段，select('*') 拉回的云端记录没有这些字段。
+          // 合并时若云端记录（缺字段）因内容哈希较大而胜出，会把本地刚保存的提成比例刷回默认值。
+          // 故在写回本地前，将本地记录中「云端合并结果缺失、且非密码」的业务字段回填，保证本地设置优先、不被覆盖。
+          if(key === 'users'){
+            const _localById = {};
+            (local || []).forEach(function(u){ if(u && u.id != null) _localById[u.id] = u; });
+            data = data.map(function(u){
+              const l = _localById[u.id];
+              if(!l) return u;
+              let changed = false;
+              Object.keys(l).forEach(function(k){
+                if(k === 'password') return;
+                if(u[k] === undefined && l[k] !== undefined){ if(!changed){ u = Object.assign({}, u); changed = true; } u[k] = l[k]; }
+              });
+              return u;
             });
           }
           // 写回本地缓存为合并后的全集（users 不写密码哈希）
@@ -4618,72 +4636,86 @@ async function purgeOrdersForSales(salesIds){
   renderOrders();
 }
 
-// 打开清理面板：列出目标账号及其订单数，可勾选
+// 打开清理面板：按订单号 / 客户姓名检索，单条软删除进回收站
 function openCleanupPanel(){
-  const users = DB.get('users') || [];
-  const orders = DB.get('orders');
-  // 动态汇总所有可能拥有订单的账号名（用户表 + 订单实际销售 id）
-  const nameSet = new Set();
-  users.forEach(u => { if(u.username) nameSet.add(u.username); });
-  orders.forEach(o => {
-    const u = users.find(x => x.id === o.salesId);
-    if(u && u.username) nameSet.add(u.username);
-  });
-  // admin 置顶，其余按中文拼音/字母排序
-  const names = Array.from(nameSet).sort((a,b) => {
-    if(a === 'admin') return -1;
-    if(b === 'admin') return 1;
-    return a.localeCompare(b, 'zh-CN');
-  });
-  const stats = names.map(un => {
-    const ids = users.filter(u => u.username === un).map(u => u.id);
-    const cnt = orders.filter(o => ids.includes(o.salesId)).length;
-    return { username: un, count: cnt, ids: ids };
-  });
-  const total = stats.reduce((s, x) => s + x.count, 0);
-  const rows = stats.map((s, i) => `
-    <tr>
-      <td style="text-align:center"><input type="checkbox" id="cleanupChk_${i}" ${s.count>0?'checked':''} ${s.count===0?'disabled':''}></td>
-      <td>${s.username}</td>
-      <td style="color:var(--text-muted)">${s.ids.length ? s.ids.length+' 个账号匹配' : '未找到账号'}</td>
-      <td style="text-align:right;font-weight:600">${s.count}</td>
-    </tr>`).join('');
+  const orders = DB.get('orders') || [];
+  window._cleanupAll = orders.filter(o => !o._deleted); // 仅展示未删除订单（回收站由独立入口管理）
   const modalHtml = `
     <div class="modal-mask" onclick="if(event.target===this)closeModal()">
-      <div class="modal" style="max-width:520px">
-        <div class="modal-header"><h3>🧹 清理订单数据</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+      <div class="modal" style="max-width:760px">
+        <div class="modal-header"><h3>🧹 清理订单</h3><button class="modal-close" onclick="closeModal()">×</button></div>
         <div class="modal-body">
-          <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:10px;color:#b91c1c;font-size:13px;margin-bottom:12px">
-            ⚠ 此操作<b>不可恢复</b>：将永久删除下列账号名下的<b>所有状态</b>订单（云端 + 本地），并从所有导出中排除。请确认无误后执行。
+          <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">按订单号或客户姓名检索，单条删除的订单会进入回收站，并在所有设备同步。</p>
+          <div style="display:flex;gap:8px;margin-bottom:12px">
+            <input type="text" class="form-control" id="cleanupKeyword" placeholder="输入订单号或客户姓名…" oninput="renderCleanupResult()" style="flex:1">
+            <button class="btn btn-secondary" onclick="document.getElementById('cleanupKeyword').value='';renderCleanupResult()">重置</button>
           </div>
-          <table style="width:100%;font-size:13px;border-collapse:collapse">
-            <thead><tr style="background:#f8fafc"><th style="padding:6px">选择</th><th style="padding:6px;text-align:left">账号</th><th style="padding:6px;text-align:left">匹配</th><th style="padding:6px;text-align:right">订单数</th></tr></thead>
-            <tbody>${rows}</tbody>
-            <tfoot><tr style="border-top:2px solid var(--border)"><td colspan="3" style="padding:8px;font-weight:600">合计</td><td style="padding:8px;text-align:right;font-weight:700;color:var(--danger)">${total}</td></tr></tfoot>
-          </table>
+          <div id="cleanupResult"></div>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="closeModal()">取消</button>
-          <button class="btn btn-danger" onclick="confirmCleanupOrders()">执行删除（不可恢复）</button>
+          <button class="btn btn-secondary" onclick="closeModal()">关闭</button>
         </div>
       </div>
     </div>`;
   document.getElementById('modalContainer').innerHTML = modalHtml;
-  window._cleanupStats = stats;
+  renderCleanupResult();
 }
 
-// 确认清理：收集勾选账号的 id，二次确认后执行
-function confirmCleanupOrders(){
-  const stats = window._cleanupStats || [];
-  const salesIds = new Set();
-  stats.forEach((s, i) => {
-    const chk = document.getElementById('cleanupChk_'+i);
-    if(chk && chk.checked){ s.ids.forEach(id => salesIds.add(id)); }
-  });
-  const idArr = Array.from(salesIds);
-  if(!idArr.length){ showToast('请至少选择一个账号','error'); return; }
-  showConfirm('确定永久删除所选账号的全部订单吗？此操作不可恢复！', () => {
-    purgeOrdersForSales(idArr);
+// 根据关键字渲染检索结果（订单号 / 客户姓名，模糊匹配）
+function renderCleanupResult(){
+  const box = document.getElementById('cleanupResult');
+  if(!box) return;
+  const kw = (document.getElementById('cleanupKeyword') && document.getElementById('cleanupKeyword').value || '').trim().toLowerCase();
+  const all = window._cleanupAll || [];
+  const list = kw
+    ? all.filter(o =>
+        (o.id && String(o.id).toLowerCase().indexOf(kw) >= 0) ||
+        (o.customerName && String(o.customerName).toLowerCase().indexOf(kw) >= 0))
+    : all;
+  if(!list.length){
+    box.innerHTML = '<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-text">未找到匹配订单</div></div>';
+    return;
+  }
+  const rows = list.map(o => `
+    <tr>
+      <td>${escapeHtml(o.customerName || '-')}</td>
+      <td style="font-size:12px">${escapeHtml(o.id || '')}</td>
+      <td style="font-weight:600">${money(parseInt(o.total) || 0)}</td>
+      <td>${escapeHtml(o.status || '-')}</td>
+      <td>${escapeHtml(o.salesName || '-')}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="cleanupDeleteOne('${escapeHtml(o.id || '')}')">删除</button></td>
+    </tr>`).join('');
+  box.innerHTML = '<div class="table-wrap"><table><thead><tr><th>客户</th><th>订单号</th><th>金额</th><th>状态</th><th>销售</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+// 单条软删除：进入回收站，并跨端同步
+function cleanupDeleteOne(orderId){
+  showConfirm('确定删除该订单吗？删除后将进入回收站，各设备同步。', () => {
+    const orders = DB.get('orders') || [];
+    const idx = orders.findIndex(o => o.id === orderId);
+    if(idx < 0){ showToast('订单不存在', 'error'); return; }
+    // 撤回该订单关联的微信收款记录
+    const beforePayments = DB.get('payments') || [];
+    DB.set('payments', beforePayments.filter(p => p.orderId !== orderId));
+    // 软删除（与 deleteOrder 一致）：打 _deleted 标记 + upsert 上云，所有设备经 merge 隐藏，并可在回收站恢复
+    const delName = (typeof currentUser !== 'undefined' && currentUser && currentUser.name) ? currentUser.name : '未知用户';
+    orders[idx]._deleted = true;
+    orders[idx]._deletedAt = nowStr();
+    orders[idx]._deletedBy = delName;
+    orders[idx].updatedAt = nowStr();
+    DB.set('orders', orders);
+    // 本端排除集兜底（防推送失败瞬间被同步拉回）
+    try{
+      const delKey = 'soms__deletedOrderIds';
+      const delSet = JSON.parse(localStorage.getItem(delKey) || '[]');
+      if(!delSet.includes(orderId)) delSet.push(orderId);
+      localStorage.setItem(delKey, JSON.stringify(delSet));
+    }catch(e){ /* 忽略本地标记失败 */ }
+    schedulePushToCloud(); // 把墓碑 upsert 上云，跨端生效
+    showToast('订单已删除，可在回收站恢复', 'success');
+    // 刷新检索结果（从当前列表中移除已删项）
+    window._cleanupAll = (window._cleanupAll || []).filter(o => o.id !== orderId);
+    renderCleanupResult();
   });
 }
 
