@@ -1282,7 +1282,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081411</div>
+          <div class="brand-sub">v2026081412</div>
         </div>
       </div>
     </div>
@@ -1324,7 +1324,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026081411</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026081412</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -1619,15 +1619,18 @@ const DB = {
           // 时间戳相等但内容不同：取内容哈希较大者作为确定性胜者，保证多端必然收敛
           map[r.id] = sig(r) > sig(lr) ? r : lr;
         }
-        // 否则（云端不新，或相等且内容相同）→ 保留本地，避免刚保存的修改被旧云端数据冲掉
-        // 永久单向保护 items[i].ordered：本地已下单的项，云端不得降级为待下单
-        // （满足“点了下单就永远显示已下单、不再被同步回退”）。仅当云端整体 updated_at 严格更新时（即他人明确撤回下单）才穿透接受 false。
+        // ===== 无条件状态/下单标记保护（v2026081412 核心修复）=====
+        // 根因：另一台设备改了无关字段（如损耗/日期），bumped updatedAt 但状态仍是旧的。
+        // 该设备 syncTable 时本地赢（updatedAt 更新）→ 旧状态被 upsert 到云端 → 覆盖了正确状态。
+        // 修复：无论本地赢还是云端赢，状态和 items[i].ordered 一律取 rank 更高的一方，
+        // 不受时间戳影响。状态只能前进，不能因同步后退。
+        // 注意：这会阻止"撤销下单"(confirmed→pending) 跨端传播——撤销是罕见管理员操作，
+        // 且管理员通常在同一设备操作，不影响。后续可通过 statusVersion 字段实现精确传播。
         const _finalRow = map[r.id];
         if(_finalRow && lr){
-          const _tsOf = x => { const v = (x && (x.updatedAt||x.createdAt)) || ''; const n = v ? Date.parse((''+v).replace(' ','T')) : 0; return isNaN(n) ? 0 : n; };
-          const _cloudNewer = _tsOf(_finalRow) > _tsOf(lr);
-          // 永久单向保护 items[i].ordered：本地已下单的项，云端不得降级为待下单
-          if(!_cloudNewer && Array.isArray(lr.items) && Array.isArray(_finalRow.items)){
+          const _rankOf = s => ({pending:0, confirmed:1, shipped:1, feedback:2, feedback_done:3, completed:4}[s] || 0);
+          // 无条件 items[i].ordered 保护：本地已下单的项，云端不得降级为待下单
+          if(Array.isArray(lr.items) && Array.isArray(_finalRow.items)){
             for(let i=0;i<Math.min(lr.items.length, _finalRow.items.length);i++){
               if(lr.items[i] && lr.items[i].ordered === true && _finalRow.items[i] && _finalRow.items[i].ordered !== true){
                 _finalRow.items[i].ordered = true;
@@ -1635,19 +1638,24 @@ const DB = {
               }
             }
           }
-          // 永久单向保护整单 status：本地是更靠后的正向状态（confirmed/shipped/feedback/feedback_done/completed），
-          // 云端不得降级回靠前的 pending（满足「下了单就永远已下单、不再被同步回退」）。
-          // 仅当云端整体 updated_at 严格更新（他人明确改状态，如撤回或正向流转）才穿透接受云端 status。
-          if(!_cloudNewer){
-            const _rankOf = s => ({pending:0, confirmed:1, shipped:1, feedback:2, feedback_done:3, completed:4}[s] || 0);
-            if(_rankOf(lr.status) > _rankOf(_finalRow.status)){
-              _finalRow.status = lr.status;
-              // 整单已进入已下单及以后：确保各 item.ordered 一致为 true（防部分 item 被云端旧值翻回待下单）
-              if(_rankOf(lr.status) >= 1 && Array.isArray(_finalRow.items)){
-                _finalRow.items.forEach(it => { if(it) it.ordered = true; });
-                (lr.items || []).forEach(m => { if(!m) return; const t = _finalRow.items.find(x => x && x.id === m.id); if(t && m.orderedAt) t.orderedAt = m.orderedAt; });
-              }
+          // 无条件整单 status 保护：取本地与云端中 rank 更高的状态
+          if(_rankOf(r.status) > _rankOf(_finalRow.status)){
+            // 云端状态 rank 更高（如云端 feedback > 本地 confirmed）→ 取云端状态
+            _finalRow.status = r.status;
+            if(_rankOf(r.status) >= 1 && Array.isArray(_finalRow.items)){
+              _finalRow.items.forEach(it => { if(it) it.ordered = true; });
             }
+            if(r.feedbackAt) _finalRow.feedbackAt = r.feedbackAt;
+            if(r.shippedAt) _finalRow.shippedAt = r.shippedAt;
+          } else if(_rankOf(lr.status) > _rankOf(_finalRow.status)){
+            // 本地状态 rank 更高（如本地 feedback > 云端 confirmed）→ 保留本地状态
+            _finalRow.status = lr.status;
+            if(_rankOf(lr.status) >= 1 && Array.isArray(_finalRow.items)){
+              _finalRow.items.forEach(it => { if(it) it.ordered = true; });
+              (lr.items || []).forEach(m => { if(!m) return; const t = _finalRow.items.find(x => x && x.id === m.id); if(t && m.orderedAt) t.orderedAt = m.orderedAt; });
+            }
+            if(lr.feedbackAt) _finalRow.feedbackAt = lr.feedbackAt;
+            if(lr.shippedAt) _finalRow.shippedAt = lr.shippedAt;
           }
         }
       }
@@ -3255,19 +3263,25 @@ function startAutoSync(){
       const _viewingDetail = window._currentOrderId && document.getElementById('orderDetailPanel');
       if(!_typing && before[t] !== after[t] && !(currentRoute === 'order-edit' && window._orderEditPageActive) && !(_viewingDetail && t === 'orders')) routeRenderers[currentRoute]();
       }
-      // 详情页实时刷新：正在查看某订单详情（非编辑模式）且订单表有变化时，重渲染详情，
-      // 让销售在详情页也能看到管理员刚填的物流单号/状态（编辑模式不刷新，避免丢失未保存输入）
+      // 详情页实时刷新：正在查看某订单详情（非编辑模式）且订单表有变化时，仅当订单 STATUS 变化才重建详情。
+      // v2026081412：之前用 JSON.stringify 全量签名比较，任何字段变化（如 updatedAt/物流单号）都会触发
+      // renderOrderDetail 重建整个详情面板，用户看到"没操作页面就刷新了"。改为只比 status + items.trackingNo，
+      // 大幅减少无意义重建。非 status/物流的变化（如 updatedAt）不触发重建，避免频闪。
       if(window._currentOrderId && !window._orderEditMode && document.getElementById('orderDetailPanel') && before['orders'] !== after['orders']){
         const _od = DB.get('orders').find(o => o.id === window._currentOrderId);
         if(_od){
-          // 仅当「当前正在查看的订单」自身数据变化才重建详情：避免其他订单变动（Realtime/多销售录单）误伤当前详情，造成按钮抖动
-          const _sig = (function(){ try{ return JSON.stringify(_od); }catch(e){ return null; } })();
-          if(_sig !== (window._lastRenderedOrderSig || null)){
-            const _c = document.getElementById('mainContent') || document.getElementById('orderDetailPanel');
-            const _inPanel = !!(_c && _c.contains(document.activeElement));
+          // 只比关键字段（status + 物流单号），避免 updatedAt 等非可见字段变化触发重建
+          const _keySig = (function(){ try{
+            const _it = (_od.items||[]).map(it => (it&&it.trackingNo)||'').join('|');
+            return (_od.status||'') + '::' + _it;
+          }catch(e){ return null; } })();
+          if(_keySig !== (window._lastRenderedOrderKeySig || null)){
+            window._lastRenderedOrderKeySig = _keySig;
             const _ae = document.activeElement;
             const _typing = _ae && (_ae.tagName === 'INPUT' || _ae.tagName === 'TEXTAREA');
-            if(!_typing && !_inPanel) renderOrderDetail();
+            // 详情页查看中（currentRoute === 'order-detail'）且页面可见时不重建：避免"没操作页面就刷新了"
+            const _pageVisible = document.visibilityState === 'visible';
+            if(!_typing && !_pageVisible) renderOrderDetail();
           }
         }
       }
@@ -3310,6 +3324,10 @@ document.addEventListener('visibilitychange', function(){
   if(typeof currentUser === 'undefined' || !currentUser || !window._sbpbClient) return;
   const route = typeof currentRoute !== 'undefined' ? currentRoute : '';
   if(route === 'orders' && !(window._currentOrderId && document.getElementById('orderDetailPanel')) && typeof renderOrders === 'function') renderOrders();
+  else if(route === 'order-detail' && window._currentOrderId && typeof renderOrderDetail === 'function'){
+    // 从后台切回详情页：拉取云端最新数据后重建详情一次（后台期间可能错过 Realtime 更新）
+    DB.pullTableAuthoritative('orders').then(function(){ try{ renderOrderDetail(); }catch(e){} }).catch(function(){});
+  }
   else if(route === 'schedule' && typeof renderSchedule === 'function') renderSchedule();
   else if(route === 'warehouse' && typeof renderWarehouse === 'function') renderWarehouse();
   else if(route === 'products' && typeof renderProducts === 'function') renderProducts();
@@ -3448,25 +3466,27 @@ function refreshCurrentViewForTable(table){
     }
   }catch(e){}
     if(table === 'orders'){
-      // 订单变化：仅当当前确实停留在“订单详情”页时，才刷新正在查看的详情（避免停留在列表页时
+      // 订单变化：仅当当前确实停留在"订单详情"页时，才刷新正在查看的详情（避免停留在列表页时
       // 因 _currentOrderId 仍置位而被误调 renderOrderDetail，把详情面板渲染到列表上造成频闪）。
       // 编辑页由上方 _routeRenderers['order-edit'] 负责刷新；列表页不应触发详情渲染。
       if(window._currentOrderId && document.getElementById('orderDetailPanel') && typeof renderOrderDetail === 'function'){
         // 编辑模式（销售/管理员正在编辑）不重建详情：避免按钮频闪、输入框丢焦点、未保存输入被覆盖；
-        // 与 15s 轮询(3054 块)的 !_orderEditMode 守卫保持一致。
         if(!window._orderEditMode){
-          // 仅当「当前正在查看的订单」自身数据变化才重建详情：其他订单变动（Realtime/多销售录单/15s轮询拉到别的单）
-          // 不再误伤当前详情，从根上消除「只是看着详情、按钮就一直抖」的问题。
+          // v2026081412：只用关键字段签名（status + 物流单号）判断是否需要重建，
+          // 避免 updatedAt 等非可见字段变化触发重建。页面可见时不重建（防"没操作就刷新了"）。
           const _od = DB.get('orders').find(o => o.id === window._currentOrderId);
-          const _sig = (function(){ try{ return _od ? JSON.stringify(_od) : null; }catch(e){ return null; } })();
-          if(_sig !== (window._lastRenderedOrderSig || null)){
-            // 焦点在详情面板内（INPUT/TEXTAREA 或按钮）时跳过整页重建：避免正在操作（输入/点按钮）时按钮抖动、
-            // 输入框丢焦点、未保存输入被覆盖。数据已即时落库并推送云端，不会丢失；待失焦或后续同步再刷新。
+          const _keySig = (function(){ try{
+            if(!_od) return null;
+            const _it = (_od.items||[]).map(it => (it&&it.trackingNo)||'').join('|');
+            return (_od.status||'') + '::' + _it;
+          }catch(e){ return null; } })();
+          if(_keySig !== (window._lastRenderedOrderKeySig || null)){
+            window._lastRenderedOrderKeySig = _keySig;
             const _ae = document.activeElement;
             const _typing = _ae && (_ae.tagName === 'INPUT' || _ae.tagName === 'TEXTAREA');
-            const _c = document.getElementById('mainContent') || document.getElementById('orderDetailPanel');
-            const _inPanel = !!(_c && _c.contains(_ae));
-            if(!_typing && !_inPanel){
+            const _pageVisible = document.visibilityState === 'visible';
+            // 页面可见时不重建详情（防频闪）；仅在后台/失焦时重建以保持数据最新
+            if(!_typing && !_pageVisible){
               try{ renderOrderDetail(); }catch(e){}
             }
           }
@@ -6475,6 +6495,11 @@ function renderOrderDetail(){
   document.getElementById('mainContent').innerHTML = html;
   // 记录当前订单快照签名：供同步刷新判断"仅当前订单真变化才重建详情"，避免其他订单变动/Realtime/15s轮询导致详情按钮抖动
   try{ const _od = DB.get('orders').find(o => o.id === window._currentOrderId); window._lastRenderedOrderSig = _od ? JSON.stringify(_od) : null; }catch(e){}
+  // v2026081412：同时记录关键字段签名（status + 物流单号），供 autoSync 判断是否需要重建详情。
+  // 全量签名（含 updatedAt 等）太灵敏，导致非可见字段变化也触发重建。
+  try{ const _od2 = DB.get('orders').find(o => o.id === window._currentOrderId);
+    if(_od2){ const _it = (_od2.items||[]).map(it => (it&&it.trackingNo)||'').join('|'); window._lastRenderedOrderKeySig = (_od2.status||'') + '::' + _it; }
+  }catch(e){}
 
   // 编辑模式下初始化付款模式联动（与新建订单一致：收款金额自动带出且只读）
   if(!viewOnly && document.getElementById('doorCollected')){
