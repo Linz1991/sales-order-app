@@ -1282,7 +1282,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081403</div>
+          <div class="brand-sub">v2026081404</div>
         </div>
       </div>
     </div>
@@ -1324,7 +1324,7 @@ html{scroll-behavior:smooth}
         <span id="syncStatusBadge" style="font-size:12px;color:var(--text-muted);margin-right:8px">未同步</span>
         <button id="syncBtn" onclick="DB.pushToCloud()" style="font-size:12px;padding:4px 10px;background:var(--primary-light);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:nowrap">同步到云端</button>
         <button onclick="clearLocalOrderCache()" style="display:none;font-size:12px;padding:4px 10px;background:#fff;color:#d4380d;border:1px solid #ffccc7;border-radius:var(--radius);cursor:pointer;white-space:nowrap">清除本机订单缓存</button>
-        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026081403</span>
+        <span style="font-size:12px;color:var(--primary);font-weight:600;border:1px solid var(--primary-light);padding:2px 8px;border-radius:10px;white-space:nowrap" id="headerVersion">2026081404</span>
         <span class="sync-badge" id="syncBadge">已联网</span>
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
@@ -8654,6 +8654,7 @@ function saveCustomer(){
 }
 
 function exportCustomers(){
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可导出','error'); return; }
   let customers = DB.get('customers');
   const isAdmin = currentUser.role === 'admin';
   if(!isAdmin) customers = customers.filter(c => c.ownerId === currentUser.id);
@@ -8802,6 +8803,7 @@ function clearAsDateFilter(){
 
 // 导出售后工单（导出当前筛选结果：状态Tab + 关键词 + 日期范围）
 function exportAftersales(){
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可导出','error'); return; }
   const isAdmin = currentUser.role === 'admin';
   let aftersales = DB.get('aftersales');
   if(!isAdmin){
@@ -8872,6 +8874,7 @@ function exportAftersales(){
 
 // 导出上门订单（与 renderSchedule 使用相同的数据源与筛选逻辑）
 function exportScheduleOrders(){
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可导出','error'); return; }
   var isAdmin = currentUser.role === 'admin';
   var deletedIds = (DB.get('_deletedOrderIds') || []);
   var allDoorOrders = DB.get('orders').filter(function(o){ return o.type === 'door' && deletedIds.indexOf(o.id) < 0 && !o._deleted; });
@@ -8955,6 +8958,7 @@ function exportScheduleOrders(){
 
 // 导出留仓订单（与 renderWarehouse 使用相同的数据源与筛选逻辑）
 function exportWarehouseOrders(){
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可导出','error'); return; }
   var isAdmin = currentUser.role === 'admin';
   var deletedIds = (DB.get('_deletedOrderIds') || []);
   var orders = DB.get('orders').filter(function(o){ return o.type === 'warehouse' && deletedIds.indexOf(o.id) < 0 && !o._deleted; });
@@ -9477,6 +9481,7 @@ function showImportResult(success, failed){
 
 // 导出失效商品（CSV：名称,售价,成本,失效原因），方便用户修正后重新导入
 function exportInvalidProducts(){
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可导出','error'); return; }
   const rows = window._invalidImportRows || [];
   if(!rows.length){ showToast('没有可导出的失效数据','error'); return; }
   const header = ['名称','售价','成本','失效原因'];
@@ -9574,6 +9579,7 @@ function downloadProductsCSV(list, filename){
 
 // 导出勾选的商品
 function exportSelectedProducts(){
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可导出','error'); return; }
   const selectedIds = window._productSelectedIds || {};
   const ids = Object.keys(selectedIds);
   if(ids.length === 0){ showToast('请先勾选要导出的商品','error'); return; }
@@ -9584,6 +9590,7 @@ function exportSelectedProducts(){
 
 // 导出当前筛选（含关键词）的全部商品
 function exportAllProducts(){
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可导出','error'); return; }
   const keyword = window._productFilter || '';
   const list = DB.get('products').filter(p => !keyword || p.name.includes(keyword) || (p.category&&p.category.includes(keyword)));
   if(!list.length){ showToast('当前筛选没有可导出的商品','error'); return; }
@@ -10744,9 +10751,9 @@ function renderAftersales(){
       <div class="card-title">
         <span class="title-text">🔧 售后工单</span>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-secondary btn-sm" onclick="exportAftersales()" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;box-shadow:0 2px 6px rgba(59,130,246,0.18)">
+          ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="exportAftersales()" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;box-shadow:0 2px 6px rgba(59,130,246,0.18)">
             <span>📥</span><span>${hasDateRange ? '导出全部售后' : '导出售后'}</span>
-          </button>
+          </button>` : ''}
           <button class="btn btn-primary btn-sm" onclick="openNewAftersaleModal()">+ 新建售后</button>
         </div>
       </div>
@@ -11433,7 +11440,7 @@ async function renderSchedule(){
     orders = orders.filter(function(o){ var d = doorDateOf(o); return d <= schDateEnd; });
   }
 
-  var html = '<div class="card"><div class="card-title"><span class="title-text">📅 上门订单</span><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="gotoNewOrder(\'door\')">+ 新建上门订单</button><button class="btn btn-sm '+(viewMode==='calendar'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'calendar\';renderSchedule()">日历视图</button><button class="btn btn-sm '+(viewMode==='list'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'list\';renderSchedule()">列表视图</button><button class="btn btn-primary btn-sm" onclick="exportScheduleOrders()" style="display:inline-flex;align-items:center;gap:4px">📥 导出</button></div></div>';
+  var html = '<div class="card"><div class="card-title"><span class="title-text">📅 上门订单</span><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="gotoNewOrder(\'door\')">+ 新建上门订单</button><button class="btn btn-sm '+(viewMode==='calendar'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'calendar\';renderSchedule()">日历视图</button><button class="btn btn-sm '+(viewMode==='list'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'list\';renderSchedule()">列表视图</button>'+(isAdmin?'<button class="btn btn-primary btn-sm" onclick="exportScheduleOrders()" style="display:inline-flex;align-items:center;gap:4px">📥 导出</button>':'')+'</div></div>';
   html += '<div class="admin-tab-bar" style="margin-bottom:14px">';
   schTabs.forEach(function(t){
     // 状态角标统一基于全部非删除上门订单，不受关键词/日期筛选影响
@@ -11588,7 +11595,7 @@ async function renderWarehouse(){
     {key:'',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},
     {key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'}
   ];
-  var html = '<div class="card"><div class="card-title"><span class="title-text">🏷️ 留仓订单</span><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="gotoNewOrder(\'warehouse\')">+ 新建留仓订单</button><button class="btn btn-primary btn-sm" onclick="exportWarehouseOrders()" style="display:inline-flex;align-items:center;gap:4px">📥 导出</button></div></div>';
+  var html = '<div class="card"><div class="card-title"><span class="title-text">🏷️ 留仓订单</span><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="gotoNewOrder(\'warehouse\')">+ 新建留仓订单</button>'+(isAdmin?'<button class="btn btn-primary btn-sm" onclick="exportWarehouseOrders()" style="display:inline-flex;align-items:center;gap:4px">📥 导出</button>':'')+'</div></div>';
   html += '<div class="admin-tab-bar" style="margin-bottom:14px">';
   whTabs.forEach(function(t){
     var count = t.key==='' ? orders.length : orders.filter(function(o){ return statusMap[t.key].indexOf(o.status) >= 0; }).length;
@@ -11847,6 +11854,7 @@ function renderAuditLog(){
 
 // 导出全量备份（JSON 下载）
 function exportBackup(){
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可导出的备份','error'); return; }
   const tables = ['users','customers','products','orders','aftersales','payments','commissions','audit_log'];
   const data = {};
   tables.forEach(t => { data[t] = DB.get(t) || []; });
@@ -12542,6 +12550,7 @@ function setProfitQuickDate(type){
 }
 
 function exportProfitCSV(){
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可导出','error'); return; }
   var isAdmin = currentUser.role === 'admin';
   var users = DB.get('users');
   var orders = DB.get('orders');
