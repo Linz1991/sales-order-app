@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081503</div>
+          <div class="brand-sub">v2026081504</div>
         </div>
       </div>
     </div>
@@ -4625,7 +4625,7 @@ async function renderOrders(){
         ${o.status === 'feedback' ? `<button class="btn btn-warning btn-sm" onclick="event.stopPropagation();markOrderFeedbackDone('${o.id}')">反馈</button>` : ''}
         ${o.status === 'feedback' ? '' : opBtn}
       </div>
-      ${o.status === 'feedback' ? `<button class="btn btn-default btn-sm" title="复制物流单号" onclick="event.stopPropagation();copyLogisticsNo('${o.id}')">一键复制单号</button>` : ''}
+      ${o.status === 'feedback' ? `<button class="btn btn-default btn-sm" title="一键复制物流信息" onclick="event.stopPropagation();copyLogisticsInfo('${o.id}')">一键复制物流信息</button>` : ''}
     </div>
           </div>`;
       });
@@ -4657,7 +4657,7 @@ async function renderOrders(){
           let _opCell = '<td style="text-align:center;vertical-align:top">';
           if(o.status === 'feedback'){
             _opCell += '<div style="display:flex;gap:4px;justify-content:center;margin-bottom:4px"><button class="btn btn-warning btn-sm" onclick="markOrderFeedbackDone(\''+o.id+'\')">反馈</button></div>';
-            _opCell += '<button class="btn btn-default btn-sm" title="复制物流单号" onclick="copyLogisticsNo(\''+o.id+'\')">一键复制单号</button>';
+            _opCell += '<button class="btn btn-default btn-sm" title="一键复制物流信息" onclick="copyLogisticsInfo(\''+o.id+'\')">一键复制物流信息</button>';
           } else {
             _opCell += '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>';
           }
@@ -7143,18 +7143,6 @@ function markOrderFeedbackDone(orderId){
 }
 
 // 一键复制物流单号（销售待反馈列表使用）：复制该订单全部商品的运单号（含快递公司）
-function copyLogisticsNo(orderId){
-  const order = DB.get('orders').find(o => o.id === orderId);
-  if(!order){ showToast('订单不存在','error'); return; }
-  const parts = [];
-  (order.items || []).forEach(function(it){
-    const tn = (it.trackingNo || '').trim();
-    if(tn) parts.push((it.expressCompany ? it.expressCompany + ' ' : '') + tn);
-  });
-  if(!parts.length){ showToast('该订单暂无物流单号','warning'); return; }
-  copyToClipboard(parts.join('\n'), '物流单号');
-}
-
 // 订单详情页「返回列表」：返回当前订单类型对应的待反馈列表（销售端 orders 页面，按类型分段 + 待反馈状态 Tab）
 function backToFeedbackList(){
   const order = DB.get('orders').find(function(o){ return o.id === window._currentOrderId; });
