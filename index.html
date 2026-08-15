@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v202608152</div>
+          <div class="brand-sub">v2026081503</div>
         </div>
       </div>
     </div>
@@ -1621,12 +1621,11 @@ const DB = {
           // 修复：写锁窗口保留本地字段的同时，从云端把「本地缺失的物流单号」补回来（只加不删，
           // 本地已有单号不受影响；单号只能被用户主动修改，不能被其他端旧缓存清空）。
           if(Array.isArray(lr.items) && Array.isArray(r.items)){
-            const _rById = {};
-            (r.items || []).forEach(m => { if(m && m.id != null) _rById[m.id] = m; });
-            lr.items.forEach(t => {
-              if(!t || t.id == null) return;
+            // 订单 items 无独立 id 字段，按 index 兜底匹配（顺序稳定）
+            lr.items.forEach((t, i) => {
+              if(!t) return;
               if((t.trackingNo || '').trim()) return; // 本地已有单号 → 保留，不干预
-              const rr = _rById[t.id];
+              const rr = r.items[i];
               const rv = (rr && (rr.trackingNo || '').trim()) || '';
               if(rv){ t.trackingNo = rv; if(rr.expressCompany && !t.expressCompany) t.expressCompany = rr.expressCompany; }
             });
@@ -1696,7 +1695,7 @@ const DB = {
             _finalRow.status = lr.status;
             if(_rankOf(lr.status) >= 1 && Array.isArray(_finalRow.items)){
               _finalRow.items.forEach(it => { if(it) it.ordered = true; });
-              (lr.items || []).forEach(m => { if(!m) return; const t = _finalRow.items.find(x => x && x.id === m.id); if(t && m.orderedAt) t.orderedAt = m.orderedAt; });
+              (lr.items || []).forEach((m, i) => { if(!m) return; const t = _finalRow.items[i]; if(t && m.orderedAt) t.orderedAt = m.orderedAt; });
             }
             if(lr.feedbackAt) _finalRow.feedbackAt = lr.feedbackAt;
             if(lr.shippedAt) _finalRow.shippedAt = lr.shippedAt;
@@ -1709,12 +1708,10 @@ const DB = {
           // 非空单号（expressCompany 一并补）。不受时间戳影响；单号只能被「用户主动修改」改变，
           // 不能被其他端的旧缓存清空。两边都有不同值时保留合并胜者，不做覆盖。
           if(Array.isArray(lr.items) && Array.isArray(_finalRow.items) && Array.isArray(r.items)){
-            const _lrById = {}, _rById = {};
-            (lr.items || []).forEach(m => { if(m && m.id != null) _lrById[m.id] = m; });
-            (r.items || []).forEach(m => { if(m && m.id != null) _rById[m.id] = m; });
-            _finalRow.items.forEach(t => {
-              if(!t || t.id == null) return;
-              const l = _lrById[t.id], rr = _rById[t.id];
+            // 订单 items 无独立 id 字段，按 index 兜底匹配（顺序稳定）
+            _finalRow.items.forEach((t, i) => {
+              if(!t) return;
+              const l = lr.items[i], rr = r.items[i];
               const tv = (t.trackingNo || '').trim();
               if(tv) return; // 合并结果已有单号 → 保留，不干预
               const lv = (l && (l.trackingNo || '').trim()) || '';
@@ -4385,7 +4382,7 @@ async function renderOrders(){
           const missingTracking = ['confirmed','shipped'].includes(o.status) && o.type !== 'door' && !o.noTracking && (o.items||[]).some(it => !it.trackingNo);
           html += `
             <div class="order-card" onclick="viewOrder('${o.id}', true)" style="${missingTracking?'border-left:4px solid #8b5cf6;background:#f5f3ff;':''}">
-              <div class="card-row" style="margin-bottom:6px"><span class="card-label">订单号</span>${orderIdCell(o.id)}</div>
+              <div class="card-row" style="margin-bottom:6px"><span class="card-label">订单号</span>${orderIdCell(o.id, {clickView:true})}</div>
               <div class="card-customer">${escapeHtml(o.customerName)||'-'}</div>
               <div class="card-row"><span class="card-label">类型</span>${orderTypeTag(o.type)}</div>
               <div class="card-row"><span class="card-label">状态</span>${statusTag(o.status)}${paymentSettledTag(o)}</div>
@@ -4613,7 +4610,7 @@ async function renderOrders(){
         const missingTracking = ['confirmed','shipped'].includes(o.status) && o.type !== 'door' && !o.noTracking && (o.items||[]).some(it => !it.trackingNo);
         html += `
           <div class="order-card" onclick="viewOrder('${o.id}')" style="${missingTracking?'border-left:4px solid #8b5cf6;background:#f5f3ff;':''}">
-            <div class="card-row" style="margin-bottom:6px"><span class="card-label">订单号</span>${orderIdCell(o.id)}</div>
+            <div class="card-row" style="margin-bottom:6px"><span class="card-label">订单号</span>${orderIdCell(o.id, {clickView:true})}</div>
             <div class="card-customer">${escapeHtml(o.customerName)||'-'}</div>
             <div class="card-tags">
               ${salesStatusLabel(o.status)}
@@ -4623,8 +4620,12 @@ async function renderOrders(){
             <div class="card-row"><span class="card-label">电话</span><span style="color:var(--text)">${escapeHtml(o.phone)||'未填写'}</span></div>
             <div class="card-logistics"><span style="color:var(--text-muted)">备注：</span>${escapeHtml(o.remark)||'无'}</div>
     <div class="card-time" style="font-size:12px;color:var(--text-muted);margin-bottom:6px">发货日期：${o.orderDate ? formatOrderDate(o.orderDate) : '<span style="color:var(--text-muted)">未设置</span>'}</div>
-    <div class="card-footer" style="display:flex;justify-content:center;align-items:center">
-      ${opBtn}
+    <div class="card-footer" style="display:flex;flex-direction:column;gap:6px;justify-content:center;align-items:center">
+      <div style="display:flex;gap:4px;justify-content:center">
+        ${o.status === 'feedback' ? `<button class="btn btn-warning btn-sm" onclick="event.stopPropagation();markOrderFeedbackDone('${o.id}')">反馈</button>` : ''}
+        ${o.status === 'feedback' ? '' : opBtn}
+      </div>
+      ${o.status === 'feedback' ? `<button class="btn btn-default btn-sm" title="复制物流单号" onclick="event.stopPropagation();copyLogisticsNo('${o.id}')">一键复制单号</button>` : ''}
     </div>
           </div>`;
       });
@@ -4636,9 +4637,9 @@ async function renderOrders(){
       </div>`;
     }
     html += `</div>`;
-  } else {
-    if(status === 'confirmed'){
-      // 销售端「已下单」：展开商品明细（客户 | 商品名称 | 数量 | 售价 | 操作），普通/留仓/上门统一
+    } else {
+    if(status === 'confirmed' || status === 'feedback'){
+      // 销售端「已下单/待反馈」：展开商品明细（客户 | 商品名称 | 数量 | 售价 | 操作），普通/留仓/上门统一
       html += '<div class="table-wrap"><table><thead>';
       html += '<tr><th rowspan="2">客户</th><th colspan="3" style="text-align:center">商品明细</th><th rowspan="2">操作</th></tr>';
       html += '<tr><th>商品名称</th><th style="text-align:center">数量</th><th style="text-align:right">售价</th></tr>';
@@ -4646,14 +4647,22 @@ async function renderOrders(){
       if(filtered.length){
         filtered.forEach(function(o){
           html += '<tr>';
-          html += '<td style="vertical-align:top">'+orderIdCell(o.id)+'<br>'+escapeHtml(o.customerName||'-')+'</td>';
+          html += '<td style="vertical-align:top">'+orderIdCell(o.id, {clickView:true})+'<br>'+escapeHtml(o.customerName||'-')+'</td>';
           html += '<td colspan="3" style="padding:0;vertical-align:top"><table class="order-items-sub-table"><tbody>';
           (o.items||[]).forEach(function(it){
             var missingTracking = ['confirmed','shipped'].indexOf(o.status) >= 0 && o.type !== 'door' && !o.noTracking && !it.trackingNo;
             html += '<tr><td style="'+(missingTracking?'border-left:3px solid #8b5cf6;padding-left:7px;color:#6d28d9;font-weight:600;':'')+'">'+escapeHtml(it.name||'-')+'</td><td style="text-align:center">'+it.qty+'</td><td style="text-align:right">'+money(it.price)+'</td></tr>';
           });
           html += '</tbody></table></td>';
-          html += '<td style="text-align:center;vertical-align:top"><button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button></td></tr>';
+          let _opCell = '<td style="text-align:center;vertical-align:top">';
+          if(o.status === 'feedback'){
+            _opCell += '<div style="display:flex;gap:4px;justify-content:center;margin-bottom:4px"><button class="btn btn-warning btn-sm" onclick="markOrderFeedbackDone(\''+o.id+'\')">反馈</button></div>';
+            _opCell += '<button class="btn btn-default btn-sm" title="复制物流单号" onclick="copyLogisticsNo(\''+o.id+'\')">一键复制单号</button>';
+          } else {
+            _opCell += '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>';
+          }
+          _opCell += '</td></tr>';
+          html += _opCell;
         });
       } else {
         html += '<tr><td colspan="5"><div class="sales-empty"><div class="empty-icon">📦</div><div class="empty-text">'+(keyword||status||salesDateStart||salesDateEnd ? '暂无符合条件的订单' : '还没有订单')+'</div>'+(keyword||status||salesDateStart||salesDateEnd ? '' : '<button class="btn btn-primary" onclick="navigate(\'order-new\')">➕ 去新建订单</button>')+'</div></td></tr>';
@@ -6497,13 +6506,9 @@ function renderOrderDetail(){
         }
       }
 
-      // 普通/留仓订单：待反馈 → 已反馈（管理员直接确认；销售需点"反馈"并确认）
-      if(!isDoor && order.status === 'feedback'){
-        if(isAdmin){
-          html += `<button class="btn btn-warning" onclick="markOrderFeedbackDone('${order.id}')">确认已反馈</button>`;
-        } else {
-          html += `<div style="width:100%;display:flex;justify-content:center;margin-top:4px"><button class="btn btn-warning" onclick="salesSubmitFeedback('${order.id}')">反馈</button></div>`;
-        }
+      // 普通/留仓订单：待反馈 → 已反馈（仅管理员可在此确认；销售在列表点"反馈"）
+      if(!isDoor && order.status === 'feedback' && isAdmin){
+        html += `<button class="btn btn-warning" onclick="markOrderFeedbackDone('${order.id}')">确认已反馈</button>`;
       }
       // 上门订单 → 已完成（仅管理员可操作，且订单须为「已下单」状态；点击给予确认提示）
       if(isDoor && isAdmin && order.status === 'confirmed'){
@@ -6541,6 +6546,10 @@ function renderOrderDetail(){
     // 销售查看「已完成」订单（只读）：返回已完成列表
     if(!isAdmin && isOwner && (order.status === 'completed' || order.status === 'feedback_done') && !editMode){
       html += `<button class="btn btn-secondary" onclick="window._orderTab='completed';navigate('orders')">← 返回订单列表</button>`;
+    }
+    // 销售查看「待反馈」订单（只读）：返回待反馈列表
+    if(!isAdmin && order.status === 'feedback' && !editMode){
+      html += `<button class="btn btn-secondary" onclick="backToFeedbackList()">← 返回订单列表</button>`;
     }
     // 管理员查看留仓「已下单」订单：底部居中显示"返回已下单列表"按钮
     if(isAdmin && order.status === 'confirmed' && order.type === 'warehouse'){
@@ -6595,6 +6604,9 @@ function renderOrderDetail(){
           </div>
         </div>
       </div>
+    <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);text-align:center">
+      <button class="btn btn-secondary" style="min-width:160px" onclick="backToFeedbackList()">返回订单列表</button>
+    </div>
     `;
   }
 
@@ -6830,10 +6842,11 @@ function copyToClipboard(text, label){
 }
 
 // 订单号 + 复制按钮（销售与admin通用，所有订单列表复用）
-function orderIdCell(id){
+function orderIdCell(id, opts){
   if(!id) return '';
   var sid = (''+id).replace(/'/g, "\\'");
-  return '<span class="oid-box" title="复制订单号"><span class="oid-text">'+sid+'</span><button type="button" class="oid-copy" title="复制订单号" onclick="event.stopPropagation();copyToClipboard(\''+sid+'\',\'订单号\')">📋</button></span>';
+  var clickAttr = (opts && opts.clickView) ? ' onclick="event.stopPropagation();viewOrder(\''+sid+'\')" style="cursor:pointer"' : '';
+  return '<span class="oid-box" title="复制订单号"><span class="oid-text"'+clickAttr+'>'+sid+'</span><button type="button" class="oid-copy" title="复制订单号" onclick="event.stopPropagation();copyToClipboard(\''+sid+'\',\'订单号\')">📋</button></span>';
 }
 
 
@@ -7127,6 +7140,28 @@ function markOrderFeedbackDone(orderId){
     }
     showToast('已反馈，订单已转入「已完成」列表', 'success');
   });
+}
+
+// 一键复制物流单号（销售待反馈列表使用）：复制该订单全部商品的运单号（含快递公司）
+function copyLogisticsNo(orderId){
+  const order = DB.get('orders').find(o => o.id === orderId);
+  if(!order){ showToast('订单不存在','error'); return; }
+  const parts = [];
+  (order.items || []).forEach(function(it){
+    const tn = (it.trackingNo || '').trim();
+    if(tn) parts.push((it.expressCompany ? it.expressCompany + ' ' : '') + tn);
+  });
+  if(!parts.length){ showToast('该订单暂无物流单号','warning'); return; }
+  copyToClipboard(parts.join('\n'), '物流单号');
+}
+
+// 订单详情页「返回列表」：返回当前订单类型对应的待反馈列表（销售端 orders 页面，按类型分段 + 待反馈状态 Tab）
+function backToFeedbackList(){
+  const order = DB.get('orders').find(function(o){ return o.id === window._currentOrderId; });
+  const type = order ? order.type : 'normal';
+  window._orderListType = (type === 'warehouse') ? 'warehouse' : (type === 'door' ? 'door' : 'normal');
+  window._orderTab = 'feedback';
+  navigate('orders');
 }
 // 已完成（上门）：必须已下单/运输中/已签收/待反馈/已反馈 才能确认完成，禁止从待下单(pending)直接完成
 function setOrderCompleted(orderId){
