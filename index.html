@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081505</div>
+          <div class="brand-sub">v2026081506</div>
         </div>
       </div>
     </div>
@@ -12991,7 +12991,7 @@ function copyCollectedLogi(){
   navigator.clipboard.writeText(text).then(() => showToast('物流汇总已复制','success')).catch(() => showToast('物流汇总已复制','success'));
 }
 
-// 一键复制物流信息：哥/姐问候语 + 序号商品名*数量 #单号（无单号显示⚠️），自动复制到剪贴板可直接粘贴
+// 一键复制物流信息：宝子问候语 + 序号商品名*数量 #单号（无单号显示⚠️），自动复制到剪贴板可直接粘贴
 function copyLogisticsInfo(orderId){
   const order = DB.get('orders').find(o => o.id === orderId);
   if(!order){ showToast('订单不存在','error'); return; }
@@ -13004,7 +13004,7 @@ function copyLogisticsInfo(orderId){
     const idx = i < 10 ? seqEmoji[i] : (i + 1) + '、';
     lines.push(idx + it.name + ' x' + it.qty + '  #' + (tn || '⚠️'));
   });
-  let text = '哥/姐✨本次货品订单编号汇总来咯📋\n'
+  let text = '宝子✨本次货品订单编号汇总来咯📋\n'
            + '轻点🤏#开头单号直达物流页面，随时随地查看运输轨迹：\n\n'
            + lines.join('\n')
            + '\n\n出库后物流信息自动更新🚚，有任何问题随时滴滴我~';
@@ -13874,7 +13874,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '202608152';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081506';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
