@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081504</div>
+          <div class="brand-sub">v2026081505</div>
         </div>
       </div>
     </div>
@@ -13002,7 +13002,7 @@ function copyLogisticsInfo(orderId){
     const tn = (it.trackingNo || '').trim();
     if(!tn) missing.push(it.name);
     const idx = i < 10 ? seqEmoji[i] : (i + 1) + '、';
-    lines.push(idx + it.name + '*' + it.qty + '  #' + (tn || '⚠️'));
+    lines.push(idx + it.name + ' x' + it.qty + '  #' + (tn || '⚠️'));
   });
   let text = '哥/姐✨本次货品订单编号汇总来咯📋\n'
            + '轻点🤏#开头单号直达物流页面，随时随地查看运输轨迹：\n\n'
