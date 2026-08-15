@@ -1,7 +1,7 @@
 // 销售订单管理系统 Service Worker：仅缓存应用壳资源，不缓存 Supabase API 与 version.json，
 // 确保订单等实时业务数据走 network-only，避免多设备看到旧缓存。
 // 缓存名含版本号：每次部署换名 → SW 重新安装 → 强制重新拉取 index.html / 静态资源，杜绝旧 js 残留。
-const CACHE = 'soms-v2026081503';
+const CACHE = 'soms-v2026081504';
 const ASSETS = [
   './',
   './index.html',
