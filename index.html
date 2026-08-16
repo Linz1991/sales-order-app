@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081506</div>
+          <div class="brand-sub">v2026081601</div>
         </div>
       </div>
     </div>
@@ -1720,6 +1720,25 @@ const DB = {
               else if(rv){ t.trackingNo = rv; if(rr.expressCompany && !t.expressCompany) t.expressCompany = rr.expressCompany; }
             });
           }
+          // ===== 无条件商品损耗(waste)保护（与物流单号同源修复，v2026081601 核心）=====
+          // 根因：其他设备（或本设备另一标签页）本地旧缓存【没有损耗】，因改了无关字段
+          // （物流/日期等）bumped updatedAt 而成为合并胜者，把「无损耗版本」upsert 到云端，
+          // 冲掉已填好的损耗 → 表现为「损耗保存好了，过一会又消失」。
+          // 修复：无论本地赢还是云端赢，合并结果 items[i].waste 为空(未定义/null/空串)时，
+          // 从本地或云端补上非空损耗值（只补不删；本地已有损耗不受影响；刻意填 0 表示无损耗，不覆盖）。
+          if(Array.isArray(lr.items) && Array.isArray(_finalRow.items) && Array.isArray(r.items)){
+            // 订单 items 无独立 id 字段，按 index 兜底匹配（顺序稳定）
+            _finalRow.items.forEach((t, i) => {
+              if(!t) return;
+              const wv = t.waste;
+              if(wv !== undefined && wv !== null && wv !== '') return; // 合并结果已有损耗值 → 保留，不干预
+              const l = lr.items[i], rr = r.items[i];
+              const lv = (l && (l.waste !== undefined && l.waste !== null && l.waste !== '')) ? l.waste : undefined;
+              const rv = (rr && (rr.waste !== undefined && rr.waste !== null && rr.waste !== '')) ? rr.waste : undefined;
+              if(lv !== undefined){ t.waste = lv; }
+              else if(rv !== undefined){ t.waste = rv; }
+            });
+          }
         }
       }
     });
@@ -1824,7 +1843,9 @@ const DB = {
       // 「售后状态改为已处理后刷新又变回待处理」。这里只 upsert 云端确定存在的列，
       // 保证 status 等可靠上云。缺失列请按下方 SQL 在 Supabase 补齐后再扩展同步白名单。
       if(table === 'aftersales'){
-        const asCols = new Set(['id','order_id','customer_name','phone','sales_id','sales_name','items','reason','images','status']);
+        // 可选业务列：loss/remark/tracking_no/updated_at 云端可能尚未执行 ADD COLUMN 迁移，
+        // 缺失时由下方"列不存在则剔除可选列重试"的安全兜底处理，不阻断基础同步。
+        const asCols = new Set(['id','order_id','customer_name','phone','sales_id','sales_name','items','reason','images','status','loss','remark','tracking_no','updated_at']);
         snakeData = snakeData.map(function(o){
           const f = {};
           Object.keys(o).forEach(function(k){ if(asCols.has(k)) f[k] = o[k]; });
@@ -1874,6 +1895,7 @@ const DB = {
           'id','customer_id','customer_name','contact','phone','region','address',
           'sales_id','sales_name','items','total','status','type','order_date',
           'remark','created_at','shipped_at','feedback_at','synced_at','updated_at',
+          'after_sale_loss','after_sale_loss_synced_at',
           '_deleted','_deleted_at','_deleted_by'
         ]);
         snakeData = snakeData.map(function(o){
@@ -1888,17 +1910,27 @@ const DB = {
         const batch = snakeData.slice(i, i + batchSize);
         try{
           const { error } = await window._sbpbClient.from(table).upsert(batch, { onConflict: 'id' });
-          if(error){
-            // orders 表可能尚未执行 ADD COLUMN _deleted 迁移：剔除删除相关列后整批重试，
-            // 保证基础订单同步不中断（删除跨端一致需待迁移执行后生效）。
-            if(table === 'orders' && /column .*(does not exist|_deleted)/i.test(String((error && error.message) || (error && error.code) || ''))){
-              const slim = batch.map(function(o){ const f = {}; Object.keys(o).forEach(function(k){ if(!/^_deleted/.test(k)) f[k] = o[k]; }); return f; });
-              const r2 = await window._sbpbClient.from(table).upsert(slim, { onConflict: 'id' });
-              if(r2.error) upsertErrors.push(r2.error.message || String(r2.error));
-            } else {
-              upsertErrors.push(error.message || String(error));
+            if(error){
+              // 可选业务列：云端可能尚未执行 ADD COLUMN 迁移（如售后损耗 loss/remark/tracking_no/updated_at、
+              // 订单售后损耗 after_sale_loss 等）。缺失时剔除可选列后整批重试，保证基础同步不中断，
+              // 待迁移执行后这些字段自动生效；绝不因可选列缺失而让整批同步报红。
+              const optionalColsByTable = {
+                orders: new Set(['after_sale_loss','after_sale_loss_synced_at']),
+                aftersales: new Set(['loss','remark','tracking_no','updated_at'])
+              };
+              const optSet = optionalColsByTable[table] || null;
+              if(optSet && /column .* does not exist/i.test(String((error && error.message) || (error && error.code) || ''))){
+                const slim = batch.map(function(o){ const f = {}; Object.keys(o).forEach(function(k){
+                  if(optSet.has(k)) return;                                   // 剔除云端尚未存在的可选业务列
+                  if(table === 'orders' && /^_deleted/.test(k)) return;      // orders 兼容：尚未执行 _deleted 迁移时一并剔除
+                  f[k] = o[k];
+                }); return f; });
+                const r2 = await window._sbpbClient.from(table).upsert(slim, { onConflict: 'id' });
+                if(r2.error) upsertErrors.push(r2.error.message || String(r2.error));
+              } else {
+                upsertErrors.push(error.message || String(error));
+              }
             }
-          }
         }catch(e){ upsertErrors.push(e.message || String(e)); }
       }
       if(upsertErrors.length){
@@ -13874,7 +13906,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081506';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081601';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
