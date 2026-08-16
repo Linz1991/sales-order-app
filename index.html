@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081609</div>
+          <div class="brand-sub">v2026081610</div>
         </div>
       </div>
     </div>
@@ -1557,11 +1557,11 @@ const DB = {
       //  - products：销售在新建订单里临时新增的商品也是"本地刚建、异步上推未落地"的行，若云端此刻还没它，
       //    会被误判为"他人已删除"而整条抹掉，导致"商品管理档案里没有该商品"。商品以本地新建为准、云端只做补充。
       // 两表的"他人删除"仍由云端物理删除 + 上方 excludeIds 过滤（1511 行）正确传播，不受此处跳过影响。
-      if(key === 'orders' || key === 'aftersales'){
-        // 宽限期保护（v2026081607 关键修复，v2026081609 扩展到售后表）：刚创建的本地行（30秒内）可能还没推上云，
-        // 不应被删除传播误删。DB.set → 350ms afterWriteRefresh → pullTableAuthoritative
-        // 此处拉云端时，如果 syncTable 推送还没落地，云端没有这行 → 旧逻辑直接删除传播移除 →
-        // "提交成功但待下单里找不到"重大 bug。现给 30 秒宽限期，推送有充足时间落地。
+      if(['orders','aftersales','payments','commissions'].includes(key)){
+        // 宽限期保护（v2026081607 关键修复，v2026081609 扩展到售后表，v2026081610 扩展到收款/提成）：
+        // 刚创建的本地行（30秒内）可能还没推上云，不应被删除传播误删。DB.set → 350ms afterWriteRefresh
+        // → pullTableAuthoritative 拉云端时，若 syncTable 推送还没落地，云端没有这行 → 旧逻辑直接删除传播移除 →
+        // "提交成功但列表里找不到"。现给 30 秒宽限期，推送有充足时间落地。
         // 超过 30 秒仍不在云端的才视为被他人删除（保留删除传播能力）。
         var _graceCutoff = Date.now() - 30000;
         merged = merged.filter(function(r){
@@ -1754,7 +1754,7 @@ const DB = {
           // 修复：无论本地赢还是云端赢，合并结果 items[i].trackingNo 为空时，从本地或云端补上
           // 非空单号（expressCompany 一并补）。不受时间戳影响；单号只能被「用户主动修改」改变，
           // 不能被其他端的旧缓存清空。两边都有不同值时保留合并胜者，不做覆盖。
-          // ===== 编辑防回退（v2026081609 核心修复）：客户信息/商品信息「最后编辑戳优先」=====
+          // ===== 编辑防回退（v2026081610 核心修复）：客户信息/商品信息「最后编辑戳优先」=====
           // 根因：订单级 updatedAt 的整行 LWW 在「多设备各自持有部分旧字段」时失效——
           // 某设备改了无关字段(损耗/日期) bumped 整个订单 updatedAt，却持有旧客户/商品信息，
           // 推送时把「旧客户信息+新时间戳」覆盖云端，冲掉其他设备刚编辑的新值 → 表现「编辑保存后回退」。
@@ -2091,6 +2091,32 @@ const DB = {
           return f;
         });
       }
+      // 收款表：云端实际列（2026-08-16 实测）＝ id/order_id/customer_name/sales_id/sales_name/
+      // amount/method/pay_date/status/created_at。本地行的 stage 等字段不推，避免 PGRST204。
+      if(table === 'payments'){
+        const payCols = new Set([
+          'id','order_id','customer_name','sales_id','sales_name',
+          'amount','method','pay_date','status','created_at'
+        ]);
+        snakeData = snakeData.map(function(o){
+          const f = {};
+          Object.keys(o).forEach(function(k){ if(payCols.has(k)) f[k] = o[k]; });
+          return f;
+        });
+      }
+      // 提成表：云端实际列（2026-08-16 实测）＝ id/sales_id/sales_name/order_id/customer_name/
+      // amount/rate/period/status/created_at。
+      if(table === 'commissions'){
+        const comCols = new Set([
+          'id','sales_id','sales_name','order_id','customer_name',
+          'amount','rate','period','status','created_at'
+        ]);
+        snakeData = snakeData.map(function(o){
+          const f = {};
+          Object.keys(o).forEach(function(k){ if(comCols.has(k)) f[k] = o[k]; });
+          return f;
+        });
+      }
       // upsert（按 id 冲突更新）：单条/单批失败不拖垮整批，但需上抛以便前端提示
       const upsertErrors = [];
       for(let i = 0; i < snakeData.length; i += batchSize){
@@ -2107,7 +2133,9 @@ const DB = {
                 aftersales: new Set(['remark','tracking_no','updated_at'])
               };
               const optSet = optionalColsByTable[table] || null;
-              if(optSet && /column .* does not exist|schema cache|PGRST204/i.test(String((error && error.message) || (error && error.code) || ''))){
+              const errMsg = String((error && error.message) || (error && error.code) || '');
+              const isUnknownColumn = /column .* does not exist|schema cache|PGRST204/i.test(errMsg);
+              if(optSet && isUnknownColumn){
                 const slim = batch.map(function(o){ const f = {}; Object.keys(o).forEach(function(k){
                   if(optSet.has(k)) return;                                   // 剔除云端尚未存在的可选业务列
                   if(table === 'orders' && /^_deleted/.test(k)) return;      // orders 兼容：尚未执行 _deleted 迁移时一并剔除
@@ -2115,6 +2143,27 @@ const DB = {
                 }); return f; });
                 const r2 = await window._sbpbClient.from(table).upsert(slim, { onConflict: 'id' });
                 if(r2.error) upsertErrors.push(r2.error.message || String(r2.error));
+              } else if(isUnknownColumn){
+                // 通用兜底：白名单未覆盖的表也遇到 PGRST204（未知列）时，自动从报错信息提取列名并剔除后重试。
+                // 匹配 "Could not find the 'xxx' column of 'table' in the schema cache" 或 "Column 'xxx' does not exist" 等。
+                const colMatch = errMsg.match(/(?:column ['"]?([^'"\s)]+)['"]?|['"]([^'"]+)['"] column).*(?:does not exist|schema cache)|Could not find the ['"]([^'"]+)['"] column of ['"]([^'"]+)['"] in the schema cache/i);
+                const unknownCols = [];
+                if(colMatch){
+                  for(let ci = 1; ci < colMatch.length; ci++){
+                    if(colMatch[ci]) unknownCols.push(colMatch[ci]);
+                  }
+                }
+                // 也尝试 PostgREST 404 字段列表（xxx or yyy）
+                const altMatch = errMsg.match(/columns? ['"]([^'"]+)['"] (?:do|does) not exist/i);
+                if(altMatch && altMatch[1]) unknownCols.push(...altMatch[1].split(/['"]?\s*,\s*['"]?/));
+                if(unknownCols.length){
+                  const badSet = new Set(unknownCols.filter(Boolean));
+                  const slim = batch.map(function(o){ const f = {}; Object.keys(o).forEach(function(k){ if(!badSet.has(k)) f[k] = o[k]; }); return f; });
+                  const r2 = await window._sbpbClient.from(table).upsert(slim, { onConflict: 'id' });
+                  if(r2.error) upsertErrors.push(r2.error.message || String(r2.error));
+                } else {
+                  upsertErrors.push(error.message || String(error));
+                }
               } else {
                 upsertErrors.push(error.message || String(error));
               }
@@ -14292,7 +14341,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081609';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081610';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
