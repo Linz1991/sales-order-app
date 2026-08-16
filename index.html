@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081610</div>
+          <div class="brand-sub">v2026081611</div>
         </div>
       </div>
     </div>
@@ -1754,7 +1754,7 @@ const DB = {
           // 修复：无论本地赢还是云端赢，合并结果 items[i].trackingNo 为空时，从本地或云端补上
           // 非空单号（expressCompany 一并补）。不受时间戳影响；单号只能被「用户主动修改」改变，
           // 不能被其他端的旧缓存清空。两边都有不同值时保留合并胜者，不做覆盖。
-          // ===== 编辑防回退（v2026081610 核心修复）：客户信息/商品信息「最后编辑戳优先」=====
+          // ===== 编辑防回退（v2026081611 核心修复）：客户信息/商品信息「最后编辑戳优先」=====
           // 根因：订单级 updatedAt 的整行 LWW 在「多设备各自持有部分旧字段」时失效——
           // 某设备改了无关字段(损耗/日期) bumped 整个订单 updatedAt，却持有旧客户/商品信息，
           // 推送时把「旧客户信息+新时间戳」覆盖云端，冲掉其他设备刚编辑的新值 → 表现「编辑保存后回退」。
@@ -2135,7 +2135,7 @@ const DB = {
               const optSet = optionalColsByTable[table] || null;
               const errMsg = String((error && error.message) || (error && error.code) || '');
               const isUnknownColumn = /column .* does not exist|schema cache|PGRST204/i.test(errMsg);
-              if(optSet && isUnknownColumn){
+              if(optSet && optSet.size > 0 && isUnknownColumn){
                 const slim = batch.map(function(o){ const f = {}; Object.keys(o).forEach(function(k){
                   if(optSet.has(k)) return;                                   // 剔除云端尚未存在的可选业务列
                   if(table === 'orders' && /^_deleted/.test(k)) return;      // orders 兼容：尚未执行 _deleted 迁移时一并剔除
@@ -14341,7 +14341,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081610';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081611';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
