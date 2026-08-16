@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081615</div>
+          <div class="brand-sub">v2026081616</div>
         </div>
       </div>
     </div>
@@ -3368,8 +3368,35 @@ function parseOrderText(text){
     // 去除 Markdown 勾选前缀（如 "- [x] "），得到干净的商品行用于匹配
     const nline = line.replace(/^\s*[-*]\s*\[[ xX]\]\s*/, '').trim();
 
-    // 检查是否包含在地址文本中
+    // ====== 加强地址行过滤（修复地址泄漏到商品清单的 bug）======
+    // 原逻辑仅靠 fullAddress.includes(line) 单向包含，一旦 fullAddress 被清理后
+    // 与原始行有细微差异（空格/顺序/被 parseAddressText 修改）就漏掉。
+    // 现在用三层防护：
+    const addrFeatureWords = /省|市|自治区|区|县|开发区|高新区|经济区|新区|旗|镇|乡|村|街道|路|巷|号|栋|幢|楼|单元|室|层|户|院|宅|寓|坊|里|弄|排|墩|门|口|小区|花园|城|府|园|苑|居|庭|邸|庄|湾|郡|都|汇|公馆|国际|广场|中心|天地|新城|半岛|华府|豪庭|雅苑|家园|雅居|丽景|星城|水晶|翡翠|凤凰|龙庭|御景|碧桂|金色|阳光|银座|蓝光|华润|龙湖|万科|碧桂园|融创|保利|中海|绿地|大厦|公寓|山庄|车库|库|楼后|身靠|河边|边|东边|西边|南边|北边|后面|对面|旁边/;
+    // 防护1：fullAddress 包含当前行（原有逻辑）
     if(fullAddress && fullAddress.includes(line.trim()) && line.trim().length > 5) return;
+    // 防护2：当前行包含 ≥2 个地址特征词 → 判定为地址行（即使 fullAddress 未包含）
+    if(nline.length >= 8){
+      const addrMatches = nline.match(addrFeatureWords);
+      if(addrMatches && addrMatches.length >= 2){
+        // 二次确认：不含商品关键词、不含价格模式
+        const hasPrice = /\d{3,5}\s*(元|¥|块)?\s*$/.test(nline);
+        const hasProdKw = productBrandKeywords.some(kw => nline.includes(kw));
+        if(!hasPrice && !hasProdKw) return;
+      }
+    }
+    // 防护3：当前行与 fullAddress 有 ≥60% 文本重叠 → 视为地址组成部分
+    if(fullAddress && fullAddress.length > 10 && nline.length > 10){
+      const longer = fullAddress.length > nline.length ? fullAddress : nline;
+      const shorter = fullAddress.length > nline.length ? nline : fullAddress;
+      let matchChars = 0;
+      for(let i = 0; i < shorter.length; i++){
+        if(longer.indexOf(shorter[i]) >= 0) matchChars++;
+      }
+      if(matchChars / shorter.length >= 0.6) return;
+    }
+
+    // 检查是否包含在地址文本中（保留原逻辑作为兜底）
 
     // 尝试匹配商品：带价格的行 "名称  数字"
     const priceMatch = nline.match(/^(.+?)\s+(\d{1,6})\s*(元|块)?$/);
@@ -3396,9 +3423,12 @@ function parseOrderText(text){
       return;
     }
 
-    // 纯名称匹配（含商品关键词的行）
+    // 纯名称匹配（含商品关键词 或 颜色词的行）
+    // 颜色词辅助特征：商品行常带颜色（白色/深灰色/黑色等），帮助确认是商品而非地址
+    const colorWordsProd = /白色|黑色|红色|银色|金色|灰色|深灰|浅灰|粉色|蓝色|绿色|紫色|橙色|棕色|米白|香槟|玫瑰金|钛金|不锈钢色|透明|磨砂|象牙白|天蓝|酒红|咖啡|卡其|藏青|墨绿|柠檬黄/;
     const hasProductKw = productBrandKeywords.some(kw => nline.includes(kw));
-    if(hasProductKw && nline.length >= 3){
+    const hasColor = colorWordsProd.test(nline);
+    if((hasProductKw || hasColor) && nline.length >= 3){
       const cleanName = nline.replace(/[*×xX]\s*\d+\s*(台|个|套|件|只|把|条|盒|份)?/g,'').replace(/\d+/g,'').trim();
       const matched2 = fuzzyMatchProduct(cleanName, products);
       if(matched2){
@@ -3424,11 +3454,21 @@ function parseOrderText(text){
       return;
     }
 
-    // 兜底：未被上述规则消费、且看起来像商品描述的行，保留为"待确认"商品，避免漏单
-    // （如"OOU 鲸钛"等非品牌关键词、无数字的商品名）。客户/地址/备注/手机号行已在前面 return。
-    if(nline.length >= 2 && !/^[\d\s]+$/.test(nline) && !remarkLines.includes(line)){
+    // 兜底（收紧）：仅保留"看起来像商品"的短文本，拒绝长地址/备注泄漏
+    // 条件：短文本(≤20字) 或 含商品疑似特征(品牌/型号/价格/颜色/规格词)
+    // 长纯中文文本(>15字且无数字无型号无商品关键词)大概率是地址或备注，直接丢弃
+    const colorWords = /白色|黑色|红色|银色|金色|灰色|深灰|浅灰|粉色|蓝色|绿色|紫色|橙色|棕色|米白|香槟|玫瑰金|钛金|不锈钢色|透明|磨砂/;
+    const specWords = /套|台|个|只|把|条|盒|份|件|组|片|张|支|瓶|袋|卷|根|块|对|双|副|箱|桶|罐|包|L|ML|ml|CM|cm|MM|mm|寸|英寸|克|kg|KG|斤/;
+    const looksLikeProduct =
+      nline.length <= 20 ||                                    // 短文本可能是商品名
+      /\d/.test(nline) ||                                      // 含数字（型号/价格）
+      colorWords.test(nline) ||                                // 含颜色词
+      specWords.test(nline) ||                                 // 含规格单位
+      productBrandKeywords.some(kw => nline.includes(kw));    // 含商品品牌词
+    if(nline.length >= 2 && !/^[\d\s]+$/.test(nline) && !remarkLines.includes(line) && looksLikeProduct){
       itemLines.push(nline);
     }
+    // else: 丢弃长地址/备注等无关文本，不再误塞进商品清单
   });
 
   result.remark = remarkLines.join('，');
@@ -14431,7 +14471,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081615';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081616';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
