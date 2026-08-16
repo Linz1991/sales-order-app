@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081603</div>
+          <div class="brand-sub">v2026081604</div>
         </div>
       </div>
     </div>
@@ -1574,6 +1574,19 @@ const DB = {
           return o;
         });
       }
+      // 售后单备注/物流单号免库回写：从 items[0]._afterMeta 还原 top-level（双保险，与写时塞入保持一致）
+      if(key === 'aftersales'){
+        merged = (merged || []).map(function(o){
+          if(!o || !Array.isArray(o.items)) return o;
+          let m;
+          o.items.forEach(function(it){ if(it && it._afterMeta && typeof it._afterMeta === 'object') m = it._afterMeta; });
+          if(m){
+            if(o.remark == null || o.remark === '') o.remark = m.remark != null ? m.remark : '';
+            if(o.trackingNo == null || o.trackingNo === '') o.trackingNo = m.trackingNo != null ? m.trackingNo : '';
+          }
+          return o;
+        });
+      }
       localStorage.setItem('soms_'+key, JSON.stringify(key === 'users' ? this._scrubUserPasswords(merged) : merged));
       if(key === 'products') window._lastCloudProducts = cloud || [];
       return merged;
@@ -1587,6 +1600,12 @@ const DB = {
   // 解决多端协作时“一端改动被另一端本地旧版覆盖/订单丢失”的问题。
   // excludeIds：已在本端删除、但云端可能仍残留的订单 id，合并时强制跳过，避免被同步拉回。
   _mergeById(local, cloud, excludeIds){
+    // 订单 items 中需跨端同步的「逐商品标量字段」：合并结果该字段为空时从本地/云端同 index 项补回（只补不删）。
+    // 新增同步字段只需在此登记，无需再在下方写补丁块（#2 重构：收敛散落补丁）。
+    const ITEM_SYNC_SCALAR_FIELDS = [
+      { key: 'trackingNo', isEmpty: function(v){ return !(v && ('' + v).trim()); } },
+      { key: 'waste',      isEmpty: function(v){ return (v === undefined || v === null || v === ''); } }
+    ];
     const exSet = (excludeIds && excludeIds.length) ? new Set(excludeIds) : null;
     const map = {};
     const ts = r => {
@@ -1721,53 +1740,91 @@ const DB = {
           // 修复：无论本地赢还是云端赢，合并结果 items[i].trackingNo 为空时，从本地或云端补上
           // 非空单号（expressCompany 一并补）。不受时间戳影响；单号只能被「用户主动修改」改变，
           // 不能被其他端的旧缓存清空。两边都有不同值时保留合并胜者，不做覆盖。
+          // ===== 订单顶层字段「清空可跨端生效」（v2026081604 修订）=====
+          // 旧逻辑为「只补不删」：合并胜者字段为空即从对方补回，导致销售刻意清空姓名/日期/备注后
+          // 被另一端旧值覆盖、清空无法跨端生效。现改为：胜者字段若为「显式空值」('' 或 null) 视为
+          // 用户主动清空，保留空值使其跨端生效；仅当胜者「根本不含该字段」(undefined，旧单/缺字段)
+          // 时才从本地或云端补回，避免旧数据丢失。删除/编辑/清空三种意图均正确传播。
+          const ORDER_TOP_SCALAR_FIELDS = ['contact','customerName','phone','region','address','province','city','district','orderDate','completionDate','remark'];
+          ORDER_TOP_SCALAR_FIELDS.forEach(function(k){
+            if(_finalRow[k] !== undefined) return; // 显式空值(''/null)或已有值 → 保留，清空可跨端生效
+            const lv = lr ? lr[k] : undefined;
+            const rv = r ? r[k] : undefined;
+            if(lv !== undefined){ _finalRow[k] = lv; }
+            else if(rv !== undefined){ _finalRow[k] = rv; }
+          });
+          // ===== 统一「只补不删」同步字段保护（#2 重构：收敛散落补丁为字段白名单循环）=====
+          // 设计：订单 items 中需跨端同步的「逐商品标量字段」登记在 ITEM_SYNC_SCALAR_FIELDS，
+          // 合并结果该字段为空时从本地/云端同 index 项补回；单例级元数据（售后损耗 _lossSync、售后备注/单号 _afterMeta）
+          // 塞在 items[0] 隐藏键，合并结果 top-level 缺失时从本地/云端补回。新增同步字段只需登记，无需再写补丁块。
           if(Array.isArray(lr.items) && Array.isArray(_finalRow.items) && Array.isArray(r.items)){
-            // 订单 items 无独立 id 字段，按 index 兜底匹配（顺序稳定）
+            // ① 逐商品标量字段（按 index 兜底匹配，顺序稳定）
             _finalRow.items.forEach((t, i) => {
               if(!t) return;
               const l = lr.items[i], rr = r.items[i];
-              const tv = (t.trackingNo || '').trim();
-              if(tv) return; // 合并结果已有单号 → 保留，不干预
-              const lv = (l && (l.trackingNo || '').trim()) || '';
-              const rv = (rr && (rr.trackingNo || '').trim()) || '';
-              if(lv){ t.trackingNo = lv; if(l.expressCompany && !t.expressCompany) t.expressCompany = l.expressCompany; }
-              else if(rv){ t.trackingNo = rv; if(rr.expressCompany && !t.expressCompany) t.expressCompany = rr.expressCompany; }
+              (ITEM_SYNC_SCALAR_FIELDS || []).forEach(function(f){
+                if(!f.isEmpty(t[f.key])) return; // 合并结果已有值 → 保留，不干预
+                const lv = l ? l[f.key] : undefined;
+                const rv = rr ? rr[f.key] : undefined;
+                if(!f.isEmpty(lv)){ t[f.key] = lv; }
+                else if(!f.isEmpty(rv)){ t[f.key] = rv; }
+              });
             });
-          }
-          // ===== 无条件商品损耗(waste)保护（与物流单号同源修复，v2026081601 核心）=====
-          // 根因：其他设备（或本设备另一标签页）本地旧缓存【没有损耗】，因改了无关字段
-          // （物流/日期等）bumped updatedAt 而成为合并胜者，把「无损耗版本」upsert 到云端，
-          // 冲掉已填好的损耗 → 表现为「损耗保存好了，过一会又消失」。
-          // 修复：无论本地赢还是云端赢，合并结果 items[i].waste 为空(未定义/null/空串)时，
-          // 从本地或云端补上非空损耗值（只补不删；本地已有损耗不受影响；刻意填 0 表示无损耗，不覆盖）。
-          if(Array.isArray(lr.items) && Array.isArray(_finalRow.items) && Array.isArray(r.items)){
-            // 订单 items 无独立 id 字段，按 index 兜底匹配（顺序稳定）
-            _finalRow.items.forEach((t, i) => {
-              if(!t) return;
-              const wv = t.waste;
-              if(wv !== undefined && wv !== null && wv !== '') return; // 合并结果已有损耗值 → 保留，不干预
-              const l = lr.items[i], rr = r.items[i];
-              const lv = (l && (l.waste !== undefined && l.waste !== null && l.waste !== '')) ? l.waste : undefined;
-              const rv = (rr && (rr.waste !== undefined && rr.waste !== null && rr.waste !== '')) ? rr.waste : undefined;
-              if(lv !== undefined){ t.waste = lv; }
-              else if(rv !== undefined){ t.waste = rv; }
-            });
-          }
-          // ===== 无条件售后损耗(afterSaleLoss / aftersales.loss)保护（与物流单号/损耗同源，免数据库改动）=====
-          // 根因：订单级/售后单级损耗原本只存 top-level，云端无对应列且白名单剔除后不上云；
-          // 现改为塞进各自 items JSONB（标记 _lossSync）随 items 同步。若合并结果 items 中无 _lossSync
-          // （被无损耗的旧副本覆盖），从本地或云端任一持有值补回；只补不删，刻意填 0 表示无损耗，不覆盖。
-          if(Array.isArray(lr.items) && Array.isArray(_finalRow.items) && Array.isArray(r.items)){
-            const _collectLoss = function(row){ let v; (row.items||[]).forEach(function(it){ if(it && it._lossSync != null && it._lossSync !== '') v = it._lossSync; }); return v; };
-            const _finalLoss = _collectLoss(_finalRow);
+            // ② 单例元数据：从 items[0] 隐藏键补回（_lossSync 售后损耗 / _afterMeta 售后备注+单号）
+            const _collectMeta = function(row, mkey){ let v; (row.items||[]).forEach(function(it){ if(it && it[mkey] != null && it[mkey] !== '') v = it[mkey]; }); return v; };
+            // 2a 售后损耗（订单 afterSaleLoss / 售后 loss）
+            const _finalLoss = _collectMeta(_finalRow, '_lossSync');
             if(_finalLoss == null || _finalLoss === ''){
-              const _lv = _collectLoss(lr), _rv = _collectLoss(r);
+              const _lv = _collectMeta(lr, '_lossSync'), _rv = _collectMeta(r, '_lossSync');
               const _src = (_lv != null && _lv !== '') ? _lv : _rv;
-              if(_src != null && _src !== ''){
-                _finalRow.items[0] = _finalRow.items[0] || {};
-                _finalRow.items[0]._lossSync = _src;
+              if(_src != null && _src !== ''){ _finalRow.items[0] = _finalRow.items[0] || {}; _finalRow.items[0]._lossSync = _src; }
+            }
+            // 2b 售后单备注 + 物流单号（_afterMeta；合并结果 top-level 缺失时从本地/云端补回）
+            if(key === 'aftersales'){
+              const _lm = _collectMeta(lr, '_afterMeta'), _rm = _collectMeta(r, '_afterMeta'), _fm = _collectMeta(_finalRow, '_afterMeta');
+              const _pick = function(m){ return (m && typeof m === 'object') ? m : null; };
+              const lm = _pick(_lm), rm = _pick(_rm), fm = _pick(_fm);
+              if(_finalRow.remark == null || _finalRow.remark === ''){
+                const _src = (fm && fm.remark != null) ? fm.remark : ((lm && lm.remark != null) ? lm.remark : ((rm && rm.remark != null) ? rm.remark : null));
+                if(_src != null) _finalRow.remark = _src;
+              }
+              if(_finalRow.trackingNo == null || _finalRow.trackingNo === ''){
+                const _src = (fm && fm.trackingNo != null) ? fm.trackingNo : ((lm && lm.trackingNo != null) ? lm.trackingNo : ((rm && rm.trackingNo != null) ? rm.trackingNo : null));
+                if(_src != null) _finalRow.trackingNo = _src;
               }
             }
+            // ③ 软删除镜像 _delSync（订单级 → items[0] 隐藏键，免数据库改动、确保跨端一致）
+            //    与物流单号/损耗同源：删除标记「只补不删」，但允许「最新恢复」覆盖；PURGED 为最强（不可恢复）。
+            (function(){
+              const _pick = function(row){ const it = row && row.items && row.items[0]; return (it && it._delSync) ? it._delSync : null; };
+              const _srcs = [_pick(lr), _pick(r), _pick(_finalRow)].filter(Boolean);
+              let purged = null, restored = null, deleted = null;
+              _srcs.forEach(function(s){
+                if(s.purged){ if(!purged || (s.at||'') >= (purged.at||'')) purged = { at: s.at||'', by: s.by||'历史清理' }; }
+                else if(s.d === false){ if(!restored || (s.at||'') >= (restored.at||'')) restored = { at: s.at||'' }; }
+                else if(s.d === true){ if(!deleted || (s.at||'') >= (deleted.at||'')) deleted = { at: s.at||'', by: s.by||'' }; }
+              });
+              const _winTs = _finalRow.updatedAt || '';
+              if(purged){
+                if(_finalRow._deleted !== true){
+                  _finalRow._deleted = true; _finalRow._deletedAt = purged.at || _finalRow._deletedAt; _finalRow._deletedBy = 'PURGED:' + (purged.by||'历史清理');
+                  _finalRow.items[0] = _finalRow.items[0] || {}; _finalRow.items[0]._delSync = { d:true, purged:true, at: purged.at, by: purged.by };
+                }
+              } else if(restored && (!deleted || restored.at >= deleted.at)){
+                // 最新「恢复」优先（覆盖删除标记），让恢复跨端生效
+                _finalRow._deleted = false; _finalRow._deletedAt = null; _finalRow._deletedBy = null;
+                _finalRow.items[0] = _finalRow.items[0] || {}; _finalRow.items[0]._delSync = { d:false, at: restored.at };
+              } else if(deleted){
+                // 合并结果未标记删除、且删除时间不早于胜出侧更新时间时补回（防陈旧删除覆盖新编辑）
+                if(_finalRow._deleted !== true){
+                  const _recent = !_winTs || (deleted.at >= _winTs);
+                  if(deleted.at && _recent){
+                    _finalRow._deleted = true; _finalRow._deletedAt = deleted.at; _finalRow._deletedBy = deleted.by || null;
+                    _finalRow.items[0] = _finalRow.items[0] || {}; _finalRow.items[0]._delSync = { d:true, at: deleted.at, by: deleted.by };
+                  }
+                }
+              }
+            })();
           }
         }
       }
@@ -1778,6 +1835,8 @@ const DB = {
   // 同步单个表到 Supabase
   async syncTable(key){
     if(!window._sbpbClient) return;
+    if(!this._syncErrorsByTable) this._syncErrorsByTable = {};
+    if(this._syncErrorsByTable[key]) delete this._syncErrorsByTable[key];
     try{
       const table = key;
       const local = this.get(key, []);
@@ -1963,8 +2022,10 @@ const DB = {
             }
         }catch(e){ upsertErrors.push(e.message || String(e)); }
       }
+      // #3 容错：不再整体 throw 中断同步；记录失败表 + 节流提示，保证其它表/批次继续同步。
       if(upsertErrors.length){
-        throw new Error('部分数据同步失败(' + upsertErrors.length + '批): ' + upsertErrors.join('; '));
+        this._syncErrorsByTable[key] = (this._syncErrorsByTable[key] || []).concat(upsertErrors);
+        console.warn('表['+key+']部分数据同步失败('+upsertErrors.length+'批)，已记录，不阻断其它表:', upsertErrors.join('; '));
       }
       // 删除云端中"合并集里已不存在"的 id，传播本地删除（不影响其它端新增的单）
       if(key === 'users'){
@@ -1992,9 +2053,19 @@ const DB = {
         }
       }
       console.log('表 ['+key+'] 同步完成，共 '+data.length+' 条');
+      // #3 容错：本表若有失败，节流提示用户（每 60 秒最多一次），不阻断其它表
+      const _tblErrs = this._syncErrorsByTable && this._syncErrorsByTable[key];
+      if(_tblErrs && _tblErrs.length){
+        window._syncErrorAt = window._syncErrorAt || 0;
+        if(Date.now() - window._syncErrorAt > 60000){
+          if(typeof showToast === 'function') showToast('部分数据同步失败（表：'+key+'），已记录，请稍后点“同步到云端”重试','warning');
+          window._syncErrorAt = Date.now();
+        }
+      }
     }catch(e){
-      console.warn('同步 ['+key+'] 到 Supabase 失败:', e.message);
-      throw e; // 上抛，让调用方（改密码/重置密码/推送）能感知并提示用户，不再静默丢失
+      console.warn('同步 ['+key+'] 到 Supabase 失败:', e && e.message);
+      // #3 容错：单表失败不再 throw 中断，记录后继续其它表同步（失败状态已写入 _syncErrorsByTable，UI 会提示）
+      this._syncErrorsByTable[key] = (this._syncErrorsByTable[key] || []).concat([(e && e.message) || String(e)]);
     }
   },
 
@@ -4405,7 +4476,7 @@ async function renderOrders(){
         <span class="title-text">📦 订单管理</span>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           ${isAdmin ? `<button class="btn btn-danger btn-sm" onclick="openCleanupPanel()">🧹 清理订单</button>` : ''}
-          <button class="btn btn-secondary btn-sm" onclick="navigate('recycle')">🗑️ 回收站(${recycleCount})</button>
+          ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="navigate('recycle')">🗑️ 回收站(${recycleCount})</button>` : ''}
           ${isAdmin ? `<button class="btn btn-primary btn-sm" onclick="exportOrders()" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;box-shadow:0 2px 6px rgba(59,130,246,0.25)">
             <span>📥</span><span>${hasDateRange || activeTab==='all' ? '导出全部订单' : '导出订单'}</span>
           </button>` : ''}
@@ -4846,11 +4917,17 @@ function deleteOrder(orderId){
     // 拿到 _deleted=true 后，订单列表/统计/导出统一按 !o._deleted 隐藏，实现多端一致。
     // 本端继续保留该记录（仅标记），既保证列表立即隐藏，又让回收站/云端墓碑可跨端可见、可恢复。
     const delName = (typeof currentUser !== 'undefined' && currentUser && currentUser.name) ? currentUser.name : '未知用户';
+    const nowDel = nowStr();
     orders[idx]._deleted = true;
-    orders[idx]._deletedAt = nowStr();
+    orders[idx]._deletedAt = nowDel;
     orders[idx]._deletedBy = delName;
-    orders[idx].updatedAt = nowStr();
-    DB.set('orders', orders); // 本地更新 + 推云端（upsert 含 _deleted 列）
+    orders[idx].updatedAt = nowDel;
+    // 镜像软删除标记到 items[0]._delSync（隐藏同步键，随 items JSONB 上云，免数据库改动），
+    // 与物流单号/损耗同源：确保「删除」跨端一致，且合并保护可补回，不会被云端旧副本冲掉。
+    orders[idx].items = orders[idx].items || [];
+    orders[idx].items[0] = orders[idx].items[0] || {};
+    orders[idx].items[0]._delSync = { d: true, at: nowDel, by: delName };
+    DB.set('orders', orders); // 本地更新 + 推云端（upsert 含 _deleted 列 与 items 镜像）
     // 本端排除集仍记录，作为兜底（防推送失败瞬间被同步拉回）；云端已无“未删除”副本，不影响跨端。
     try{
       const delKey = 'soms__deletedOrderIds';
@@ -4859,6 +4936,7 @@ function deleteOrder(orderId){
       localStorage.setItem(delKey, JSON.stringify(delSet));
     }catch(e){ /* 忽略本地标记失败 */ }
 
+    schedulePushToCloud(); // 立即把删除墓碑（_deleted + items._delSync 镜像）upsert 上云，跨端生效
     showToast('订单已删除，可在回收站恢复' + refundText, 'success');
     navigate('orders');
   });
@@ -4949,12 +5027,17 @@ function cleanupDeleteOne(orderId){
     // 撤回该订单关联的微信收款记录
     const beforePayments = DB.get('payments') || [];
     DB.set('payments', beforePayments.filter(p => p.orderId !== orderId));
-    // 软删除（与 deleteOrder 一致）：打 _deleted 标记 + upsert 上云，所有设备经 merge 隐藏，并可在回收站恢复
+    // 软删除（与 deleteOrder 一致）：打 _deleted 标记 + 镜像 items._delSync + upsert 上云，
+    // 所有设备经 merge 隐藏，并可在回收站恢复
     const delName = (typeof currentUser !== 'undefined' && currentUser && currentUser.name) ? currentUser.name : '未知用户';
+    const nowDel = nowStr();
     orders[idx]._deleted = true;
-    orders[idx]._deletedAt = nowStr();
+    orders[idx]._deletedAt = nowDel;
     orders[idx]._deletedBy = delName;
-    orders[idx].updatedAt = nowStr();
+    orders[idx].updatedAt = nowDel;
+    orders[idx].items = orders[idx].items || [];
+    orders[idx].items[0] = orders[idx].items[0] || {};
+    orders[idx].items[0]._delSync = { d: true, at: nowDel, by: delName };
     DB.set('orders', orders);
     // 本端排除集兜底（防推送失败瞬间被同步拉回）
     try{
@@ -4974,8 +5057,12 @@ function cleanupDeleteOne(orderId){
 // 回收站：列出已软删除的订单，可恢复或彻底删除
 function renderRecycleBin(){
   const isAdmin = currentUser.role === 'admin';
+  // 回收站仅管理员可查看/操作（销售无入口、也看不到他人/自己的已删订单）
+  if(!isAdmin){
+    document.getElementById('mainContent').innerHTML = '<div class="empty-state"><div class="empty-icon">🔒</div><div class="empty-text">回收站仅管理员可查看</div></div>';
+    return;
+  }
   let deleted = DB.get('orders').filter(o => o._deleted && !String(o._deletedBy||'').startsWith('PURGED:'));
-  if(!isAdmin) deleted = deleted.filter(o => o.salesId === currentUser.id);
   deleted = deleted.slice().sort((a,b) => (b._deletedAt||'').localeCompare(a._deletedAt||''));
   let html = '<div class="card"><div class="card-title"><span class="title-text">🗑️ 回收站</span><button class="btn btn-sm" onclick="navigate(\'orders\')">返回订单</button></div>';
   html += '<p style="font-size:12px;color:var(--text-muted);margin:8px 0">以下为已删除的订单，可恢复或彻底删除。彻底删除后不可恢复。</p>';
@@ -5004,11 +5091,19 @@ function restoreOrder(orderId){
   const orders = DB.get('orders');
   const ex = orders.find(o => o.id === orderId);
   if(ex && String(ex._deletedBy||'').startsWith('PURGED:')){ showToast('该订单已彻底删除，无法恢复','error'); return; }
-  showConfirm('确定恢复此订单吗？', () => {
+    showConfirm('确定恢复此订单吗？', () => {
     const idx = orders.findIndex(o => o.id === orderId);
     if(idx >= 0){
-      delete orders[idx]._deleted;
-      delete orders[idx]._deletedAt;
+      // 显式置 false（非 delete 字段），并镜像 _delSync={d:false}，确保「恢复」跨端生效
+      // （仅 delete 字段会导致 upsert 不更新云端 _deleted 列、其它设备恢复不了）。
+      const nowR = nowStr();
+      orders[idx]._deleted = false;
+      orders[idx]._deletedAt = null;
+      orders[idx]._deletedBy = null;
+      orders[idx].updatedAt = nowR;
+      orders[idx].items = orders[idx].items || [];
+      orders[idx].items[0] = orders[idx].items[0] || {};
+      orders[idx].items[0]._delSync = { d: false, at: nowR };
       DB.set('orders', orders);
     }
     showToast('订单已恢复','success');
@@ -5027,9 +5122,13 @@ function purgeOrder(orderId){
       // 改用「云端墓碑」而非物理删云端：打 _deleted + PURGED 哨兵，经现有 upsert 同步到云端，
       // 所有设备合并后按 !o._deleted 隐藏、且回收站也跳过 PURGED 哨兵，实现「彻底删除」跨端一致——
       // 不再像物理删那样被其它设备的 syncTable 重新 upsert 复活（修复手机端残留 17 条 / 反复闪烁）。
+      const nowP = nowStr();
       orders[idx]._deleted = true;
-      orders[idx]._deletedAt = nowStr();
+      orders[idx]._deletedAt = nowP;
       orders[idx]._deletedBy = 'PURGED:' + delName; // 哨兵：标记已彻底删除（不可恢复、不进回收站）
+      orders[idx].items = orders[idx].items || [];
+      orders[idx].items[0] = orders[idx].items[0] || {};
+      orders[idx].items[0]._delSync = { d: true, purged: true, at: nowP, by: delName }; // 镜像 PURGED，确保跨端彻底删除
       DB.set('orders', orders); // 保留本地墓碑（与云端一致，避免被同步再次拉回成活跃单）
     }
     DB.set('payments', DB.get('payments').filter(p => p.orderId !== orderId));
@@ -7515,7 +7614,7 @@ function removeEditItem(i){
 }
 
 // 保存编辑订单
-function saveEditOrder(orderId){
+async function saveEditOrder(orderId){
   // 保存即离开编辑态：清除“编辑进行中”标记，让保存后的同步刷新能正常重建编辑页/跳详情
   window._orderEditPageActive = false;
   const orders = DB.get('orders');
@@ -7566,7 +7665,11 @@ function saveEditOrder(orderId){
   const payMode = modeEl ? modeEl.value : 'full';
   let payDeposit = (payMode === 'deposit' && dpEl) ? (parseInt(dpEl.value) || 0) : 0;
   if(payDeposit > total){ showToast('定金不能大于订单总额','error'); return; }
-  if(!methodEl){ showToast('请选择收款方式（微信或扫码）','error'); return; }
+  // 收款方式非强制：编辑订单通常只为改客户信息/日期，不应因未选收款方式而丢弃整单改动。
+  // 仅当订单此前既无任何收款方式记录时才要求先选择；沿用已有 paymentMethod 不阻塞保存。
+  if(!methodEl && !order.paymentMethod){
+    showToast('请先选择收款方式（微信或扫码）再保存','error'); return;
+  }
   const payCollected = collectedEl ? (parseInt(collectedEl.value) || 0) : 0;
   const maxCollect = payDeposit > 0 ? payDeposit : total;
   if(payCollected > maxCollect){
@@ -7576,7 +7679,7 @@ function saveEditOrder(orderId){
   order.fullPayment = payMode === 'full' ? total : 0;
   order.deposit = payDeposit;
   order.finalPayment = Math.max(0, total - payDeposit);
-  order.paymentMethod = methodEl.value;
+  order.paymentMethod = methodEl ? methodEl.value : (order.paymentMethod || '');
   order.collectedAmount = payCollected;
   order.updatedAt = nowStr();
 
@@ -7615,6 +7718,9 @@ function saveEditOrder(orderId){
   window._orderEditMode = false;
   showToast('订单已保存','success');
   schedulePushToCloud();
+  // 关键修复：编辑后强制立即把订单表推上云，确保管理员/其它设备立即看到姓名/日期等改动，
+  // 不再依赖 800ms 延迟的 debounce（延迟期间若触发拉取，会用云端旧副本覆盖刚保存的新值）。
+  if(typeof syncOrdersNow === 'function'){ try { await syncOrdersNow(); } catch(e){} }
   navigate('order-saved-success');
 }
 
@@ -11177,6 +11283,10 @@ function saveAftersaleDetail(id){
   aftersales[idx].remark = remark;
   aftersales[idx].trackingNo = trackingNo;
   aftersales[idx].updatedAt = nowStr();
+  // 售后单备注/物流单号免数据库改动：双写到 items[0]._afterMeta 隐藏键，随 items 同步上云（与售后损耗同机制）
+  if(!Array.isArray(aftersales[idx].items)) aftersales[idx].items = [{}];
+  if(!aftersales[idx].items[0]) aftersales[idx].items[0] = {};
+  aftersales[idx].items[0]._afterMeta = { remark: aftersales[idx].remark || '', trackingNo: aftersales[idx].trackingNo || '' };
 
   // 管理员可随时编辑损耗金额，保存后重新核算利润
   if(isAdmin){
@@ -11197,6 +11307,7 @@ function saveAftersaleDetail(id){
   }
 
   DB.set('aftersales', aftersales);
+  if(typeof schedulePushToCloud === 'function') schedulePushToCloud();
   showToast(isAdmin ? '售后信息已保存，利润已重新核算' : '售后备注与物流单号已保存','success');
   closeModal();
   renderAftersales();
@@ -11462,7 +11573,12 @@ function submitAftersale(){
   };
   aftersales.push(newAS);
   _setAfterSalesLoss(newAS, loss); // 挂 _lossSync 到 items JSONB，随售后单同步上云（免数据库改动）
+  // 售后单备注/物流单号免数据库改动：挂 _afterMeta 到 items JSONB，随售后单同步上云（空值初始化，保存详情时更新）
+  if(!Array.isArray(newAS.items) || !newAS.items.length) newAS.items = [{}];
+  if(!newAS.items[0]) newAS.items[0] = {};
+  newAS.items[0]._afterMeta = { remark: newAS.remark || '', trackingNo: newAS.trackingNo || '' };
   DB.set('aftersales', aftersales);
+  if(typeof schedulePushToCloud === 'function') schedulePushToCloud();
 
   // 财务联动：原销售订单利润扣减售后损耗金额（仅管理员填写损耗时生效）
   if(isAdmin && loss > 0){
@@ -13954,7 +14070,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081603';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081604';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
