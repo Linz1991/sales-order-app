@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081606</div>
+          <div class="brand-sub">v2026081607</div>
         </div>
       </div>
     </div>
@@ -1740,7 +1740,7 @@ const DB = {
           // 修复：无论本地赢还是云端赢，合并结果 items[i].trackingNo 为空时，从本地或云端补上
           // 非空单号（expressCompany 一并补）。不受时间戳影响；单号只能被「用户主动修改」改变，
           // 不能被其他端的旧缓存清空。两边都有不同值时保留合并胜者，不做覆盖。
-          // ===== 编辑防回退（v2026081606 核心修复）：客户信息/商品信息「最后编辑戳优先」=====
+          // ===== 编辑防回退（v2026081607 核心修复）：客户信息/商品信息「最后编辑戳优先」=====
           // 根因：订单级 updatedAt 的整行 LWW 在「多设备各自持有部分旧字段」时失效——
           // 某设备改了无关字段(损耗/日期) bumped 整个订单 updatedAt，却持有旧客户/商品信息，
           // 推送时把「旧客户信息+新时间戳」覆盖云端，冲掉其他设备刚编辑的新值 → 表现「编辑保存后回退」。
@@ -2161,6 +2161,8 @@ const DB = {
       return;
     }
     this._initMapping();
+    // 启动/每次全量同步前，先尝试补传之前因网络/超时导致未上云的订单（v2026081607 修复「提交成功但云端没记录」）
+    try{ await retryPendingOrderSyncs(); }catch(e){ console.warn('补传待重试订单失败:', e.message); }
     this._setSyncStatus('syncing');
     const tables = ['users','customers','products','orders','aftersales','payments','commissions','audit_log'];
     let hasError = false;
@@ -6201,10 +6203,70 @@ function submitOrder(){
 
   window._currentOrderId = orderId;
   window._orderFilter = '';
-  schedulePushToCloud();
+  // 立即把订单推上云端（不等 800ms 防抖），并最多 3 次指数退避重试，确保云端真正收到
+  // 修复「提交订单成功但云端没记录、其他设备看不到」重大 bug：旧逻辑只 fire-and-forget，
+  // 失败被吞、本地有、云端无，订单在管理员/其他销售端永远不可见。
+  pushNewOrderToCloudWithRetry(orderId, 3).then(function(result){
+    if(result && result.ok){
+      // 推送成功：记录本次提交时间，作为后续「_lastSubmitSucceededAt」调试信号
+      window._lastSubmitSucceededAt = Date.now();
+    } else {
+      // 3 次仍失败：把订单 id 写入待重试队列，下次 syncTable 自动补传；同时给用户明确提示
+      try {
+        const q = JSON.parse(localStorage.getItem('soms__pendingOrderSyncIds') || '[]');
+        if(!q.includes(orderId)) q.push(orderId);
+        localStorage.setItem('soms__pendingOrderSyncIds', JSON.stringify(q));
+      } catch(e){ /* 忽略 */ }
+      if(typeof showToast === 'function'){
+        showToast('订单已生成但云端同步失败（已加入重试队列），请勿关闭页面，5 秒后将自动重试', 'error', 6000);
+      }
+      // 5 秒后再尝试一次（兜底）
+      setTimeout(function(){
+        if(window._sbpbClient){
+          DB.syncTable('orders').catch(function(){});
+        }
+      }, 5000);
+    }
+  });
   navigate('order-success');
   clearOrderDraft();
   var _dbx = document.getElementById('draftBar'); if(_dbx) _dbx.remove();
+}
+
+// 强制推送单个新订单到云端（最多 maxRetries 次，间隔 1.5s × attempt）
+// 流程：调 DB.syncTable('orders') 跑一次完整同步 → 拉云端验证订单 id 是否存在 → 失败则重试
+// 返回 { ok: true, attempts: N } 或 { ok: false, attempts: N }
+async function pushNewOrderToCloudWithRetry(orderId, maxRetries){
+  maxRetries = maxRetries || 3;
+  if(!window._sbpbClient || !orderId) return { ok: false, attempts: 0, reason: 'no_client' };
+  for(let attempt = 1; attempt <= maxRetries; attempt++){
+    try{ await DB.syncTable('orders'); }catch(e){ console.warn('pushNewOrder syncTable 异常:', e && e.message); }
+    // 验证云端是否真的有这一单（防 syncTable 静默吞错误）
+    try{
+      const { data, error } = await window._sbpbClient.from('orders').select('id').eq('id', orderId).maybeSingle();
+      if(data && !error && data.id === orderId){
+        return { ok: true, attempts: attempt };
+      }
+    }catch(e){ /* 验证失败，继续重试 */ }
+    if(attempt < maxRetries){
+      await new Promise(function(r){ setTimeout(r, 1500 * attempt); });
+    }
+  }
+  return { ok: false, attempts: maxRetries };
+}
+
+// 启动时 + 每次 syncTable 之前：取待重试订单 id 列表并优先补传
+async function retryPendingOrderSyncs(){
+  if(!window._sbpbClient) return;
+  let q;
+  try{ q = JSON.parse(localStorage.getItem('soms__pendingOrderSyncIds') || '[]'); }catch(e){ q = []; }
+  if(!Array.isArray(q) || q.length === 0) return;
+  const remain = [];
+  for(const id of q){
+    const r = await pushNewOrderToCloudWithRetry(id, 2);
+    if(!r.ok) remain.push(id);
+  }
+  try{ localStorage.setItem('soms__pendingOrderSyncIds', JSON.stringify(remain)); }catch(e){}
 }
 
 /* ============ 提交订单成功页 ============ */
@@ -14161,7 +14223,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081606';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081607';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
