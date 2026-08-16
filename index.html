@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081612</div>
+          <div class="brand-sub">v2026081613</div>
         </div>
       </div>
     </div>
@@ -2067,6 +2067,7 @@ const DB = {
         //    因为 Supabase 批量 upsert 要求「All object keys must match」(PGRST102)，
         //    若新旧订单字段数不同（旧单缺 province/city 等）整批直接 400；
         //    同时 NOT NULL 列（_deleted/no_tracking/total 等）不能填 null，需用类型默认值。
+        // v2026081613: created_at NOT NULL 保护（与 aftersales/payments/commissions 统一）。
         const _orderColDefaults = {
           id:'', customer_id:'', customer_name:'', contact:'', phone:'', region:'', address:'',
           sales_id:'', sales_name:'', items:'[]', total:0, status:'pending', type:'normal',
@@ -2082,7 +2083,9 @@ const DB = {
         snakeData = snakeData.map(function(o){
           const f = {};
           Object.keys(_orderColDefaults).forEach(function(k){
-            f[k] = o.hasOwnProperty(k) ? o[k] : _orderColDefaults[k];
+            var v = o.hasOwnProperty(k) ? o[k] : _orderColDefaults[k];
+            if(k === 'created_at' && (v == null || v === '')) v = new Date().toISOString();
+            f[k] = v;
           });
           return f;
         });
@@ -2094,6 +2097,8 @@ const DB = {
       //  - loss 同理走 items._lossSync；
       //  - 若直接把本地多余字段推上云，整批 upsert 会报 PGRST204「Could not find the 'xxx' column
       //    of 'aftersales' in the schema cache」→ 反复弹「部分数据同步失败（表：aftersales）」banner。
+      // v2026081613 修复：created_at 列有 NOT NULL 约束，null 值会导致 23502 错误（整批拒绝），
+      // 故缺失/null 时填充当前时间戳而非 null。
       if(table === 'aftersales'){
         const _afterColDefaults = {
           id:'', order_id:'', customer_name:'', phone:'', sales_id:'', sales_name:'',
@@ -2102,13 +2107,17 @@ const DB = {
         snakeData = snakeData.map(function(o){
           const f = {};
           Object.keys(_afterColDefaults).forEach(function(k){
-            f[k] = o.hasOwnProperty(k) ? o[k] : _afterColDefaults[k];
+            var v = o.hasOwnProperty(k) ? o[k] : _afterColDefaults[k];
+            // created_at NOT NULL 约束保护：缺失或 null 时填当前时间戳
+            if(k === 'created_at' && (v == null || v === '')) v = new Date().toISOString();
+            f[k] = v;
           });
           return f;
         });
       }
       // 收款表：云端实际列（2026-08-16 实测）＝ id/order_id/customer_name/sales_id/sales_name/
       // amount/method/pay_date/status/created_at。本地行的 stage 等字段不推，避免 PGRST204。
+      // v2026081613: created_at NOT NULL 保护。
       if(table === 'payments'){
         const _payColDefaults = {
           id:'', order_id:'', customer_name:'', sales_id:'', sales_name:'',
@@ -2117,13 +2126,16 @@ const DB = {
         snakeData = snakeData.map(function(o){
           const f = {};
           Object.keys(_payColDefaults).forEach(function(k){
-            f[k] = o.hasOwnProperty(k) ? o[k] : _payColDefaults[k];
+            var v = o.hasOwnProperty(k) ? o[k] : _payColDefaults[k];
+            if(k === 'created_at' && (v == null || v === '')) v = new Date().toISOString();
+            f[k] = v;
           });
           return f;
         });
       }
       // 提成表：云端实际列（2026-08-16 实测）＝ id/sales_id/sales_name/order_id/customer_name/
       // amount/rate/period/status/created_at。
+      // v2026081613: created_at NOT NULL 保护。
       if(table === 'commissions'){
         const _comColDefaults = {
           id:'', sales_id:'', sales_name:'', order_id:'', customer_name:'',
@@ -2132,7 +2144,9 @@ const DB = {
         snakeData = snakeData.map(function(o){
           const f = {};
           Object.keys(_comColDefaults).forEach(function(k){
-            f[k] = o.hasOwnProperty(k) ? o[k] : _comColDefaults[k];
+            var v = o.hasOwnProperty(k) ? o[k] : _comColDefaults[k];
+            if(k === 'created_at' && (v == null || v === '')) v = new Date().toISOString();
+            f[k] = v;
           });
           return f;
         });
@@ -14376,7 +14390,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081612';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081613';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
