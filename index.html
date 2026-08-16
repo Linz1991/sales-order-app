@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081604</div>
+          <div class="brand-sub">v2026081605</div>
         </div>
       </div>
     </div>
@@ -1538,7 +1538,7 @@ const DB = {
       //     “稍旧”的云端副本时，会把本地刚写入的较新改动覆盖回旧值（表现：下单按钮先变「已下单」、过一会又退回「下单」）；
       //  ② 仍保证他人删除的订单/商品能从本端移除（删除传播），不回归“清理后订单又出现”的旧 bug。
       const local = this.get(key, []);
-      let merged = this._mergeById(local, cloud, excludeIds);
+      let merged = this._mergeById(local, cloud, excludeIds, key);
       // 商品：保留本地 auto_added 标记。云端 products 表当前无 auto_added 列（加列 SQL 可选），
       // 拉回的云端副本不含此字段，_mergeById 整条替换会把“销售临时新增、待校准”标记冲掉，
       // 导致商品管理“待校准”角标在刷新后消失、管理员找不到要校准的商品。
@@ -1599,7 +1599,7 @@ const DB = {
   // 按 id 合并本地与云端数据：以 updatedAt/createdAt 较新者优先（云端权威、更新覆盖旧本地），
   // 解决多端协作时“一端改动被另一端本地旧版覆盖/订单丢失”的问题。
   // excludeIds：已在本端删除、但云端可能仍残留的订单 id，合并时强制跳过，避免被同步拉回。
-  _mergeById(local, cloud, excludeIds){
+  _mergeById(local, cloud, excludeIds, keyName){
     // 订单 items 中需跨端同步的「逐商品标量字段」：合并结果该字段为空时从本地/云端同 index 项补回（只补不删）。
     // 新增同步字段只需在此登记，无需再在下方写补丁块（#2 重构：收敛散落补丁）。
     const ITEM_SYNC_SCALAR_FIELDS = [
@@ -1780,7 +1780,7 @@ const DB = {
               if(_src != null && _src !== ''){ _finalRow.items[0] = _finalRow.items[0] || {}; _finalRow.items[0]._lossSync = _src; }
             }
             // 2b 售后单备注 + 物流单号（_afterMeta；合并结果 top-level 缺失时从本地/云端补回）
-            if(key === 'aftersales'){
+            if(keyName === 'aftersales'){
               const _lm = _collectMeta(lr, '_afterMeta'), _rm = _collectMeta(r, '_afterMeta'), _fm = _collectMeta(_finalRow, '_afterMeta');
               const _pick = function(m){ return (m && typeof m === 'object') ? m : null; };
               const lm = _pick(_lm), rm = _pick(_rm), fm = _pick(_fm);
@@ -1849,7 +1849,8 @@ const DB = {
           data = this._mergeById(local, cloud,
             key === 'orders' ? this.get('_deletedOrderIds', []) :
             key === 'products' ? this.get('_deletedProductIds', []) :
-            key === 'users' ? this.get('_deletedUserIds', []) : null
+            key === 'users' ? this.get('_deletedUserIds', []) : null,
+            key
           );
           // 彻底删除跨端一致（2026-0813）：云端已不存在、但本地仍为软删除(_deleted=true)的订单，
           // 视为被某端「彻底删除」（旧版物理删）后遗留的本地墓碑——补打 PURGED 哨兵，使其从回收站消失，
@@ -2175,7 +2176,7 @@ const DB = {
     if(error) throw error;
     const cloud = this._toCamel(data || []);
     const local = this.get('orders', []);
-    const merged = this._mergeById(local, cloud, this.get('_deletedOrderIds', []));
+    const merged = this._mergeById(local, cloud, this.get('_deletedOrderIds', []), 'orders');
     localStorage.setItem('soms_orders', JSON.stringify(merged));
     return merged;
   },
@@ -14070,7 +14071,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081604';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081605';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
