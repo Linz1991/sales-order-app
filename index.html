@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081607</div>
+          <div class="brand-sub">v2026081608</div>
         </div>
       </div>
     </div>
@@ -1553,12 +1553,26 @@ const DB = {
       }
       // 删除传播：云端已不存在、又不在本端排除集的本地行，视为被他人删除 → 移除。
       // 但 customers / products 表不执行此过滤：
-      //  - customers：提交订单时自动建档的客户是“本地新建、尚未推上云”的行，会被误判为已删除而抹掉（历史 bug）。
-      //  - products：销售在新建订单里临时新增的商品也是“本地刚建、异步上推未落地”的行，若云端此刻还没它，
-      //    会被误判为“他人已删除”而整条抹掉，导致“商品管理档案里没有该商品”。商品以本地新建为准、云端只做补充。
-      // 两表的“他人删除”仍由云端物理删除 + 上方 excludeIds 过滤（1511 行）正确传播，不受此处跳过影响。
+      //  - customers：提交订单时自动建档的客户是"本地新建、尚未推上云"的行，会被误判为已删除而抹掉（历史 bug）。
+      //  - products：销售在新建订单里临时新增的商品也是"本地刚建、异步上推未落地"的行，若云端此刻还没它，
+      //    会被误判为"他人已删除"而整条抹掉，导致"商品管理档案里没有该商品"。商品以本地新建为准、云端只做补充。
+      // 两表的"他人删除"仍由云端物理删除 + 上方 excludeIds 过滤（1511 行）正确传播，不受此处跳过影响。
       if(key === 'orders'){
-        merged = merged.filter(r => !r || !r.id || cloudIds.has(r.id));
+        // 宽限期保护（v2026081607 关键修复）：刚创建的本地订单（30秒内）可能还没推上云，
+        // 不应被删除传播误删。DB.set → 350ms afterWriteRefresh → pullTableAuthoritative
+        // 此处拉云端时，如果 syncTable 推送还没落地，云端没有这单 → 旧逻辑直接删除传播移除 →
+        // "提交成功但待下单里找不到"重大 bug。现给 30 秒宽限期，推送有充足时间落地。
+        // 超过 30 秒仍不在云端的才视为被他人删除（保留删除传播能力）。
+        var _graceCutoff = Date.now() - 30000;
+        merged = merged.filter(function(r){
+          if(!r || !r.id) return true;
+          if(cloudIds.has(r.id)) return true;       // 云端有 → 保留
+          if(r.createdAt){                           // 云端没有 → 检查是否在宽限期内刚创建
+            var ct = Date.parse((r.createdAt || '').replace(' ', 'T'));
+            if(!isNaN(ct) && ct > _graceCutoff) return true; // 30 秒内新建 → 保留
+          }
+          return false;                               // 超过宽限期仍不在云端 → 删除传播
+        });
       }
       // 售后损耗免库回写：afterSaleLoss / aftersales.loss 不在云端列，已从 items JSONB(_lossSync) 还原，
       // 保证导出/利润/统计读取正确（与写时塞入保持一致；_mergeById 已做"只补不删"保护）。
@@ -1740,7 +1754,7 @@ const DB = {
           // 修复：无论本地赢还是云端赢，合并结果 items[i].trackingNo 为空时，从本地或云端补上
           // 非空单号（expressCompany 一并补）。不受时间戳影响；单号只能被「用户主动修改」改变，
           // 不能被其他端的旧缓存清空。两边都有不同值时保留合并胜者，不做覆盖。
-          // ===== 编辑防回退（v2026081607 核心修复）：客户信息/商品信息「最后编辑戳优先」=====
+          // ===== 编辑防回退（v2026081608 核心修复）：客户信息/商品信息「最后编辑戳优先」=====
           // 根因：订单级 updatedAt 的整行 LWW 在「多设备各自持有部分旧字段」时失效——
           // 某设备改了无关字段(损耗/日期) bumped 整个订单 updatedAt，却持有旧客户/商品信息，
           // 推送时把「旧客户信息+新时间戳」覆盖云端，冲掉其他设备刚编辑的新值 → 表现「编辑保存后回退」。
@@ -14223,7 +14237,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081607';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081608';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
