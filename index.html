@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081601</div>
+          <div class="brand-sub">v2026081602</div>
         </div>
       </div>
     </div>
@@ -7428,10 +7428,11 @@ function confirmManualAddToOrder(){
   const orders = DB.get('orders');
   const idx = orders.findIndex(o => o.id === orderId);
   if(idx >= 0){
-    orders[idx].items.push({ productId: newProdId, name: name, price: price, qty: 1, subtotal: price, stock: '否' });
+    orders[idx].items.push({ productId: newProdId, name: name, price: price, cost: price, qty: 1, subtotal: price, stock: '否', auto_added: true });
     orders[idx].total += price;
     orders[idx].updatedAt = nowStr(); // 关键：刷新时间戳，保证手动新增的商品项不会被云端旧副本合并覆盖
     DB.set('orders', orders);
+    if(typeof schedulePushToCloud === 'function') schedulePushToCloud(); // 立即把带 auto_added 的新增项同步上云，保证多端一致
   }
   window._orderEditMode = true;
   renderOrderDetail();
@@ -9243,13 +9244,17 @@ function isUncalibrated(p){
   return p.cost === 0 || p.cost == null || p.cost === '';
 }
 
-// 订单项是否仍应显示「待校准」：基于当前商品库状态，而非订单创建时的快照。
-// 商品一旦在商品库补全成本/移除 auto_added，历史订单项的 🔶 待校准 也应消失；
-// 避免"商品库已校准、订单详情仍显示待校准"的界面不一致。
+// 订单项是否仍应显示「待校准」：销售在订单中（提交或编辑时）新增的商品，应显示 🔶 待校准，
+// 待管理员在商品库校准真实成本后提示自然消失（saveProduct 会清掉标记）。
+// 以订单项自身快照标记 it.auto_added 为准（该标记随订单 items 同步上云，校准时由 saveProduct 清除），
+// 并兜底兼容「订单项未带标记、但引用商品本身是销售新增待校准(prod.auto_added)」的情形。
+// 注意：绝不能按商品成本是否为 0 判定——销售新增商品成本默认等于售价（非 0），
+// 若按成本判定会永远不显示待校准（即 2026-0813 修复 inadvertently 抹掉本功能的原因）。
 function itemIsUncalibrated(it){
-  if(!it || it.auto_added !== true) return false;
+  if(!it) return false;
+  if(it.auto_added === true) return true;
   const prod = DB.get('products').find(p => p && it.productId && p.id === it.productId);
-  return !prod || isUncalibrated(prod);
+  return !!(prod && prod.auto_added === true);
 }
 
 async function renderProducts(){
@@ -13906,7 +13911,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081601';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081602';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
