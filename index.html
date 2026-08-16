@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081608</div>
+          <div class="brand-sub">v2026081609</div>
         </div>
       </div>
     </div>
@@ -1557,10 +1557,10 @@ const DB = {
       //  - products：销售在新建订单里临时新增的商品也是"本地刚建、异步上推未落地"的行，若云端此刻还没它，
       //    会被误判为"他人已删除"而整条抹掉，导致"商品管理档案里没有该商品"。商品以本地新建为准、云端只做补充。
       // 两表的"他人删除"仍由云端物理删除 + 上方 excludeIds 过滤（1511 行）正确传播，不受此处跳过影响。
-      if(key === 'orders'){
-        // 宽限期保护（v2026081607 关键修复）：刚创建的本地订单（30秒内）可能还没推上云，
+      if(key === 'orders' || key === 'aftersales'){
+        // 宽限期保护（v2026081607 关键修复，v2026081609 扩展到售后表）：刚创建的本地行（30秒内）可能还没推上云，
         // 不应被删除传播误删。DB.set → 350ms afterWriteRefresh → pullTableAuthoritative
-        // 此处拉云端时，如果 syncTable 推送还没落地，云端没有这单 → 旧逻辑直接删除传播移除 →
+        // 此处拉云端时，如果 syncTable 推送还没落地，云端没有这行 → 旧逻辑直接删除传播移除 →
         // "提交成功但待下单里找不到"重大 bug。现给 30 秒宽限期，推送有充足时间落地。
         // 超过 30 秒仍不在云端的才视为被他人删除（保留删除传播能力）。
         var _graceCutoff = Date.now() - 30000;
@@ -1754,7 +1754,7 @@ const DB = {
           // 修复：无论本地赢还是云端赢，合并结果 items[i].trackingNo 为空时，从本地或云端补上
           // 非空单号（expressCompany 一并补）。不受时间戳影响；单号只能被「用户主动修改」改变，
           // 不能被其他端的旧缓存清空。两边都有不同值时保留合并胜者，不做覆盖。
-          // ===== 编辑防回退（v2026081608 核心修复）：客户信息/商品信息「最后编辑戳优先」=====
+          // ===== 编辑防回退（v2026081609 核心修复）：客户信息/商品信息「最后编辑戳优先」=====
           // 根因：订单级 updatedAt 的整行 LWW 在「多设备各自持有部分旧字段」时失效——
           // 某设备改了无关字段(损耗/日期) bumped 整个订单 updatedAt，却持有旧客户/商品信息，
           // 推送时把「旧客户信息+新时间戳」覆盖云端，冲掉其他设备刚编辑的新值 → 表现「编辑保存后回退」。
@@ -2073,6 +2073,24 @@ const DB = {
           return f;
         });
       }
+      // 售后表：云端实际列（2026-08-16 实测）＝ id/order_id/customer_name/phone/sales_id/sales_name/
+      // items/reason/images/status/created_at。本地行的 remark/trackingNo/updatedAt/loss 等字段一律不推：
+      //  - remark/trackingNo 已通过 items[0]._afterMeta 塞进 items JSONB 随行同步，拉回时在
+      //    pullTableAuthoritative 还原为 top-level（免库回写），不丢数据；
+      //  - loss 同理走 items._lossSync；
+      //  - 若直接把本地多余字段推上云，整批 upsert 会报 PGRST204「Could not find the 'xxx' column
+      //    of 'aftersales' in the schema cache」→ 反复弹「部分数据同步失败（表：aftersales）」banner。
+      if(table === 'aftersales'){
+        const afterCols = new Set([
+          'id','order_id','customer_name','phone','sales_id','sales_name',
+          'items','reason','images','status','created_at'
+        ]);
+        snakeData = snakeData.map(function(o){
+          const f = {};
+          Object.keys(o).forEach(function(k){ if(afterCols.has(k)) f[k] = o[k]; });
+          return f;
+        });
+      }
       // upsert（按 id 冲突更新）：单条/单批失败不拖垮整批，但需上抛以便前端提示
       const upsertErrors = [];
       for(let i = 0; i < snakeData.length; i += batchSize){
@@ -2089,7 +2107,7 @@ const DB = {
                 aftersales: new Set(['remark','tracking_no','updated_at'])
               };
               const optSet = optionalColsByTable[table] || null;
-              if(optSet && /column .* does not exist/i.test(String((error && error.message) || (error && error.code) || ''))){
+              if(optSet && /column .* does not exist|schema cache|PGRST204/i.test(String((error && error.message) || (error && error.code) || ''))){
                 const slim = batch.map(function(o){ const f = {}; Object.keys(o).forEach(function(k){
                   if(optSet.has(k)) return;                                   // 剔除云端尚未存在的可选业务列
                   if(table === 'orders' && /^_deleted/.test(k)) return;      // orders 兼容：尚未执行 _deleted 迁移时一并剔除
@@ -6253,13 +6271,25 @@ function submitOrder(){
 async function pushNewOrderToCloudWithRetry(orderId, maxRetries){
   maxRetries = maxRetries || 3;
   if(!window._sbpbClient || !orderId) return { ok: false, attempts: 0, reason: 'no_client' };
+  // 取本地订单的 updatedAt 作为验证基准（编辑场景必须确认云端版本不比本地旧）
+  let localUpdatedAt = 0;
+  try{
+    const localOrder = (DB.get('orders') || []).find(function(o){ return o && o.id === orderId; });
+    if(localOrder && localOrder.updatedAt){
+      localUpdatedAt = Date.parse((''+localOrder.updatedAt).replace(' ', 'T')) || 0;
+    }
+  }catch(e){}
   for(let attempt = 1; attempt <= maxRetries; attempt++){
     try{ await DB.syncTable('orders'); }catch(e){ console.warn('pushNewOrder syncTable 异常:', e && e.message); }
-    // 验证云端是否真的有这一单（防 syncTable 静默吞错误）
+    // 验证云端是否真的有这一单，并且 updated_at 不比本地旧（防 syncTable 静默吞错误或编辑内容未落地）
     try{
-      const { data, error } = await window._sbpbClient.from('orders').select('id').eq('id', orderId).maybeSingle();
+      const { data, error } = await window._sbpbClient.from('orders').select('id,updated_at').eq('id', orderId).maybeSingle();
       if(data && !error && data.id === orderId){
-        return { ok: true, attempts: attempt };
+        const cloudUpdatedAt = data.updated_at ? Date.parse((''+data.updated_at).replace(' ', 'T')) : 0;
+        // 云端存在即满足新建订单；编辑场景额外要求云端时间不比本地旧超过 5s（容差：服务端/客户端时钟偏差、毫秒截断）
+        if(localUpdatedAt <= 0 || !cloudUpdatedAt || cloudUpdatedAt >= localUpdatedAt - 5000){
+          return { ok: true, attempts: attempt };
+        }
       }
     }catch(e){ /* 验证失败，继续重试 */ }
     if(attempt < maxRetries){
@@ -7882,11 +7912,22 @@ async function saveEditOrder(orderId){
   // 关键修复：编辑后强制立即把订单表推上云，确保管理员/其它设备立即看到姓名/日期等改动，
   // 不再依赖 800ms 延迟的 debounce（延迟期间若触发拉取，会用云端旧副本覆盖刚保存的新值）。
   if(typeof syncOrdersNow === 'function'){ try { await syncOrdersNow(); } catch(e){} }
+  // 二次验证：确保云端确实收到本次编辑（防 syncTable 静默失败/超时导致管理员看不到更新）
+  const _pushResult = await pushNewOrderToCloudWithRetry(orderId, 3);
+  if(!_pushResult.ok){
+    try{
+      const _q = JSON.parse(localStorage.getItem('soms__pendingOrderSyncIds') || '[]');
+      if(!_q.includes(orderId)) _q.push(orderId);
+      localStorage.setItem('soms__pendingOrderSyncIds', JSON.stringify(_q));
+    }catch(e){}
+    showToast('订单已保存但云端同步失败，已加入重试队列，请勿关闭页面','error', 5000);
+    setTimeout(function(){ if(window._sbpbClient){ DB.syncTable('orders').catch(function(){}); } }, 5000);
+  }
   navigate('order-saved-success');
 }
 
 // 留仓/上门订单：详情页随时修改备货日期(发货日期)/上门日期(完成日期)，点击“保存修改”生效
-function saveOrderDates(orderId){
+async function saveOrderDates(orderId){
   const orders = DB.get('orders');
   const idx = orders.findIndex(o => o.id === orderId);
   if(idx < 0) return;
@@ -7913,7 +7954,21 @@ function saveOrderDates(orderId){
   }
   orders[idx] = order;
   DB.set('orders', orders);
+  _pinWriteLock(orderId); // 写入窗口锁：防止 350ms 后拉回的云端旧副本覆盖刚保存的日期（防回退）
   showToast('日期已保存','success');
+  // 关键修复（与保存编辑订单同级别保障）：立即推云 + 云端验证 + 失败重试入队，
+  // 确保管理员/其它设备立即看到日期改动，不再依赖 800ms 防抖（延迟期间拉取会用云端旧副本回退刚保存的值）。
+  if(typeof syncOrdersNow === 'function'){ try { await syncOrdersNow(); } catch(e){} }
+  const _pushResult = await pushNewOrderToCloudWithRetry(orderId, 3);
+  if(!_pushResult.ok){
+    try{
+      const _q = JSON.parse(localStorage.getItem('soms__pendingOrderSyncIds') || '[]');
+      if(!_q.includes(orderId)) _q.push(orderId);
+      localStorage.setItem('soms__pendingOrderSyncIds', JSON.stringify(_q));
+    }catch(e){}
+    showToast('日期已保存但云端同步失败，已加入重试队列，请勿关闭页面','error', 5000);
+    setTimeout(function(){ if(window._sbpbClient){ DB.syncTable('orders').catch(function(){}); } }, 5000);
+  }
   renderOrderDetail();
 }
 
@@ -14237,7 +14292,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081608';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081609';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
