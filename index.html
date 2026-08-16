@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081613</div>
+          <div class="brand-sub">v2026081614</div>
         </div>
       </div>
     </div>
@@ -5145,7 +5145,10 @@ function deleteOrder(orderId){
       localStorage.setItem(delKey, JSON.stringify(delSet));
     }catch(e){ /* 忽略本地标记失败 */ }
 
-    schedulePushToCloud(); // 立即把删除墓碑（_deleted + items._delSync 镜像）upsert 上云，跨端生效
+    // 删除推送走「立即 + 兜底」（与提交订单同级别可靠），不再依赖 800ms 防抖的脆弱 fire-and-forget：
+    // 立即 syncOrdersNow() 推墓碑上云；若失败则回退到 schedulePushToCloud() 兜底重试，避免删除只留本地、跨端不可见。
+    if(typeof syncOrdersNow === 'function'){ syncOrdersNow().catch(function(){ schedulePushToCloud(); }); }
+    else { schedulePushToCloud(); }
     showToast('订单已删除，可在回收站恢复' + refundText, 'success');
     navigate('orders');
   });
@@ -5255,7 +5258,8 @@ function cleanupDeleteOne(orderId){
       if(!delSet.includes(orderId)) delSet.push(orderId);
       localStorage.setItem(delKey, JSON.stringify(delSet));
     }catch(e){ /* 忽略本地标记失败 */ }
-    schedulePushToCloud(); // 把墓碑 upsert 上云，跨端生效
+    if(typeof syncOrdersNow === 'function'){ syncOrdersNow().catch(function(){ schedulePushToCloud(); }); }
+    else { schedulePushToCloud(); }
     showToast('订单已删除，可在回收站恢复', 'success');
     // 刷新检索结果（从当前列表中移除已删项）
     window._cleanupAll = (window._cleanupAll || []).filter(o => o.id !== orderId);
@@ -5342,7 +5346,8 @@ function purgeOrder(orderId){
     }
     DB.set('payments', DB.get('payments').filter(p => p.orderId !== orderId));
     showToast('订单已彻底删除','success');
-    schedulePushToCloud(); // 把墓碑（_deleted=true + PURGED 哨兵）upsert 上云，跨端生效
+    if(typeof syncOrdersNow === 'function'){ syncOrdersNow().catch(function(){ schedulePushToCloud(); }); }
+    else { schedulePushToCloud(); }
     renderRecycleBin();
   });
 }
@@ -14390,7 +14395,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081613';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081614';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
