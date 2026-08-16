@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081602</div>
+          <div class="brand-sub">v2026081603</div>
         </div>
       </div>
     </div>
@@ -1560,6 +1560,20 @@ const DB = {
       if(key === 'orders'){
         merged = merged.filter(r => !r || !r.id || cloudIds.has(r.id));
       }
+      // 售后损耗免库回写：afterSaleLoss / aftersales.loss 不在云端列，已从 items JSONB(_lossSync) 还原，
+      // 保证导出/利润/统计读取正确（与写时塞入保持一致；_mergeById 已做"只补不删"保护）。
+      if(key === 'orders' || key === 'aftersales'){
+        merged = (merged || []).map(function(o){
+          if(!o || !Array.isArray(o.items)) return o;
+          let v;
+          o.items.forEach(function(it){ if(it && it._lossSync != null && it._lossSync !== '') v = it._lossSync; });
+          if(v != null && v !== ''){
+            if(key === 'orders' && (o.afterSaleLoss == null)) o.afterSaleLoss = v;
+            if(key === 'aftersales' && (o.loss == null)) o.loss = v;
+          }
+          return o;
+        });
+      }
       localStorage.setItem('soms_'+key, JSON.stringify(key === 'users' ? this._scrubUserPasswords(merged) : merged));
       if(key === 'products') window._lastCloudProducts = cloud || [];
       return merged;
@@ -1739,6 +1753,22 @@ const DB = {
               else if(rv !== undefined){ t.waste = rv; }
             });
           }
+          // ===== 无条件售后损耗(afterSaleLoss / aftersales.loss)保护（与物流单号/损耗同源，免数据库改动）=====
+          // 根因：订单级/售后单级损耗原本只存 top-level，云端无对应列且白名单剔除后不上云；
+          // 现改为塞进各自 items JSONB（标记 _lossSync）随 items 同步。若合并结果 items 中无 _lossSync
+          // （被无损耗的旧副本覆盖），从本地或云端任一持有值补回；只补不删，刻意填 0 表示无损耗，不覆盖。
+          if(Array.isArray(lr.items) && Array.isArray(_finalRow.items) && Array.isArray(r.items)){
+            const _collectLoss = function(row){ let v; (row.items||[]).forEach(function(it){ if(it && it._lossSync != null && it._lossSync !== '') v = it._lossSync; }); return v; };
+            const _finalLoss = _collectLoss(_finalRow);
+            if(_finalLoss == null || _finalLoss === ''){
+              const _lv = _collectLoss(lr), _rv = _collectLoss(r);
+              const _src = (_lv != null && _lv !== '') ? _lv : _rv;
+              if(_src != null && _src !== ''){
+                _finalRow.items[0] = _finalRow.items[0] || {};
+                _finalRow.items[0]._lossSync = _src;
+              }
+            }
+          }
         }
       }
     });
@@ -1845,7 +1875,7 @@ const DB = {
       if(table === 'aftersales'){
         // 可选业务列：loss/remark/tracking_no/updated_at 云端可能尚未执行 ADD COLUMN 迁移，
         // 缺失时由下方"列不存在则剔除可选列重试"的安全兜底处理，不阻断基础同步。
-        const asCols = new Set(['id','order_id','customer_name','phone','sales_id','sales_name','items','reason','images','status','loss','remark','tracking_no','updated_at']);
+        const asCols = new Set(['id','order_id','customer_name','phone','sales_id','sales_name','items','reason','images','status','remark','tracking_no','updated_at']);
         snakeData = snakeData.map(function(o){
           const f = {};
           Object.keys(o).forEach(function(k){ if(asCols.has(k)) f[k] = o[k]; });
@@ -1895,7 +1925,6 @@ const DB = {
           'id','customer_id','customer_name','contact','phone','region','address',
           'sales_id','sales_name','items','total','status','type','order_date',
           'remark','created_at','shipped_at','feedback_at','synced_at','updated_at',
-          'after_sale_loss','after_sale_loss_synced_at',
           '_deleted','_deleted_at','_deleted_by'
         ]);
         snakeData = snakeData.map(function(o){
@@ -1911,12 +1940,13 @@ const DB = {
         try{
           const { error } = await window._sbpbClient.from(table).upsert(batch, { onConflict: 'id' });
             if(error){
-              // 可选业务列：云端可能尚未执行 ADD COLUMN 迁移（如售后损耗 loss/remark/tracking_no/updated_at、
-              // 订单售后损耗 after_sale_loss 等）。缺失时剔除可选列后整批重试，保证基础同步不中断，
-              // 待迁移执行后这些字段自动生效；绝不因可选列缺失而让整批同步报红。
+              // 售后损耗(afterSaleLoss / aftersales.loss)已改为塞进 items JSONB（标记 _lossSync）随 items 同步，
+              // 不再依赖云端额外列，故 orders/aftersales 此处不再保留 loss 类可选列。
+              // 其余可选业务列（remark/tracking_no/updated_at 等）云端可能尚未执行 ADD COLUMN 迁移，
+              // 缺失时剔除可选列后整批重试，保证基础同步不中断；绝不因可选列缺失而让整批同步报红。
               const optionalColsByTable = {
-                orders: new Set(['after_sale_loss','after_sale_loss_synced_at']),
-                aftersales: new Set(['loss','remark','tracking_no','updated_at'])
+                orders: new Set([]),
+                aftersales: new Set(['remark','tracking_no','updated_at'])
               };
               const optSet = optionalColsByTable[table] || null;
               if(optSet && /column .* does not exist/i.test(String((error && error.message) || (error && error.code) || ''))){
@@ -11118,6 +11148,22 @@ function calcDetailLossPreview(orderId, oldLoss){
     '<strong style="color:'+(adjustedProfit>=0?'var(--success)':'var(--danger)')+'">'+money(adjustedProfit)+'</strong></span>';
 }
 
+// 售后损耗免数据库改动：订单级 afterSaleLoss 与售后单级 loss 都塞进各自表的 items JSONB（标记 _lossSync），
+// 随 items 同步上云；_mergeById 与 pullTableAuthoritative 已做"只补不删"保护，根治"一会会消失"。
+// 写入时：top-level 字段（供本机/导出/利润/统计直接读取）+ items[0]._lossSync（供跨端同步传输）双写。
+function _setOrderAfterSaleLoss(order, val){
+  if(!order) return;
+  order.afterSaleLoss = (val == null ? 0 : val);
+  if(Array.isArray(order.items) && order.items.length) order.items[0]._lossSync = order.afterSaleLoss;
+  if(typeof nowStr === 'function') order.updatedAt = nowStr();
+}
+function _setAfterSalesLoss(asRec, val){
+  if(!asRec) return;
+  asRec.loss = (val == null ? 0 : val);
+  if(Array.isArray(asRec.items) && asRec.items.length) asRec.items[0]._lossSync = asRec.loss;
+  if(typeof nowStr === 'function'){ asRec.updatedAt = nowStr(); asRec.updated_at = asRec.updatedAt; }
+}
+
 // 保存售后详情（备注 + 物流单号 + 管理员可编辑损耗并重新核算利润）
 function saveAftersaleDetail(id){
   const isAdmin = currentUser.role === 'admin';
@@ -11138,14 +11184,13 @@ function saveAftersaleDetail(id){
     if(lossEl){
       const newLoss = parseFloat(lossEl.value) || 0;
       if(newLoss < 0){ showToast('售后损耗不能为负数','error'); return; }
-      aftersales[idx].loss = newLoss;
+      _setAfterSalesLoss(aftersales[idx], newLoss);
 
       // 财务联动：重新核算原订单利润（先减旧损耗再加新损耗）
       const orders = DB.get('orders');
       const oIdx = orders.findIndex(o => o.id === aftersales[idx].orderId);
       if(oIdx >= 0){
-        orders[oIdx].afterSaleLoss = (orders[oIdx].afterSaleLoss || 0) - oldLoss + newLoss;
-        orders[oIdx].afterSaleLossSyncedAt = nowStr();
+        _setOrderAfterSaleLoss(orders[oIdx], (orders[oIdx].afterSaleLoss || 0) - oldLoss + newLoss);
         DB.set('orders', orders);
       }
     }
@@ -11416,6 +11461,7 @@ function submitAftersale(){
     createdAt: nowStr()
   };
   aftersales.push(newAS);
+  _setAfterSalesLoss(newAS, loss); // 挂 _lossSync 到 items JSONB，随售后单同步上云（免数据库改动）
   DB.set('aftersales', aftersales);
 
   // 财务联动：原销售订单利润扣减售后损耗金额（仅管理员填写损耗时生效）
@@ -11423,8 +11469,7 @@ function submitAftersale(){
     const orders = DB.get('orders');
     const oIdx = orders.findIndex(o => o.id === order.id);
     if(oIdx >= 0){
-      orders[oIdx].afterSaleLoss = (orders[oIdx].afterSaleLoss || 0) + loss;
-      orders[oIdx].afterSaleLossSyncedAt = nowStr();
+      _setOrderAfterSaleLoss(orders[oIdx], (orders[oIdx].afterSaleLoss || 0) + loss);
       DB.set('orders', orders);
     }
     showToast('售后已创建，原订单利润已扣减损耗 '+money(loss)+' 元','success');
@@ -11520,7 +11565,7 @@ function saveAftersaleEdit(id){
   const orderId = aftersales[idx].orderId;
 
   aftersales[idx].reason = reason;
-  aftersales[idx].loss = newLoss;
+  _setAfterSalesLoss(aftersales[idx], newLoss);
   aftersales[idx].status = newStatus;
   aftersales[idx].updatedAt = nowStr();
   DB.set('aftersales', aftersales);
@@ -11529,8 +11574,7 @@ function saveAftersaleEdit(id){
   const orders = DB.get('orders');
   const oIdx = orders.findIndex(o => o.id === orderId);
   if(oIdx >= 0){
-    orders[oIdx].afterSaleLoss = (orders[oIdx].afterSaleLoss || 0) - oldLoss + newLoss;
-    orders[oIdx].afterSaleLossSyncedAt = nowStr();
+    _setOrderAfterSaleLoss(orders[oIdx], (orders[oIdx].afterSaleLoss || 0) - oldLoss + newLoss);
     DB.set('orders', orders);
   }
 
@@ -11562,13 +11606,12 @@ function updateAftersaleStatus(id, status){
     if(lossEl){
       const newLoss = parseFloat(lossEl.value) || 0;
       if(newLoss < 0){ showToast('售后损耗不能为负数','error'); return; }
-      aftersales[idx].loss = newLoss;
+      _setAfterSalesLoss(aftersales[idx], newLoss);
       // 财务联动：重新核算原订单利润
       const orders = DB.get('orders');
       const oIdx = orders.findIndex(o => o.id === aftersales[idx].orderId);
       if(oIdx >= 0){
-        orders[oIdx].afterSaleLoss = (orders[oIdx].afterSaleLoss || 0) - oldLoss + newLoss;
-        orders[oIdx].afterSaleLossSyncedAt = nowStr();
+        _setOrderAfterSaleLoss(orders[oIdx], (orders[oIdx].afterSaleLoss || 0) - oldLoss + newLoss);
         DB.set('orders', orders);
       }
     }
@@ -13911,7 +13954,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081602';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081603';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
