@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081614</div>
+          <div class="brand-sub">v2026081615</div>
         </div>
       </div>
     </div>
@@ -4321,7 +4321,19 @@ async function renderDashboard(){
     // 今日统计（参考销售员首页）
     // 排除已删除订单，避免统计虚高
     const activeOrders = orders.filter(o => !isOrderDeleted(o));
-    const dateKey = (d) => { const dt = new Date(d); return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`; };
+    // 时区修正（2026-08-16）：created_at 由 nowStr()(本地墙钟、不带时区) 存入 timestamptz 被当作 UTC，
+    // 故存储值的 YYYY-MM-DD 前缀即等于「北京提交日期」。直接取前缀判定，避免 new Date() 在本地时区
+    // 二次转换，使傍晚(北京16-24点)提交的订单跨日误判到「明天」，造成首页/列表"今日"漏单。
+    const dateKey = (d) => {
+      if (d instanceof Date) {
+        return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+      }
+      const m = String(d||'').match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (m) return m[1]+'-'+m[2]+'-'+m[3];
+      const dt = new Date(d);
+      if (isNaN(dt.getTime())) return '';
+      return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
+    };
     const todayStr = dateKey(new Date());
     const todayOrders = activeOrders.filter(o => dateKey(o.createdAt) === todayStr);
     const todaySales = todayOrders.reduce((s,o)=>s+(o.total||0),0);
@@ -4392,7 +4404,19 @@ async function renderDashboard(){
     // 必须与订单列表/回收站保持一致：排除已删除订单，避免首页数字虚高
     const activeOrders = orders.filter(o => !isOrderDeleted(o));
     const myOrders = activeOrders.filter(o => o.salesId === currentUser.id);
-    const dateKey = (d) => { const dt = new Date(d); return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`; };
+    // 时区修正（2026-08-16）：created_at 由 nowStr()(本地墙钟、不带时区) 存入 timestamptz 被当作 UTC，
+    // 故存储值的 YYYY-MM-DD 前缀即等于「北京提交日期」。直接取前缀判定，避免 new Date() 在本地时区
+    // 二次转换，使傍晚(北京16-24点)提交的订单跨日误判到「明天」，造成首页/列表"今日"漏单。
+    const dateKey = (d) => {
+      if (d instanceof Date) {
+        return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+      }
+      const m = String(d||'').match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (m) return m[1]+'-'+m[2]+'-'+m[3];
+      const dt = new Date(d);
+      if (isNaN(dt.getTime())) return '';
+      return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
+    };
     const todayStr = dateKey(new Date());
     const yest = new Date(); yest.setDate(yest.getDate()-1); const yestStr = dateKey(yest);
 
@@ -4591,6 +4615,9 @@ async function renderOrders(){
   let status = window._orderStatus || '';
   const typeFilter = window._orderType || '';
   const dateFilter = window._orderDateFilter || '';
+  // 与首页「今日订单」统一口径：按浏览器本地时区(北京时间)提取 createdAt 的日期(yyyy-mm-dd)，
+  // 而非 created_at.slice(0,10) 的 UTC 字符串，避免列表与首页对「今天」的判断不一致（差1~2单边界单）。
+  const bjDateKey = (d) => { const dt = new Date(d); if(isNaN(dt.getTime())) return ''; return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0'); };
 
   // 管理员：按Tab分状态显示（订单管理含 普通/留仓/上门 三类，通过类型分段切换分离；售后统一在「售后工单」模块）
   if(isAdmin){
@@ -4623,7 +4650,7 @@ async function renderOrders(){
       );
     }
     { const _s = window._expStart, _e = window._expEnd;
-      if(_s||_e) baseBeforeType = baseBeforeType.filter(o => { const d = (o.createdAt||'').slice(0,10); return d && (!_s || d >= _s) && (!_e || d <= _e); });
+      if(_s||_e) baseBeforeType = baseBeforeType.filter(o => { const d = bjDateKey(o.createdAt); return d && (!_s || d >= _s) && (!_e || d <= _e); });
     }
     // 类型分段角标（统计各类型总数，不受当前选中类型影响）
     const typeCounts = {
@@ -4669,7 +4696,7 @@ async function renderOrders(){
     const expStart = window._expStart, expEnd = window._expEnd;
     if((expStart||expEnd)){
       filtered = filtered.filter(o => {
-        const d = (o.createdAt||'').slice(0,10);
+        const d = bjDateKey(o.createdAt);
         if(!d) return false;
         if(expStart && d < expStart) return false;
         if(expEnd && d > expEnd) return false;
@@ -9359,7 +9386,7 @@ function exportOrders(){
   // 时间筛选（按创建日期）
   if(hasDateRange){
     filtered = filtered.filter(o => {
-      const d = (o.createdAt||'').slice(0,10);
+      const d = bjDateKey(o.createdAt);
       if(!d) return false;
       if(expStart && d < expStart) return false;
       if(expEnd && d > expEnd) return false;
@@ -14395,7 +14422,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081614';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081615';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
