@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081703</div>
+          <div class="brand-sub">v2026081704</div>
         </div>
       </div>
     </div>
@@ -3069,11 +3069,14 @@ function parseOrderText(text){
   /* ============ 第一步：提取赠品备注 ============ */
   const remarkLines = [];
   const remarkPatterns = [
+    // 赠品类
     /^送(.{1,20})/,
     /^附赠(.{1,20})/,
     /^赠送(.{1,20})/,
     /(?:送|附赠|赠送|礼品|配件|赠品)[：:]\s*(.{1,30})/,
-    /(?:配套|附带|加送|再加|还送|多送)(.{1,20})/
+    /(?:配套|附带|加送|再加|还送|多送)(.{1,20})/,
+    // 订单备注类（"备注/订单备注/说明" 开头 → 提取冒号后内容作为订单备注）
+    /^(?:备注|订单备注|说明)[：:\s]\s*(.{1,200})/
   ];
   // 逐行扫描赠品
   lines.forEach(line => {
@@ -5523,7 +5526,7 @@ function renderOrderNew(defaultType){
     <!-- 一键识别区 -->
     <div class="recognize-box">
       <div class="rec-title">⚡ 一键识别 / 拍照识别</div>
-      <textarea id="recognizeText" placeholder="粘贴混合订单文本，系统自动拆分为三块：&#10;&#10;示例1（无标签格式）：&#10;安徽省合肥市经济开发区龙湖央景颂 Y8-302&#10;耿 13856429889&#10;福库电饭煲小白贝 3L  2000&#10;三头鹰 32cm 炒锅       700&#10;美的电磁炉  480&#10;送铲子 送蒸屉&#10;&#10;示例2（带标签格式）：&#10;收件人: 林建国&#10;手机号码: 13685820599&#10;所在地区: 浙江省宁波市鄞州区聚贤街道&#10;详细地址: 万科东晟府1幢6单元1205&#10;福库电饭煲小白贝 3L  2000&#10;三头鹰 32cm 炒锅       700&#10;送一个锅铲 附赠硅胶勺"></textarea>
+      <textarea id="recognizeText" placeholder="粘贴客户发来的订单信息（地址、电话、商品、备注等），系统自动识别拆分"></textarea>
       <div class="rec-btns">
         <button class="btn btn-primary" onclick="doRecognize()">⚡ 一键识别</button>
         <button class="btn btn-secondary" onclick="document.getElementById('photoInput').click()">📷 拍照识别</button>
@@ -6273,7 +6276,7 @@ function finishImageRecognize(base64, source){
   showToast('已识别到 '+recognizedCount+' 条信息（模拟OCR），图片已保存','success');
 
   // 演示版：弹出预填提示
-  const demoText = '安徽省合肥市经济开发区龙湖央景颂 Y8-302\n耿 13856429889\n福库电饭煲小白贝 3L 2000\n三头鹰 32cm 炒锅 700\n美的电磁炉 480\n送铲子 送蒸屉';
+  const demoText = '';
   showConfirm('已识别到 '+recognizedCount+' 条信息，是否用识别结果预填表单？（演示数据）', () => {
     document.getElementById('recognizeText').value = demoText;
     doRecognize();
@@ -14557,7 +14560,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081703';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081704';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
