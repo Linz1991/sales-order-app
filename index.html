@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081616</div>
+          <div class="brand-sub">v2026081701</div>
         </div>
       </div>
     </div>
@@ -1982,6 +1982,29 @@ const DB = {
         // 绝不能由“空查询”触发全表清空。
         console.log('表 ['+key+'] 本地与云端均为空，跳过同步');
         return;
+      }
+      // ============ 修复（2026-0817）：删除标记必须上云 ============
+      // 根因：_mergeById 用 _deletedOrderIds 把「本端已删除」的订单整体排除出合并结果(data)，
+      // 导致删除者本机 syncTable 时该单不进 upsert 负载 → _deleted=true 墓碑永远推不上云 →
+      // 其他设备/管理员看不到删除（ORD20260815-dndk8275889 同类问题）。
+      // 现显式把「本地 _deleted===true」的订单作为墓碑补回 data，确保 upsert 上云、多端一致隐藏。
+      if(key === 'orders'){
+        const _delIds = this.get('_deletedOrderIds', []) || [];
+        if(_delIds.length){
+          const _localOrders = this.get('orders', []) || [];
+          _delIds.forEach(function(_id){
+            const _lo = _localOrders.find(function(o){ return o && o.id === _id; });
+            if(_lo && _lo._deleted === true){
+              // 兜底：确保 items[0]._delSync 镜像存在（与 deleteOrder 写入一致），随 items JSONB 上云
+              _lo.items = _lo.items || [];
+              _lo.items[0] = _lo.items[0] || {};
+              _lo.items[0]._delSync = { d: true, at: (_lo._deletedAt || ''), by: (_lo._deletedBy || '') };
+              const _ex = data.find(function(d){ return d && d.id === _id; });
+              if(!_ex){ data = data.concat([_lo]); }
+              else { _ex._deleted = true; _ex._deletedAt = _lo._deletedAt; _ex._deletedBy = _lo._deletedBy; if(_ex.items && _ex.items[0]) _ex.items[0]._delSync = _lo.items[0]._delSync; }
+            }
+          });
+        }
       }
       let snakeData = this._toSnake(data);
       // 客户表：upsert 容错 + 不云端反删（与 products 同理，避免误删其它设备刚建档的客户）。
@@ -4640,6 +4663,25 @@ function doOrderSearch(){
   renderOrders();
 }
 
+// 2026-0817 修复：订单列表搜索框 oninput 会触发 renderOrders() 整页重渲染，
+// 输入框被销毁重建后焦点丢失 → 输入中断、无法继续打字。本函数记录光标位置并在重渲染后恢复焦点。
+function onOrderSearchInput(el){
+  window._orderSearchSel = (typeof el.selectionStart === 'number') ? el.selectionStart : (el.value ? el.value.length : 0);
+  window._orderFilter = el.value;
+  renderOrders();
+}
+// 重渲染后恢复订单搜索框焦点（仅当本次渲染由搜索输入触发时）
+function restoreOrderSearchFocus(){
+  if(window._orderSearchSel == null) return;
+  const _si = document.getElementById('orderSearchInput');
+  if(_si){
+    const p = Math.max(0, Math.min(window._orderSearchSel, _si.value.length));
+    _si.focus();
+    try { _si.setSelectionRange(p, p); } catch(e){}
+  }
+  window._orderSearchSel = null;
+}
+
 async function renderOrders(){
  try {
   // 渲染函数只负责展示，不自己拉网络：navigate()/Realtime/afterWriteRefresh 已保证数据为云端最新。
@@ -4789,7 +4831,7 @@ async function renderOrders(){
       <button class="df-clear" onclick="clearExportDateFilter()">清除</button>
     </div>`;
     // Search bar
-    html += `<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="搜索订单号/客户/电话" value="${keyword}" oninput="window._orderFilter=this.value;renderOrders()"></div></div>`;
+    html += `<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="orderSearchInput" placeholder="搜索订单号/客户/电话" value="${keyword}" oninput="onOrderSearchInput(this)"></div></div>`;
 
     // ===== 订单Tab内容 =====
     if(isMobile){
@@ -4901,6 +4943,7 @@ async function renderOrders(){
     }
     html += `</div>`;
     document.getElementById('mainContent').innerHTML = html;
+    restoreOrderSearchFocus();
     initAdminListVirtualScroll();
     // 检查留仓/上门订单是否到期待流转
     checkOrderAutoFlow();
@@ -5013,7 +5056,7 @@ async function renderOrders(){
         <input type="date" class="df-input" value="${window._salesDateEnd||''}" onchange="window._salesDateEnd=this.value;renderOrders()">
         <button class="df-clear" onclick="window._salesDateStart='';window._salesDateEnd='';renderOrders()">清除</button>
       </div>
-      <div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="orderSearchInput" placeholder="搜索姓名/电话/商品" value="${keyword}" onkeydown="if(event.key==='Enter')doOrderSearch()" oninput="window._orderFilter=this.value;renderOrders()"></div><button class="btn btn-primary btn-sm" onclick="doOrderSearch()">搜索</button></div>`;
+      <div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="orderSearchInput" placeholder="搜索姓名/电话/商品" value="${keyword}" onkeydown="if(event.key==='Enter')doOrderSearch()" oninput="onOrderSearchInput(this)"></div><button class="btn btn-primary btn-sm" onclick="doOrderSearch()">搜索</button></div>`;
 
   if(isMobile){
     // 移动端：卡片布局（字段：客户/电话/状态/备注/创建时间/操作）
@@ -5143,6 +5186,7 @@ async function renderOrders(){
     </div>
   `;
   document.getElementById('mainContent').innerHTML = html;
+  restoreOrderSearchFocus();
   // 检查留仓/上门订单是否到期待流转
   checkOrderAutoFlow();
  } catch(err) {
@@ -9794,6 +9838,15 @@ function itemIsUncalibrated(it){
   return !!(prod && prod.auto_added === true);
 }
 
+// 2026-0817 修复：商品管理检索原用 p.name.includes(keyword) 大小写敏感，
+// 导致输入小写匹配不到大写商品名/分类。统一走本函数（大小写不敏感）。
+function productMatchesKeyword(p, keyword){
+  if(!keyword) return true;
+  const kw = String(keyword).toLowerCase();
+  return (p.name && String(p.name).toLowerCase().includes(kw)) ||
+         (p.category && String(p.category).toLowerCase().includes(kw));
+}
+
 async function renderProducts(){
   // 渲染函数只负责展示，不自己拉网络：navigate()/Realtime/afterWriteRefresh 已保证数据为云端最新。
   if(typeof renderSidebar === 'function') renderSidebar();
@@ -9802,7 +9855,7 @@ async function renderProducts(){
   const keyword = window._productFilter || '';
   let filtered = products;
   if(keyword){
-    filtered = filtered.filter(p => p.name.includes(keyword) || (p.category&&p.category.includes(keyword)));
+    filtered = filtered.filter(p => productMatchesKeyword(p, keyword));
   }
   // 批量删除模式
   const batchMode = window._productBatchMode || false;
@@ -9893,7 +9946,7 @@ function renderProductRowsHtml(){
   const keyword = window._productFilter || '';
   let filtered = products;
   if(keyword){
-    filtered = filtered.filter(p => p.name.includes(keyword) || (p.category&&p.category.includes(keyword)));
+    filtered = filtered.filter(p => productMatchesKeyword(p, keyword));
   }
   // 排序：① 待校准商品（auto_added 或成本未录入）始终置顶并标记「待校准」；
   //       ② 其余按创建时间倒序（无论销售在订单新增还是管理员在商品库新增，最新新增的都排最上，不放末尾）
@@ -9952,7 +10005,7 @@ function renderProductPagerHtml(){
   const products = DB.get('products');
   const keyword = window._productFilter || '';
   let filtered = products;
-  if(keyword) filtered = filtered.filter(p => p.name.includes(keyword) || (p.category&&p.category.includes(keyword)));
+  if(keyword) filtered = filtered.filter(p => productMatchesKeyword(p, keyword));
   const pageSize = window._productPageSize || 20;
   const total = filtered.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -10329,7 +10382,7 @@ function exportSelectedProducts(){
 function exportAllProducts(){
   if(currentUser.role !== 'admin'){ showToast('仅管理员可导出','error'); return; }
   const keyword = window._productFilter || '';
-  const list = DB.get('products').filter(p => !keyword || p.name.includes(keyword) || (p.category&&p.category.includes(keyword)));
+  const list = DB.get('products').filter(p => !keyword || productMatchesKeyword(p, keyword));
   if(!list.length){ showToast('当前筛选没有可导出的商品','error'); return; }
   downloadProductsCSV(list, '商品导出_全部'+list.length+'个_'+new Date().toISOString().slice(0,10)+'.csv');
 }
@@ -10347,7 +10400,7 @@ function toggleProductSelect(productId, checked){
 // 全选当前筛选结果
 function selectAllProducts(){
   const keyword = window._productFilter || '';
-  const filtered = DB.get('products').filter(p => !keyword || p.name.includes(keyword) || (p.category&&p.category.includes(keyword)));
+  const filtered = DB.get('products').filter(p => !keyword || productMatchesKeyword(p, keyword));
   window._productSelectedIds = {};
   filtered.forEach(p => { window._productSelectedIds[p.id] = true; });
   renderProducts();
@@ -14471,7 +14524,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081616';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081701';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
