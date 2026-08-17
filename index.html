@@ -1183,7 +1183,7 @@ html{scroll-behavior:smooth}
 .tag{transition:all .15s ease}
 
 /* Modal fade-in */
-.modal-overlay{animation:fadeIn .2s ease}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:10000;animation:fadeIn .2s ease}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 
 /* ============ Mobile order card ============ */
@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081704</div>
+          <div class="brand-sub">v2026081705</div>
         </div>
       </div>
     </div>
@@ -1395,9 +1395,13 @@ const DB = {
     if(key === 'users') val = this._scrubUserPasswords(val);
     localStorage.setItem('soms_'+key, JSON.stringify(val));
     // 火忘式异步同步到 Supabase
-    this.syncTable(key).catch(function(err){
-      console.warn('后台同步失败 ['+key+']:', err.message);
-    });
+    // audit_log 为本地审计日志，设计上无需跨端传播（见 pushToCloud/pushLocalChanges 注释），
+    // 且其表结构/权限易致 upsert 失败并误报“部分数据同步失败（表：audit_log）”，故跳过上云同步。
+    if(key !== 'audit_log'){
+      this.syncTable(key).catch(function(err){
+        console.warn('后台同步失败 ['+key+']:', err.message);
+      });
+    }
     // 2026-0808：订单/商品写后，立即从云端权威重拉全量并刷新当前视图（Req4），
     // 不依赖本地状态。避免“一端保存后，另一端界面仍显示旧值”。
     // 用防抖合并连续写操作（如逐商品填单号），避免重渲染风暴。
@@ -11015,7 +11019,7 @@ function calcAllPendingFinalPayments(orders){
 
 // 弹出所有销售待收尾款列表
 function showPendingFinalPayments(){
-  var orders = DB.get('orders') || [];
+  var orders = (DB.get('orders') || []).filter(o => !isOrderDeleted(o));
   var balanceOrders = orders.filter(function(o){
     
     var deposit = parseInt(o.deposit) || 0;
@@ -12510,9 +12514,9 @@ async function renderWarehouse(){
 /* ============ 待收尾款（首页入口） ============ */
 function renderCollectBalance(){
   var isAdmin = currentUser.role === 'admin';
-  var keyword = window._balanceKeyword || '';
-  var orders = DB.get('orders');
-  if(!isAdmin) orders = orders.filter(function(o){ return o.salesId === currentUser.id; });
+    var keyword = window._balanceKeyword || '';
+    var orders = (DB.get('orders') || []).filter(o => !isOrderDeleted(o));
+    if(!isAdmin) orders = orders.filter(function(o){ return o.salesId === currentUser.id; });
   var list = orders.filter(function(o){
     // 仅定金订单有尾款，全款订单不纳入待收尾款
     return getOrderRemaining(o) > 0 && (parseInt(o.deposit) || 0) > 0;
@@ -14560,7 +14564,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081704';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081705';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
