@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081708</div>
+          <div class="brand-sub">v2026081709</div>
         </div>
       </div>
     </div>
@@ -13050,6 +13050,7 @@ function renderProfitReport(){
         s.revenue += it.price * it.qty;
         s.cost += cost * it.qty;
         s.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
+        s.loss += (it.waste||0);
       });
       s.loss += o.afterSaleLoss || 0;
       s.profit -= (o.afterSaleLoss || 0);
@@ -13209,6 +13210,7 @@ function renderProfitReport(){
         d.revenue += it.price * it.qty;
         d.cost += cost * it.qty;
         d.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
+        d.loss += (it.waste||0);
       });
       d.loss += o.afterSaleLoss || 0;
       d.profit -= (o.afterSaleLoss || 0);
@@ -13471,6 +13473,7 @@ function exportProfitCSV(){
         s.revenue += it.price * it.qty;
         s.cost += cost * it.qty;
         s.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
+        s.loss += (it.waste||0);
       });
       s.loss += o.afterSaleLoss || 0;
       s.profit -= (o.afterSaleLoss || 0);
@@ -14569,7 +14572,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081708';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081709';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
