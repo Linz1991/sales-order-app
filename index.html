@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081702</div>
+          <div class="brand-sub">v2026081703</div>
         </div>
       </div>
     </div>
@@ -9863,32 +9863,47 @@ function productMatchesKeyword(p, keyword){
          (p.category && String(p.category).toLowerCase().includes(kw));
 }
 
+// 商品管理：下架商品默认隐藏（避免下架后仍能检索到）；管理员点“显示下架”可临时查看并恢复上架
+function _productVisibleFilter(list){
+  if(!Array.isArray(list)) return list || [];
+  if(window._showDelistedProducts) return list;
+  return list.filter(p => (p && p.status) !== 'off');
+}
+function toggleShowDelisted(){
+  window._showDelistedProducts = !window._showDelistedProducts;
+  window._productPage = 1;
+  renderProducts();
+}
+
 async function renderProducts(){
   // 渲染函数只负责展示，不自己拉网络：navigate()/Realtime/afterWriteRefresh 已保证数据为云端最新。
   if(typeof renderSidebar === 'function') renderSidebar();
   const isAdmin = currentUser.role === 'admin';
   const products = DB.get('products');
   const keyword = window._productFilter || '';
+  const delistedCount = products.filter(p => p.status === 'off').length;
   let filtered = products;
   if(keyword){
     filtered = filtered.filter(p => productMatchesKeyword(p, keyword));
   }
+  filtered = _productVisibleFilter(filtered); // 默认隐藏已下架，避免下架商品仍被检索到
   // 批量删除模式
   const batchMode = window._productBatchMode || false;
   const exportMode = window._productExportMode || false;
   const selectedIds = window._productSelectedIds || {};
-  const calibProducts = isAdmin ? products.filter(isUncalibrated) : [];
+  const calibProducts = isAdmin ? _productVisibleFilter(products.filter(isUncalibrated)) : [];
   const needCostAlert = calibProducts.length > 0;
 
   let html = `
     <div class="card">
       <div class="card-title">
         <div style="display:flex;align-items:center;gap:8px">
-          <span class="title-text">🛒 商品列表（共${products.length}个）</span>
+          <span class="title-text">🛒 商品列表（共${filtered.length}个）</span>
           ${needCostAlert ? `<span style="background:#ea580c;color:#fff;font-size:11px;padding:3px 10px;border-radius:4px;font-weight:500;cursor:pointer" onclick="gotoProductPage(1);showToast('请将下列🔶待校准商品的成本补全、售价核准后保存','info')" title="点击跳到待校准商品">🔶 ${calibProducts.length} 个商品待校准售价/成本</span>` : ''}
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           ${isAdmin ? '<button class="btn btn-primary btn-sm" onclick="openProductModal()">+ 新增商品</button>' : ''}
+          ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="toggleShowDelisted()">${window._showDelistedProducts?'🙈 隐藏下架商品':'👁 显示下架('+delistedCount+')'}</button>` : ''}
           ${isAdmin ? '<button class="btn btn-secondary btn-sm" onclick="importProductsExcel()">📥 Excel 导入</button>' : ''}
           ${isAdmin ? '<button class="btn btn-secondary btn-sm" onclick="downloadProductTemplate()">⬇️ 下载模板</button>' : ''}
           ${isAdmin ? '<button class="btn btn-secondary btn-sm" onclick="batchImportProducts()">📋 粘贴导入</button>' : ''}
@@ -9964,6 +9979,7 @@ function renderProductRowsHtml(){
   if(keyword){
     filtered = filtered.filter(p => productMatchesKeyword(p, keyword));
   }
+  filtered = _productVisibleFilter(filtered); // 默认隐藏已下架，避免被检索到
   // 排序：① 待校准商品（auto_added 或成本未录入）始终置顶并标记「待校准」；
   //       ② 其余按创建时间倒序（无论销售在订单新增还是管理员在商品库新增，最新新增的都排最上，不放末尾）
   filtered = filtered.slice().sort(function(a,b){
@@ -10022,6 +10038,7 @@ function renderProductPagerHtml(){
   const keyword = window._productFilter || '';
   let filtered = products;
   if(keyword) filtered = filtered.filter(p => productMatchesKeyword(p, keyword));
+  filtered = _productVisibleFilter(filtered); // 默认隐藏已下架，避免被检索到
   const pageSize = window._productPageSize || 20;
   const total = filtered.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -10398,7 +10415,7 @@ function exportSelectedProducts(){
 function exportAllProducts(){
   if(currentUser.role !== 'admin'){ showToast('仅管理员可导出','error'); return; }
   const keyword = window._productFilter || '';
-  const list = DB.get('products').filter(p => !keyword || productMatchesKeyword(p, keyword));
+  const list = _productVisibleFilter(DB.get('products').filter(p => !keyword || productMatchesKeyword(p, keyword)));
   if(!list.length){ showToast('当前筛选没有可导出的商品','error'); return; }
   downloadProductsCSV(list, '商品导出_全部'+list.length+'个_'+new Date().toISOString().slice(0,10)+'.csv');
 }
@@ -10416,7 +10433,7 @@ function toggleProductSelect(productId, checked){
 // 全选当前筛选结果
 function selectAllProducts(){
   const keyword = window._productFilter || '';
-  const filtered = DB.get('products').filter(p => !keyword || productMatchesKeyword(p, keyword));
+  const filtered = _productVisibleFilter(DB.get('products').filter(p => !keyword || productMatchesKeyword(p, keyword)));
   window._productSelectedIds = {};
   filtered.forEach(p => { window._productSelectedIds[p.id] = true; });
   renderProducts();
@@ -14540,7 +14557,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081702';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081703';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
