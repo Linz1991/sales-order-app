@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081705</div>
+          <div class="brand-sub">v2026081706</div>
         </div>
       </div>
     </div>
@@ -13877,8 +13877,13 @@ function viewImage(src){
 function openModal(modalHtml){
   document.getElementById('modalContainer').innerHTML = modalHtml;
 }
-function closeModal(){
+function closeModal(modalId){
+  // 兼容两种弹窗模式：① openModal 写入 #modalContainer ② createElement+appendChild 插入 #modalWrap/body
   document.getElementById('modalContainer').innerHTML = '';
+  if(modalId){
+    var el = document.getElementById(modalId);
+    if(el) el.remove();
+  }
   window._collectBalancePayment = false;
 }
 
@@ -14564,7 +14569,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081705';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081706';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
