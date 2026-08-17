@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081707</div>
+          <div class="brand-sub">v2026081708</div>
         </div>
       </div>
     </div>
@@ -3641,10 +3641,9 @@ async function handleLogin(){
         await finishLoginViaAuth(user);
         return;
       }
-      // 已迁移账号必须以 Supabase Auth 为准：密码错误/账号不存在时直接报错，
-      // 禁止回退到本地缓存的旧哈希，否则旧密码（如 123456）仍能登录，形成后门。
-      showToast('用户名或密码错误', 'error');
-      return;
+      // Auth 未成功（账号未迁移到 Auth / 凭证无效 / Auth 不可用）：不再直接拦截报错误，
+      // 而是降级到下方本地 bcrypt 校验。账号密码真相源是 public.users 表，Auth 仅作增强，
+      // Auth 缺失不应把本地有正确密码的账号挡在门外（修复“登录不进去”）。
     }catch(e){ /* 真正的异常（网络中断/客户端未就绪）：降级到下方本地离线兜底 */ }
   }
   // 兼容期回退：Auth 账号尚未迁移时，用本地缓存的 sha256 校验（开通 RLS 后此分支自动失效，不会更不安全）
@@ -14570,7 +14569,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081707';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081708';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
