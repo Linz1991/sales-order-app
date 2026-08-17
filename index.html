@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081706</div>
+          <div class="brand-sub">v2026081707</div>
         </div>
       </div>
     </div>
@@ -4758,9 +4758,9 @@ async function renderOrders(){
       const kw = keyword.toLowerCase();
       baseBeforeType = baseBeforeType.filter(o =>
         o.id.toLowerCase().includes(kw) ||
-        (o.customerName||'').includes(keyword) ||
-        (o.contact||'').includes(keyword) ||
-        (o.phone||'').includes(keyword)
+        (o.customerName||'').toLowerCase().includes(kw) ||
+        (o.contact||'').toLowerCase().includes(kw) ||
+        (o.phone||'').toLowerCase().includes(kw)
       );
     }
     { const _s = window._expStart, _e = window._expEnd;
@@ -10917,6 +10917,7 @@ function toggleProductStatus(productId){
   const idx = products.findIndex(p => p.id === productId);
   if(idx >= 0){
     products[idx].status = products[idx].status === 'on' ? 'off' : 'on';
+    products[idx].updatedAt = window.nowStr(); // 2026-0817 修复：上下架必须刷新时间戳，否则 _mergeById 按 createdAt 比较时云端旧值(on)会以「时间戳相等+sig竞争」覆盖本地(off)，导致下架无效、状态停在“在售”
     DB.set('products', products);
     showToast(products[idx].status==='on'?'商品已上架':'商品已下架','success');
     pushSingleProductToCloud(products[idx]); // 单条上推云端，保证上下架状态跨设备同步
@@ -14569,7 +14570,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081706';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081707';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
