@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081903</div>
+          <div class="brand-sub">v2026081904</div>
         </div>
       </div>
     </div>
@@ -1393,6 +1393,23 @@ const DB = {
   },
   set(key, val){
     if(key === 'users') val = this._scrubUserPasswords(val);
+    // v2026081904 行级脏标记：orders/products 写入时记录新增/变化 id，供增量上推只 upsert 脏行
+    // （避免全量 upsert 刷新未改行的 updated_at，导致增量查询退化成全量、egress 暴涨）。
+    if(key === 'orders' || key === 'products'){
+      try{
+        const oldArr = this.get(key, []) || [];
+        const newArr = val || [];
+        const oldById = {};
+        (oldArr||[]).forEach(function(r){ if(r && r.id != null) oldById[r.id] = r; });
+        const dirty = [];
+        (newArr||[]).forEach(function(r){
+          if(!r || r.id == null) return;
+          const o = oldById[r.id];
+          if(!o || JSON.stringify(o) !== JSON.stringify(r)) dirty.push(r.id);
+        });
+        this._addDirty(key, dirty);
+      }catch(e){}
+    }
     localStorage.setItem('soms_'+key, JSON.stringify(val));
     // 火忘式异步同步到 Supabase
     // audit_log 为本地审计日志，设计上无需跨端传播（见 pushToCloud/pushLocalChanges 注释），
@@ -1465,6 +1482,92 @@ const DB = {
     for(const k in this._camelToSnake){
       this._snakeToCamel[this._camelToSnake[k]] = k;
     }
+  },
+
+  // ============ 增量同步（v2026081904 降 egress，避免 Supabase 配额超限）============
+  // 仅 orders/products 有可靠的 updated_at 列且随改动刷新，可做增量拉取；
+  // 其余小表（users/customers/aftersales/payments/commissions）无 updated_at 或行数极小，
+  // 保持全量，但只在「全量兜底周期」(每 2h) 拉取，日常 60s 轮询不拉，以压低 egress。
+  _incrementalTables: ['orders','products'],
+  _fullSyncIntervalMs: 2 * 60 * 60 * 1000, // 2 小时做一次全量兜底（删除传播 + 小表更新 + 一致性）
+
+  _getIncTs(){ try{ return localStorage.getItem('soms_inc_ts') || ''; }catch(e){ return ''; } },
+  _setIncTs(ts){ try{ if(ts) localStorage.setItem('soms_inc_ts', ts); }catch(e){} },
+  _getLastFullAt(){ try{ return parseInt(localStorage.getItem('soms_last_full_at')||'0',10)||0; }catch(e){ return 0; } },
+  _setLastFullAt(t){ try{ localStorage.setItem('soms_last_full_at', String(t)); }catch(e){} },
+
+  // 行级脏标记：orders/products 写入时记录「新增/变化」的行 id，供增量上推只 upsert 脏行，
+  // 避免全量 upsert 刷新未改行的 updated_at（会让增量查询退化成全量，egress 暴涨）。
+  _getDirty(table){ try{ return JSON.parse(localStorage.getItem('soms_dirty_'+table)||'[]'); }catch(e){ return []; } },
+  _addDirty(table, ids){
+    if(!ids || !ids.length) return;
+    try{
+      const s = new Set(this._getDirty(table));
+      ids.forEach(function(id){ if(id != null) s.add(String(id)); });
+      localStorage.setItem('soms_dirty_'+table, JSON.stringify(Array.from(s)));
+    }catch(e){}
+  },
+  _clearDirty(table, ids){
+    if(!ids || !ids.length) return;
+    try{
+      const rm = new Set(ids.map(function(id){ return String(id); }));
+      const left = this._getDirty(table).filter(function(id){ return !rm.has(String(id)); });
+      localStorage.setItem('soms_dirty_'+table, JSON.stringify(left));
+    }catch(e){}
+  },
+
+  // 增量拉取：仅拉 updated_at >= lastTs 的 orders/products（变化的行），与本地合并。
+  // lastTs 取云端返回的最大 updated_at（字符串字典序 == 时间序，因格式 YYYY-MM-DD HH:MM:SS），
+  // 避免本地时钟漂移。首拉 / 全量兜底后 lastTs 为空 → 走全量（由 syncFromCloud 调 loadXxxFromCloud）。
+  async syncIncremental(){
+    if(!window._sbpbClient) return true;
+    this._initMapping();
+    const lastTs = this._getIncTs();
+    let maxTs = lastTs;
+    let hasError = false;
+    for(let i=0;i<this._incrementalTables.length;i++){
+      const t = this._incrementalTables[i];
+      try{
+        let query = window._sbpbClient.from(t).select('*').order('created_at', { ascending: true });
+        if(lastTs){ query = query.gte('updated_at', lastTs); }
+        const { data, error } = await withTimeout(query, 5000, 'syncIncremental('+t+(lastTs?' inc':'')+')');
+        if(error) throw error;
+        const cloud = this._toCamel(data || []);
+        const local = this.get(t, []);
+        const excludeIds = t === 'orders' ? this.get('_deletedOrderIds', []) : (t === 'products' ? this.get('_deletedProductIds', []) : null);
+        let merged = this._mergeById(local, cloud, excludeIds, t);
+        if(t === 'products'){
+          // 保留本地 auto_added 标记（仿 loadProductsFromCloud）
+          const _localFlag = {};
+          (local || []).forEach(function(r){ if(r && r.id != null && r.auto_added === true) _localFlag[r.id] = true; });
+          merged = merged.map(function(r){
+            if(r && r.id != null && _localFlag[r.id] && r.auto_added !== true){ r = Object.assign({}, r); r.auto_added = true; }
+            return r;
+          });
+          window._lastCloudProducts = cloud || [];
+        }
+        if(t === 'orders'){
+          // 软删除墓碑补回本地（仿 loadOrdersFromCloud）：本地已删订单，确保 _delSync 镜像并留在本地
+          const _delIds = this.get('_deletedOrderIds', []) || [];
+          _delIds.forEach(function(_id){
+            const _lo = (local||[]).find(function(o){ return o && o.id === _id; });
+            if(_lo && _lo._deleted === true){
+              _lo.items = _lo.items || []; _lo.items[0] = _lo.items[0] || {};
+              _lo.items[0]._delSync = { d: true, at: (_lo._deletedAt||''), by: (_lo._deletedBy||'') };
+              if(!merged.find(function(m){ return m && m.id === _id; })) merged = merged.concat([_lo]);
+              else { const _ex = merged.find(function(m){ return m && m.id === _id; }); _ex._deleted = true; _ex._deletedAt = _lo._deletedAt; _ex._deletedBy = _lo._deletedBy; if(_ex.items && _ex.items[0]) _ex.items[0]._delSync = _lo.items[0]._delSync; }
+            }
+          });
+        }
+        localStorage.setItem('soms_'+t, JSON.stringify(t === 'users' ? this._scrubUserPasswords(merged) : merged));
+        (cloud||[]).forEach(function(r){ if(r && r.updated_at && (!maxTs || r.updated_at > maxTs)) maxTs = r.updated_at; });
+      }catch(e){
+        console.warn('增量拉取 ['+t+'] 失败:', e.message);
+        hasError = true;
+      }
+    }
+    if(maxTs && maxTs !== lastTs) this._setIncTs(maxTs);
+    return !hasError;
   },
 
   // 从 Supabase 加载单个表数据到 localStorage 缓存
@@ -1950,6 +2053,10 @@ const DB = {
     if(!window._sbpbClient) return;
     if(!this._syncErrorsByTable) this._syncErrorsByTable = {};
     if(this._syncErrorsByTable[key]) delete this._syncErrorsByTable[key];
+    // ===== v2026081904 增量：orders/products 只上推脏行，不拉云端（拉由 syncIncremental 负责），压低 egress =====
+    if(key === 'orders' || key === 'products'){
+      return await this._pushDirtyRows(key);
+    }
     try{
       const table = key;
       const local = this.get(key, []);
@@ -2322,6 +2429,40 @@ const DB = {
     }
   },
 
+  // v2026081904 增量上推：仅 upsert「脏行」（DB.set 时记录的变更 id），不拉云端，压低 egress。
+  // 仅 orders/products 调用（由 syncTable 增量分支转发）。脏行成功上推后清除标记，失败保留以便重试。
+  async _pushDirtyRows(key){
+    if(!window._sbpbClient) return;
+    this._initMapping();
+    const dirty = this._getDirty(key);
+    if(!dirty || !dirty.length){ return; }
+    const local = this.get(key, []) || [];
+    const rows = local.filter(function(r){ return r && dirty.indexOf(String(r.id)) >= 0; });
+    if(!rows.length){ this._clearDirty(key, dirty); return; }
+    let snakeData = this._toSnake(rows);
+    if(key === 'products'){
+      // 含 updated_at：让商品修改刷新云端 updated_at，使其他设备增量拉取能捕获
+      // （修复原 prodCols 不含 updated_at 导致「改商品后其他端看不到」且增量漏改的问题）。
+      const prodCols = new Set(['id','name','price','cost','status','category','created_at','updated_at']);
+      snakeData = snakeData.map(function(o){ const f={}; Object.keys(o).forEach(function(k){ if(prodCols.has(k)) f[k]=o[k]; }); return f; });
+      // 确保 updated_at 非空（北京时间 YYYY-MM-DD HH:MM:SS，与云端 timestamp 列一致），新建/未带时补 nowStr
+      snakeData.forEach(function(o){ if(o.updated_at == null || o.updated_at === ''){ o.updated_at = (typeof window.nowStr === 'function' ? window.nowStr().slice(0,19) : ''); } });
+    }
+    // orders 走通用 snakeData（含 updated_at，云端 trg_orders_updated_at 触发器会再刷新为 now()）。
+    try{
+      const batchSize = 100;
+      for(let i=0;i<snakeData.length;i+=batchSize){
+        const batch = snakeData.slice(i, i+batchSize);
+        const { error } = await withTimeout(window._sbpbClient.from(key).upsert(batch, { onConflict:'id' }), 8000, '_pushDirtyRows('+key+')');
+        if(error) throw error;
+      }
+      this._clearDirty(key, dirty);
+    }catch(e){
+      console.warn('上推脏行 ['+key+'] 失败:', e.message);
+      throw e;
+    }
+  },
+
   // 把单条用户记录直接 upsert 到云端（用于改密码/重置密码等只需更新一条账号的场景）。
   // 避免 syncTable('users') 全量拉取+合并时因 Service Worker 缓存/网络抖动导致失败提示。
   // 注意：这是单向推送本地→云端；登录/自动同步时仍由 _loadTable 的云端权威合并保证多端收敛。
@@ -2350,28 +2491,45 @@ const DB = {
     // 启动/每次全量同步前，先尝试补传之前因网络/超时导致未上云的订单（v2026081607 修复「提交成功但云端没记录」）
     try{ await retryPendingOrderSyncs(); }catch(e){ console.warn('补传待重试订单失败:', e.message); }
     this._setSyncStatus('syncing');
-    const tables = ['users','customers','products','orders','aftersales','payments','commissions','audit_log'];
+    const now = Date.now();
+    const lastFull = this._getLastFullAt();
+    const needFull = !lastFull || (now - lastFull) > this._fullSyncIntervalMs;
     let hasError = false;
-    for(let i = 0; i < tables.length; i++){
+    if(needFull){
+      // 全量兜底：所有表全量拉（保证删除传播 + 小表更新 + 一致性）。每 2h 或首次执行一次，避免日常轮询全量拖垮 egress。
+      const tables = ['users','customers','products','orders','aftersales','payments','commissions','audit_log'];
+      for(let i = 0; i < tables.length; i++){
+        try{
+          let result;
+          // 订单/商品走 NetworkOnly：先推本地未同步数据上云，再用云端全量替换本地缓存（删除传播 + 一致性）。
+          if(tables[i] === 'orders'){
+            result = await this.loadOrdersFromCloud();
+          } else if(tables[i] === 'products'){
+            result = await this.loadProductsFromCloud();
+          } else {
+            result = await this._loadTable(tables[i]);
+          }
+          if(result === null){
+            // audit_log 表可能尚未在 Supabase 创建（需用户跑一次 copyRlsSql 的建表语句），
+            // 此时跳过该表，避免把整体同步状态误报为"失败"。本地审计始终可用。
+            if(tables[i] === 'audit_log'){ console.warn('audit_log 表尚未创建，跳过同步（本地审计仍可用）'); continue; }
+            hasError = true;
+          }
+        }catch(e){
+          console.warn('同步表 ['+tables[i]+'] 失败:', e.message);
+          hasError = true;
+        }
+      }
+      this._setLastFullAt(now);
+    } else {
+      // 日常增量（v2026081904）：orders/products 增量拉 + 上推脏行（脏行上推由 DB.set→syncTable→_pushDirtyRows 触发）；
+      // 小表（users/customers/aftersales/payments/commissions）跳过不拉，压低 egress。
+      // 删除传播与小表更新由 2h 全量兜底保证。
       try{
-      let result;
-      // 订单/商品走 NetworkOnly：先推本地未同步数据上云，再用云端全量替换本地缓存，
-      // 避免 _loadTable 的本地优先合并在多设备间产生不一致（如上门订单徽章数不同）。
-      if(tables[i] === 'orders'){
-        result = await this.loadOrdersFromCloud();
-      } else if(tables[i] === 'products'){
-        result = await this.loadProductsFromCloud();
-      } else {
-        result = await this._loadTable(tables[i]);
-      }
-      if(result === null){
-        // audit_log 表可能尚未在 Supabase 创建（需用户跑一次 copyRlsSql 的建表语句），
-        // 此时跳过该表，避免把整体同步状态误报为"失败"。本地审计始终可用。
-        if(tables[i] === 'audit_log'){ console.warn('audit_log 表尚未创建，跳过同步（本地审计仍可用）'); continue; }
-        hasError = true;
-      }
+        const incOk = await this.syncIncremental();
+        if(!incOk) hasError = true;
       }catch(e){
-        console.warn('同步表 ['+tables[i]+'] 失败:', e.message);
+        console.warn('增量同步失败:', e.message);
         hasError = true;
       }
     }
@@ -14649,7 +14807,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081903';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081904';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
