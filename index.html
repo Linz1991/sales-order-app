@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081901</div>
+          <div class="brand-sub">v2026081902</div>
         </div>
       </div>
     </div>
@@ -1621,8 +1621,9 @@ const DB = {
     // 订单 items 中需跨端同步的「逐商品标量字段」：合并结果该字段为空时从本地/云端同 index 项补回（只补不删）。
     // 新增同步字段只需在此登记，无需再在下方写补丁块（#2 重构：收敛散落补丁）。
     const ITEM_SYNC_SCALAR_FIELDS = [
-      { key: 'trackingNo', isEmpty: function(v){ return !(v && ('' + v).trim()); } },
-      { key: 'waste',      isEmpty: function(v){ return (v === undefined || v === null || v === ''); } }
+      { key: 'trackingNo', isEmpty: function(v){ return !(v && ('' + v).trim()); } }
+      // 注：waste 已移出「只补不删」名单，改为下方「字段级编辑时间戳(_wasteAt)合并」(治本)，
+      // 以根治"整行 LWW + isEmpty(0)=false"导致损耗被旧副本的 0 覆盖丢失。
     ];
     const exSet = (excludeIds && excludeIds.length) ? new Set(excludeIds) : null;
     const map = {};
@@ -1831,7 +1832,31 @@ const DB = {
                 }
               });
             });
-            // 物流单号/损耗仍走原「只补不删」(防旧缓存清单调号/损耗)
+            // 损耗字段级编辑时间戳合并（治本：waste 不再因整行 LWW 被旧副本的 0 覆盖，且 0 视为有效值需保护）
+            // 与 saveItemWaste 打的 items[i]._wasteAt 配套：合并时按 _wasteAt 最新者取胜（含 0）。
+            // 未升级设备不打戳，则该侧视为无戳走兜底（只补不删），不破坏合并收敛。
+            _finalRow.items.forEach(function(t, i){
+              if(!t) return;
+              const l = lr.items[i], rr = r.items[i];
+              const lvAt = l ? (l._wasteAt || '') : '';
+              const rvAt = rr ? (rr._wasteAt || '') : '';
+              const lv = l ? l.waste : undefined;
+              const rv = rr ? rr.waste : undefined;
+              if(lvAt && rvAt && lvAt !== rvAt){
+                t.waste = (lvAt > rvAt) ? lv : rv;            // 两侧都有戳且不同 → 取编辑戳最新者（含 0）
+              } else if(lvAt && !rvAt){
+                t.waste = lv;                                  // 仅本地有戳 → 本地优先
+              } else if(rvAt && !lvAt){
+                t.waste = rv;                                  // 仅云端有戳 → 云端优先
+              } else {
+                // 两侧都无戳或同戳(历史/未触发损耗保存)→ 退回只补不删，0 视为有效值保留不补，避免误清
+                if(t.waste === undefined || t.waste === null || t.waste === ''){
+                  if(lv !== undefined && lv !== null && lv !== '') t.waste = lv;
+                  else if(rv !== undefined && rv !== null && rv !== '') t.waste = rv;
+                }
+              }
+            });
+            // 物流单号仍走原「只补不删」(防旧缓存清单调号)
             (ITEM_SYNC_SCALAR_FIELDS || []).forEach(function(f){
               _finalRow.items.forEach(function(t, i){
                 if(!t) return;
@@ -8631,10 +8656,11 @@ function saveItemWaste(orderId, itemIndex, value) {
   const idx = orders.findIndex(o => o.id === orderId);
   if (idx < 0) return;
   orders[idx].items[itemIndex].waste = parseInt(value) || 0;
+  orders[idx].items[itemIndex]._wasteAt = nowStr(); // 字段级编辑戳：合并按 _wasteAt 最新者取胜，根治损耗被旧副本 0 覆盖
   orders[idx].updatedAt = nowStr();
   DB.set('orders', orders);
   _pinWriteLock(orderId); // 写入窗口锁：防止同步/重拉期间刚填的损耗被旧云端数据覆盖
-  schedulePushToCloud();
+  schedulePushToCloud();  // 保留防抖推送（oninput 高频调用，不过度推云；写锁窗口内本地优先 + 字段级合并双保险）
   // 保存后立即重算利润显示（详情页管理员视图）
   recalcAdminProfit(orderId);
   // 如果当前在列表页，刷新列表以反映最新损耗
@@ -14605,7 +14631,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081901';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081902';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
