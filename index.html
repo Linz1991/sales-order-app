@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081904</div>
+          <div class="brand-sub">v2026081905</div>
         </div>
       </div>
     </div>
@@ -2153,7 +2153,11 @@ const DB = {
       // ② customers 不做“云端按本地清单反删”，否则一端提交会把另一端客户从云端清掉。
       const batchSize = 100; // 提至顶部，避免 _upsertCustomers 在 TDZ 中访问 batchSize
       if(table === 'customers'){
-        const coreCols = new Set(['id','name','contact','phone','region','address','remark','owner_id','gender','created_at','status','updated_at']);
+        // 云端 customers 表实测列：id, name, contact, phone, email, region, address, remark, owner_id, created_at
+        // 前端的 gender / status / updated_at 仅本地保留（云端暂未建列），不同步云端以避免
+        // "Could not find the 'xxx' column" 整批 upsert 失败 → 客户数据永远到不了云端。
+        // 未来如需把这些字段同步，需先在 Supabase customers 表 ADD COLUMN gender/status/updated_at，再扩白名单。
+        const coreCols = new Set(['id','name','contact','phone','email','region','address','remark','owner_id','created_at']);
         const _upsertCustomers = async function(rows){
           for(let i=0;i<rows.length;i+=batchSize){
             const batch = rows.slice(i, i+batchSize);
@@ -2162,11 +2166,11 @@ const DB = {
           }
         };
         try{
-          await _upsertCustomers(snakeData);
-        }catch(e){
-          console.warn('客户全字段同步失败，退化为核心列同步:', e.message);
           const slim = snakeData.map(function(o){ const f={}; Object.keys(o).forEach(function(k){ if(coreCols.has(k)) f[k]=o[k]; }); return f; });
           await _upsertCustomers(slim);
+        }catch(e){
+          console.warn('同步 [customers] 失败:', e.message);
+          this._syncErrorsByTable[key] = (this._syncErrorsByTable[key] || []).concat([(e && e.message) || String(e)]);
         }
         console.log('表 [customers] 同步完成，共 '+data.length+' 条');
         return; // 客户表不执行下方通用云端反删逻辑
@@ -14807,7 +14811,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081904';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081905';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
