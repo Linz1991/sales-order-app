@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081709</div>
+          <div class="brand-sub">v2026081901</div>
         </div>
       </div>
     </div>
@@ -8668,6 +8668,7 @@ async function markItemOrdered(orderId, idx){
   o.items[idx].orderedAt = new Date().toISOString();
   const allOrdered = o.items.length > 0 && o.items.every(it => it.ordered === true);
   const wasPending = o.status === 'pending';
+  const singleProduct = o.items.length === 1; // 单商品订单：点“下单”即视为整单下单
   // 关键修复：每次点击立即落库（不只改内存），并刷新为全精度 updatedAt（含毫秒），
   // 避免防抖推送/15秒定时拉取期间用云端旧值（同秒、毫秒更旧）覆盖本地刚点的「已下单」。
   o.updatedAt = nowStr();
@@ -8679,36 +8680,68 @@ async function markItemOrdered(orderId, idx){
   // 立即同步订单到云端，防止 debounce 期间刷新/切页/自动同步把改动冲掉
   syncOrdersNow().catch(function(){});
   renderOrderDetail();
-  if(allOrdered && wasPending){
-    // 最后一个商品下单：弹确认框，确认后状态改为"已下单"
-    showConfirm('全部商品已下单，确认将该订单状态改为「已下单」？', async function(){
-      const orders2 = DB.get('orders');
-      const o2 = orders2.find(x => x.id === orderId);
-      if(!o2) return;
-      o2.status = 'confirmed';
-      o2.updatedAt = nowStr();
-      DB.set('orders', orders2);
-      _pinWriteLock(orderId); // 写入窗口锁：状态推进到 confirmed，3 秒内禁止云端回退为 pending
-      await syncOrdersNow().catch(function(){});
-      showToast('✅ 订单状态已改为「已下单」','success');
-      // 注意：确认下单后【不】立即释放编辑锁，保持订单锁定直到管理员离开详情页（navigate 会自动释放）。
-      // 这样可防止销售手机端持有的陈旧“待下单”副本（时间戳可能因时钟偏差/晚同步而更新）在下单后把 confirmed 又推回 pending（修复下单回退+按钮抖动）。
-      renderOrderDetail(); // 停留在详情页
-    }, async function(){
-      // 用户取消：撤回最后一个商品的下单标记
-      const orders2 = DB.get('orders');
-      const o2 = orders2.find(x => x.id === orderId);
-      if(o2 && o2.items[idx]){
-        o2.items[idx].ordered = false;
-        o2.items[idx].orderedAt = null;
+  if(wasPending && (allOrdered || singleProduct)){
+    if(singleProduct){
+      // 单商品订单：管理员点“下单”即视为整单下单 → 提示后直接把整个订单状态改为「已下单」
+      showConfirm('该订单仅含 1 件商品，确认下单后整个订单将直接变为「已下单」状态？', async function(){
+        const orders2 = DB.get('orders');
+        const o2 = orders2.find(x => x.id === orderId);
+        if(!o2) return;
+        o2.status = 'confirmed';
         o2.updatedAt = nowStr();
         DB.set('orders', orders2);
-        _pinWriteLock(orderId); // 写入窗口锁：撤销本地已下单标记，3 秒内禁止云端覆盖为已下单
+        _pinWriteLock(orderId); // 写入窗口锁：状态推进到 confirmed，3 秒内禁止云端回退为 pending
         await syncOrdersNow().catch(function(){});
-        releaseOrderLock(orderId).catch(function(){}); // 管理员取消下单，释放锁（Req7）
+        showToast('✅ 订单状态已改为「已下单」','success');
+        // 确认下单后【不】立即释放编辑锁，保持订单锁定直到管理员离开详情页（navigate 会自动释放），
+        // 防止销售端陈旧“待下单”副本把 confirmed 又推回 pending（修复下单回退+按钮抖动）。
         renderOrderDetail(); // 停留在详情页
-      }
-    });
+      }, async function(){
+        // 用户取消：撤回该商品的下单标记（订单保持待下单）
+        const orders2 = DB.get('orders');
+        const o2 = orders2.find(x => x.id === orderId);
+        if(o2 && o2.items[idx]){
+          o2.items[idx].ordered = false;
+          o2.items[idx].orderedAt = null;
+          o2.updatedAt = nowStr();
+          DB.set('orders', orders2);
+          _pinWriteLock(orderId); // 写入窗口锁：撤销本地已下单标记，3 秒内禁止云端覆盖为已下单
+          await syncOrdersNow().catch(function(){});
+          releaseOrderLock(orderId).catch(function(){}); // 管理员取消下单，释放锁（Req7）
+          renderOrderDetail(); // 停留在详情页
+        }
+      });
+    } else {
+      // 多商品订单：最后一个商品下单：弹确认框，确认后状态改为"已下单"
+      showConfirm('全部商品已下单，确认将该订单状态改为「已下单」？', async function(){
+        const orders2 = DB.get('orders');
+        const o2 = orders2.find(x => x.id === orderId);
+        if(!o2) return;
+        o2.status = 'confirmed';
+        o2.updatedAt = nowStr();
+        DB.set('orders', orders2);
+        _pinWriteLock(orderId); // 写入窗口锁：状态推进到 confirmed，3 秒内禁止云端回退为 pending
+        await syncOrdersNow().catch(function(){});
+        showToast('✅ 订单状态已改为「已下单」','success');
+        // 注意：确认下单后【不】立即释放编辑锁，保持订单锁定直到管理员离开详情页（navigate 会自动释放）。
+        // 这样可防止销售手机端持有的陈旧“待下单”副本（时间戳可能因时钟偏差/晚同步而更新）在下单后把 confirmed 又推回 pending（修复下单回退+按钮抖动）。
+        renderOrderDetail(); // 停留在详情页
+      }, async function(){
+        // 用户取消：撤回最后一个商品的下单标记
+        const orders2 = DB.get('orders');
+        const o2 = orders2.find(x => x.id === orderId);
+        if(o2 && o2.items[idx]){
+          o2.items[idx].ordered = false;
+          o2.items[idx].orderedAt = null;
+          o2.updatedAt = nowStr();
+          DB.set('orders', orders2);
+          _pinWriteLock(orderId); // 写入窗口锁：撤销本地已下单标记，3 秒内禁止云端覆盖为已下单
+          await syncOrdersNow().catch(function(){});
+          releaseOrderLock(orderId).catch(function(){}); // 管理员取消下单，释放锁（Req7）
+          renderOrderDetail(); // 停留在详情页
+        }
+      });
+    }
   } else {
     showToast('已标记「' + (o.items[idx].name || '商品') + '」为已下单', 'success');
   }
@@ -14572,7 +14605,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081709';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081901';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
