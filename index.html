@@ -1294,7 +1294,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081902</div>
+          <div class="brand-sub">v2026081903</div>
         </div>
       </div>
     </div>
@@ -1409,8 +1409,12 @@ const DB = {
       if(!window._afterWriteTimers) window._afterWriteTimers = {};
       const k = key;
       clearTimeout(window._afterWriteTimers[k]);
-      window._afterWriteTimers[k] = setTimeout(function(){ window._afterWriteRefresh(k); }, 350);
+      // 2026-0819 卡顿优化：写后重拉防抖 350ms → 800ms，减少连续写操作（如逐商品填单号/损耗）
+      // 触发的「重拉云端 + 整页重建」渲染风暴，缓解卡顿。
+      window._afterWriteTimers[k] = setTimeout(function(){ window._afterWriteRefresh(k); }, 800);
     }
+    // 标记快照脏：任何表写入后，下次 snapshotSyncTables 需重算（否则复用缓存）
+    window._snapshotDirty = true;
   },
 
   // 安全：擦除写入本地的 users 缓存中的 password 字段（即使是哈希），
@@ -3854,6 +3858,9 @@ document.addEventListener('visibilitychange', function(){
 
 // 对可同步的核心表做轻量快照（仅 id 集合+行数），用于判断是否需要刷新当前列表页
 function snapshotSyncTables(){
+  // 2026-0819 卡顿优化：脏标志缓存。无数据写入（_snapshotDirty=false）时直接返回上次签名，
+  // 避免每轮自动同步对 orders 大数组做两次全量 JSON.stringify（98 单 × items），降低主线程占用。
+  if(window._snapshotCache && !window._snapshotDirty) return window._snapshotCache;
   const keys = ['orders','customers','products','aftersales','commissions','payments'];
   const out = {};
   keys.forEach(k => {
@@ -3878,6 +3885,8 @@ function snapshotSyncTables(){
     }).join('||');
     out[k] = sig;
   });
+  window._snapshotCache = out;
+  window._snapshotDirty = false;
   return out;
 }
 
@@ -8703,8 +8712,13 @@ async function markItemOrdered(orderId, idx){
   // 防止 afterWriteRefresh 350ms 后拉到飞行中的云端旧副本把"已下单"冲回"待下单"
   // （根因：客户端时钟偏差 + syncOrdersNow 的 upsert RTT 比 350ms 长）。
   _pinWriteLock(orderId);
-  // 立即同步订单到云端，防止 debounce 期间刷新/切页/自动同步把改动冲掉
-  syncOrdersNow().catch(function(){});
+  // 2026-0819 关键修复：移除「点击即推云端」的 syncOrdersNow()。
+  // 原逻辑在弹确认框【之前】就把 items[0].ordered=true + status=pending 推上云；
+  // 只有用户点确认后才推 status=confirmed。两次推送之间的 pending 窗口，
+  // 会被其他设备（如销售手机持有的待下单副本）整行 LWW 覆盖回 pending，
+  // 导致「商品已下单、订单却待下单」反复出现。
+  // 现改为：点击只落本地+写锁+渲染；会转 confirmed 的场景在【确认回调】里统一推送；
+  // 多商品非全部已下单的普通标记场景，在下方 else 分支立即推送（status 仍为 pending，无害）。
   renderOrderDetail();
   if(wasPending && (allOrdered || singleProduct)){
     if(singleProduct){
@@ -8770,6 +8784,10 @@ async function markItemOrdered(orderId, idx){
     }
   } else {
     showToast('已标记「' + (o.items[idx].name || '商品') + '」为已下单', 'success');
+    // 多商品订单、非全部已下单时的普通标记：立即同步让其他设备看到该商品已下单
+    // （status 仍为 pending，推 pending 无害；整单转 confirmed 的场景已上移到确认回调统一推送）
+    _pinWriteLock(orderId);
+    syncOrdersNow().catch(function(){});
   }
 }
 
@@ -14631,7 +14649,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081902';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081903';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
