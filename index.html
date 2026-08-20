@@ -46,6 +46,27 @@ function _initSupabase(){
 }
 // Supabase Realtime 实时订阅：订单/商品表被其它设备增删改时，当前设备自动拉取最新并刷新（Req3）
 // 注意：需在 Supabase 后台开启表的实时（见随附 SQL），否则订阅收不到事件。
+// Realtime 订阅状态回调（v2026081906 新增断线补偿）：SUBSCRIBED 保持原行为；
+// 断线/超时状态触发一次节流增量补拉（10s 内只触发一次），保证断线期间他人改动能拉回本地。
+// Supabase Realtime 默认会自动重连，本补偿仅兜底"断线期间错过的增量"，不影响正常订阅推送。
+function onRealtimeStatus(table, status){
+  if(status === 'SUBSCRIBED'){
+    console.log('[Realtime] ' + table + ' 已订阅');
+    return;
+  }
+  if(status === 'CHANNEL_ERROR' || status === 'CLOSED' || status === 'TIMED_OUT'){
+    console.warn('[Realtime] ' + table + ' 断线/超时(' + status + ')，10秒后增量补拉');
+    try{
+      if(!window._rtRecoverTimer){
+        window._rtRecoverTimer = setTimeout(function(){
+          window._rtRecoverTimer = null;
+          try{ if(window._sbpbClient) DB.syncFromCloud(); }catch(e){}
+        }, 10000);
+      }
+    }catch(e){}
+  }
+}
+
 function setupRealtime(){
   if(window._realtimeReady) return;
   if(!window._sbpbClient || typeof window._sbpbClient.channel !== 'function') return;
@@ -53,17 +74,17 @@ function setupRealtime(){
     const sb = window._sbpbClient;
     window._rtOrders = sb.channel('rt-orders')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, function(payload){ onRealtimeChange('orders'); })
-      .subscribe(function(status){ if(status === 'SUBSCRIBED') console.log('[Realtime] orders 已订阅'); });
+      .subscribe(function(status){ onRealtimeStatus('orders', status); });
     window._rtProducts = sb.channel('rt-products')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, function(payload){ onRealtimeChange('products'); })
-      .subscribe(function(status){ if(status === 'SUBSCRIBED') console.log('[Realtime] products 已订阅'); });
+      .subscribe(function(status){ onRealtimeStatus('products', status); });
     window._rtAftersales = sb.channel('rt-aftersales')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'aftersales' }, function(payload){ onRealtimeChange('aftersales'); })
-      .subscribe(function(status){ if(status === 'SUBSCRIBED') console.log('[Realtime] aftersales 已订阅'); });
+      .subscribe(function(status){ onRealtimeStatus('aftersales', status); });
     // 客户表订阅：新建订单自动建档的客户、或在客户管理手动维护的客户，任一设备变更后其它设备实时刷新（修复"客户信息未维护到客户管理板块/跨设备看不到"）
     window._rtCustomers = sb.channel('rt-customers')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, function(payload){ onRealtimeChange('customers'); })
-      .subscribe(function(status){ if(status === 'SUBSCRIBED') console.log('[Realtime] customers 已订阅'); });
+      .subscribe(function(status){ onRealtimeStatus('customers', status); });
     // 时钟校准（2026-0813 关键修复）：客户端→服务端时钟偏差是"下单回退"的根因之一。
     // 用 supabase /auth/v1/health 响应 Date 头算 clockSkewMs，nowStr 会补偿；每 5 分钟重校准以跟随 NTP / 跨时区漂移。
     try{
@@ -1294,7 +1315,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081905</div>
+          <div class="brand-sub">v2026081906</div>
         </div>
       </div>
     </div>
@@ -1489,7 +1510,7 @@ const DB = {
   // 其余小表（users/customers/aftersales/payments/commissions）无 updated_at 或行数极小，
   // 保持全量，但只在「全量兜底周期」(每 2h) 拉取，日常 60s 轮询不拉，以压低 egress。
   _incrementalTables: ['orders','products'],
-  _fullSyncIntervalMs: 2 * 60 * 60 * 1000, // 2 小时做一次全量兜底（删除传播 + 小表更新 + 一致性）
+  _fullSyncIntervalMs: 6 * 60 * 60 * 1000, // 6 小时做一次全量兜底（删除传播 + 小表更新 + 一致性）。v2026081906：由 2h 拉长到 6h，降低 pullTableAuthoritative 全量拉取超时概率与 egress 压力
 
   _getIncTs(){ try{ return localStorage.getItem('soms_inc_ts') || ''; }catch(e){ return ''; } },
   _setIncTs(ts){ try{ if(ts) localStorage.setItem('soms_inc_ts', ts); }catch(e){} },
@@ -3983,7 +4004,7 @@ function startAutoSync(){
       }
     }
     finally{ window._autoSyncing = false; }
-  }, 60000);  // 自动同步间隔 15s→60s：Realtime 已负责秒级跨端实时更新，轮询仅兜底，降低全量拉取+整页重建频率，缓解卡顿
+  }, 300000);  // 自动同步间隔 15s→60s→300s(5min)：Realtime 已负责秒级跨端实时更新，轮询仅兜底，拉长到 5min 大幅降低 egress（v2026081906）
   // 联网/断网自动处理：断网标记离线；联网后先拉云端再推本地，保证离线提交的订单不丢
   window.addEventListener('online', function(){
     if(typeof updateSyncBadge === 'function') updateSyncBadge('syncing');
@@ -14811,7 +14832,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081905';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026081906';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
