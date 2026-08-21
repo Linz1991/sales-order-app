@@ -1315,7 +1315,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026082102</div>
+          <div class="brand-sub">v2026082103</div>
         </div>
       </div>
     </div>
@@ -12652,10 +12652,27 @@ async function renderSchedule(){
 
   } else {
     var sorted = orders.slice().sort(function(a,b){ return doorDateOf(b).localeCompare(doorDateOf(a)); });
-    html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>上门日期</th><th>操作</th></tr></thead><tbody>';
-      if(sorted.length){
+    html += '<div class="table-wrap"><table><thead><tr>';
+    if(statusKey === 'pending'){
+      // 待下单页面：隐藏「状态」列（该 tab 下恒为待下单，冗余），改展示商品明细字段，只读，编辑进订单详情页
+      html += '<th>客户</th><th>商品名称</th><th>数量</th><th>货到店</th><th>货到客户</th><th>备注</th><th>上门日期</th><th>操作</th>';
+    } else {
+      html += '<th>客户</th><th>状态</th><th>备注</th><th>上门日期</th><th>操作</th>';
+    }
+    html += '</tr></thead><tbody>';
+    if(sorted.length){
       sorted.forEach(function(o){
-        var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+escapeHtml(o.customerName)+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDate(doorDateOf(o))+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+        if(statusKey === 'pending'){
+          var _items = o.items || [];
+          var _names = _items.length ? _items.map(function(it){ return escapeHtml(it.name||'-'); }).join('<br>') : '-';
+          var _qtys = _items.length ? _items.map(function(it){ return (it.qty||1); }).join('<br>') : '-';
+          var _shops = _items.length ? _items.map(function(it){ return it.shopArrive ? escapeHtml(it.shopArrive) : '-'; }).join('<br>') : '-';
+          var _custs = _items.length ? _items.map(function(it){ return it.customerArrive ? escapeHtml(it.customerArrive) : '-'; }).join('<br>') : '-';
+          var _op = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>';
+          html += '<tr><td>'+orderIdCell(o.id)+'<br>'+escapeHtml(o.customerName)+'</td><td>'+_names+'</td><td>'+_qtys+'</td><td>'+_shops+'</td><td>'+_custs+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDate(doorDateOf(o))+'</td><td style="text-align:center">'+_op+'</td></tr>';
+        } else {
+          var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+escapeHtml(o.customerName)+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDate(doorDateOf(o))+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+        }
       });
     }
     html += '</tbody></table></div>';
