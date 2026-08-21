@@ -6,7 +6,7 @@
 <title>销售订单管理系统</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#0d7377">
-<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="销售管理">
 <link rel="apple-touch-icon" href="icon-192.png">
@@ -1315,7 +1315,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026082103</div>
+          <div class="brand-sub">v2026082104</div>
         </div>
       </div>
     </div>
@@ -12654,24 +12654,29 @@ async function renderSchedule(){
     var sorted = orders.slice().sort(function(a,b){ return doorDateOf(b).localeCompare(doorDateOf(a)); });
     html += '<div class="table-wrap"><table><thead><tr>';
     if(statusKey === 'pending'){
-      // 待下单页面：隐藏「状态」列（该 tab 下恒为待下单，冗余），改展示商品明细字段，只读，编辑进订单详情页
-      html += '<th>客户</th><th>商品名称</th><th>数量</th><th>货到店</th><th>货到客户</th><th>备注</th><th>上门日期</th><th>操作</th>';
+      // 待下单页面：隐藏「状态」列（该 tab 下恒为待下单，冗余），以子表格展示商品明细，编辑进订单详情页
+      html += '<th>客户</th><th>商品明细</th><th>备注</th><th>上门日期</th><th>操作</th>';
     } else {
       html += '<th>客户</th><th>状态</th><th>备注</th><th>上门日期</th><th>操作</th>';
     }
     html += '</tr></thead><tbody>';
     if(sorted.length){
       sorted.forEach(function(o){
+        var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>';
         if(statusKey === 'pending'){
-          var _items = o.items || [];
-          var _names = _items.length ? _items.map(function(it){ return escapeHtml(it.name||'-'); }).join('<br>') : '-';
-          var _qtys = _items.length ? _items.map(function(it){ return (it.qty||1); }).join('<br>') : '-';
-          var _shops = _items.length ? _items.map(function(it){ return it.shopArrive ? escapeHtml(it.shopArrive) : '-'; }).join('<br>') : '-';
-          var _custs = _items.length ? _items.map(function(it){ return it.customerArrive ? escapeHtml(it.customerArrive) : '-'; }).join('<br>') : '-';
-          var _op = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>';
-          html += '<tr><td>'+orderIdCell(o.id)+'<br>'+escapeHtml(o.customerName)+'</td><td>'+_names+'</td><td>'+_qtys+'</td><td>'+_shops+'</td><td>'+_custs+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDate(doorDateOf(o))+'</td><td style="text-align:center">'+_op+'</td></tr>';
+          html += '<tr>';
+          html += '<td style="vertical-align:top">'+orderIdCell(o.id)+'<br>'+escapeHtml(o.customerName||'-')+'</td>';
+          html += '<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>货到店</th><th>货到客户</th></tr></thead><tbody>';
+          (o.items||[]).forEach(function(it){
+            html += '<tr><td>'+escapeHtml(it.name||'-')+'</td><td>'+(it.qty||1)+'</td><td>'+(it.shopArrive ? escapeHtml(it.shopArrive) : '-')+'</td><td>'+(it.customerArrive ? escapeHtml(it.customerArrive) : '-')+'</td></tr>';
+          });
+          html += '</tbody></table></td>';
+          html += '<td style="vertical-align:top">'+(o.remark||'-')+'</td>';
+          html += '<td style="vertical-align:top">'+formatOrderDate(doorDateOf(o))+'</td>';
+          html += '<td style="vertical-align:top;text-align:center">'+opHtml+'</td>';
+          html += '</tr>';
         } else {
-          var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+escapeHtml(o.customerName)+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDate(doorDateOf(o))+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+          html += '<tr><td>'+orderIdCell(o.id)+'<br>'+escapeHtml(o.customerName)+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDate(doorDateOf(o))+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
         }
       });
     }
