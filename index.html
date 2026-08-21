@@ -46,7 +46,7 @@ function _initSupabase(){
 }
 // Supabase Realtime 实时订阅：订单/商品表被其它设备增删改时，当前设备自动拉取最新并刷新（Req3）
 // 注意：需在 Supabase 后台开启表的实时（见随附 SQL），否则订阅收不到事件。
-// Realtime 订阅状态回调（v2026081906 新增断线补偿）：SUBSCRIBED 保持原行为；
+// Realtime 订阅状态回调（v2026082101 新增断线补偿）：SUBSCRIBED 保持原行为；
 // 断线/超时状态触发一次节流增量补拉（10s 内只触发一次），保证断线期间他人改动能拉回本地。
 // Supabase Realtime 默认会自动重连，本补偿仅兜底"断线期间错过的增量"，不影响正常订阅推送。
 function onRealtimeStatus(table, status){
@@ -1315,7 +1315,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026081906</div>
+          <div class="brand-sub">v2026082101</div>
         </div>
       </div>
     </div>
@@ -1396,6 +1396,7 @@ const DB = {
     actorId:'actor_id', actorName:'actor_name', actorRole:'actor_role', action:'action',
     targetType:'target_type', targetId:'target_id', targetLabel:'target_label', before:'before', after:'after', detail:'detail',
     lockedBy:'locked_by', lockedAt:'locked_at',
+    completedAt:'completed_at', confirmedAt:'confirmed_at',
     _deleted:'_deleted', _deletedAt:'_deleted_at', _deletedBy:'_deleted_by'
   },
   _snakeToCamel: {},
@@ -1510,7 +1511,7 @@ const DB = {
   // 其余小表（users/customers/aftersales/payments/commissions）无 updated_at 或行数极小，
   // 保持全量，但只在「全量兜底周期」(每 2h) 拉取，日常 60s 轮询不拉，以压低 egress。
   _incrementalTables: ['orders','products'],
-  _fullSyncIntervalMs: 6 * 60 * 60 * 1000, // 6 小时做一次全量兜底（删除传播 + 小表更新 + 一致性）。v2026081906：由 2h 拉长到 6h，降低 pullTableAuthoritative 全量拉取超时概率与 egress 压力
+  _fullSyncIntervalMs: 6 * 60 * 60 * 1000, // 6 小时做一次全量兜底（删除传播 + 小表更新 + 一致性）。v2026082101：由 2h 拉长到 6h，降低 pullTableAuthoritative 全量拉取超时概率与 egress 压力
 
   _getIncTs(){ try{ return localStorage.getItem('soms_inc_ts') || ''; }catch(e){ return ''; } },
   _setIncTs(ts){ try{ if(ts) localStorage.setItem('soms_inc_ts', ts); }catch(e){} },
@@ -4004,7 +4005,7 @@ function startAutoSync(){
       }
     }
     finally{ window._autoSyncing = false; }
-  }, 300000);  // 自动同步间隔 15s→60s→300s(5min)：Realtime 已负责秒级跨端实时更新，轮询仅兜底，拉长到 5min 大幅降低 egress（v2026081906）
+  }, 300000);  // 自动同步间隔 15s→60s→300s(5min)：Realtime 已负责秒级跨端实时更新，轮询仅兜底，拉长到 5min 大幅降低 egress（v2026082101）
   // 联网/断网自动处理：断网标记离线；联网后先拉云端再推本地，保证离线提交的订单不丢
   window.addEventListener('online', function(){
     if(typeof updateSyncBadge === 'function') updateSyncBadge('syncing');
@@ -7056,13 +7057,14 @@ function renderOrderDetail(){
               <th>成本</th>
               <th>损耗</th>
               <th>利润</th>
-              <th>是否备货</th>
+              <th>货到店</th>
+              <th>货到客户</th>
             ` : `
               <th>商品名称</th>
               <th>数量</th>
               <th>售价</th>
               ${isAdmin ? '<th>成本</th><th>损耗</th><th>利润</th>' : ''}
-              ${isDoor ? '<th>是否备货</th>' : ''}
+              ${isDoor ? '<th>货到店</th><th>货到客户</th>' : ''}
               ${isAdmin && (order.status==='pending' || order.items && order.items.some(it=>it.ordered)) ? '<th>下单</th>' : ''}
               ${isAdmin && order.type==='warehouse' && !hideInlineTracking ? '<th>物流单号</th>' : ''}
               ${editMode ? '<th>操作</th>' : ''}
@@ -7083,7 +7085,8 @@ function renderOrderDetail(){
                   <td>${money(cost)}</td>
                   <td><input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px;color:var(--danger);font-weight:600" id="wasteItem_${i}" oninput="saveItemWaste('${order.id}',${i},this.value)" onchange="saveItemWaste('${order.id}',${i},this.value)"></td>
                   <td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}" id="adminItemProfit_${i}">${money(itemProfit)}</td>
-                  <td><select class="form-control" id="doorStockItem_${i}" style="padding:6px 10px;width:70px" onchange="saveItemStock('${order.id}',${i},this.value)"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select></td>
+                  <td><input type="text" class="form-control" id="doorShopItem_${i}" value="${escapeHtml(it.shopArrive)||''}" placeholder="物流单号/文字" style="padding:6px 10px;min-width:120px" onchange="saveItemArrive('${order.id}',${i},'shop',this.value)"></td>
+                  <td><input type="text" class="form-control" id="doorCustomerItem_${i}" value="${escapeHtml(it.customerArrive)||''}" placeholder="物流单号/文字" style="padding:6px 10px;min-width:120px" onchange="saveItemArrive('${order.id}',${i},'customer',this.value)"></td>
                 ` : `
                   <td>${editMode ? `<input type="text" class="form-control" id="editItemName_${i}" value="${escapeHtml(it.name)}" style="padding:6px 10px">` : it.name}${itemIsUncalibrated(it) ? '<span style="background:#f59e0b;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;margin-left:6px;font-weight:500;vertical-align:middle;white-space:nowrap">🔶 待校准</span>' : ''}</td>
                   <td>${editMode ? `<input type="number" class="form-control" id="editItemQty_${i}" value="${it.qty}" min="1" style="padding:6px 10px;width:60px" onchange="recalcEditItem(${i})">` : it.qty}</td>
@@ -7093,7 +7096,8 @@ function renderOrderDetail(){
                   ${isAdmin ? `<td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}">${money(itemProfit)}</td>` : ''}
                   ${(isAdmin && (order.status==='pending' || order.items && order.items.some(it=>it.ordered))) ? `<td>${it.ordered ? '<button class="btn btn-sm" title="双击撤回下单" ondblclick="markItemUnordered(\''+order.id+'\','+i+')" style="background:#3b82f6;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer">已下单</button>' : '<button class="btn btn-success btn-sm" onclick="markItemOrdered(\''+order.id+'\','+i+')">下单</button>'}</td>` : ''}
                   ${(isAdmin && order.type==='warehouse' && !hideInlineTracking) ? `<td><input type="text" class="form-control" id="whTrackItem_${i}" value="${escapeHtml(it.trackingNo) || ''}" placeholder="输入运单号" style="padding:6px 10px;min-width:150px">${it.trackingNo ? `<a class="btn-link" style="margin-left:6px;white-space:nowrap" onclick="queryLogistics(escapeJsStr(order.id), ${i}, document.getElementById('whTrackItem_${i}').value)">查询</a>` : ''}</td>` : ''}
-                  ${isDoor ? `<td>${editMode ? `<select class="form-control" id="editItemStock_${i}" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : ((isAdmin || currentUser.role==='sales') ? `<select class="form-control" onchange="saveItemStock('${order.id}',${i},this.value)" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : (it.stock==='是'?'<span class="tag tag-completed">已备货</span>':'<span class="tag tag-pending">未备货</span>'))}</td>` : ''}
+                  ${isDoor ? `<td><input type="text" class="form-control" id="doorShopItem_${i}" value="${escapeHtml(it.shopArrive)||''}" placeholder="物流单号/文字" style="padding:6px 10px;min-width:120px" onchange="saveItemArrive('${order.id}',${i},'shop',this.value)"></td>` : ''}
+                  ${isDoor ? `<td><input type="text" class="form-control" id="doorCustomerItem_${i}" value="${escapeHtml(it.customerArrive)||''}" placeholder="物流单号/文字" style="padding:6px 10px;min-width:120px" onchange="saveItemArrive('${order.id}',${i},'customer',this.value)"></td>` : ''}
                   ${editMode ? `<td><button class="btn-link danger" onclick="removeEditItem(${i})">删除</button></td>` : ''}
                 `}
               </tr>
@@ -7597,10 +7601,12 @@ function fmtExportDateTime(dtStr){
     String(d.getSeconds()).padStart(2,'0');
 }
 
-// 一键复制当前订单信息（多行格式：客户行 + 每个商品一行 + 备注行）
+// 一键复制当前订单信息（多行格式：客户行 + 每个商品一行[含货到店/货到客户] + 备注行）
 function copySingleOrderInfo(orderId){
   const order = DB.get('orders').find(o => o.id === orderId);
   if(!order){ showToast('订单不存在','error'); return; }
+  // 是否为物流单号（纯字母数字/连字符、长度≥6 视为快递单号，前面加#；含中文/空格视为文字，不加#）
+  const _isTracking = function(v){ return /^[A-Za-z0-9\-]{6,}$/.test((v||'').trim()); };
   const lines = [];
   // 第一行：客户 电话 地址
   let head = (order.customerName || '未知客户');
@@ -7609,9 +7615,16 @@ function copySingleOrderInfo(orderId){
   if(addr) head += addr;
   else if(order.region || order.address) head += (order.region || '') + (order.address || '');
   lines.push(head);
-  // 每个商品一行：商品名 ×数量
+  // 每个商品一行：商品名 ×数量 + 货到店/货到客户内容（物流单号前加#）
   if(order.items && order.items.length){
-    order.items.forEach(it => { lines.push((it.name || '未命名商品') + ' ×' + (it.qty || 1)); });
+    order.items.forEach(function(it){
+      let line = (it.name || '未命名商品') + ' ×' + (it.qty || 1);
+      const shop = (it.shopArrive || '').trim();
+      const cust = (it.customerArrive || '').trim();
+      if(shop) line += '  货到店：' + (_isTracking(shop) ? '#' + shop : shop);
+      if(cust) line += '  货到客户：' + (_isTracking(cust) ? '#' + cust : cust);
+      lines.push(line);
+    });
   }
   // 备注行（始终显示）
   lines.push('备注：' + (order.remark || ''));
@@ -7970,13 +7983,13 @@ function setOrderCompleted(orderId){
   updateOrderStatus(orderId, 'completed');
 }
 
-// 上门订单：当全部商品的备货状态均为“已备货”(是) 且当前为待下单(pending)时，自动流转为已下单(confirmed)
+// 上门订单：当全部商品的「货到店」或「货到客户」至少填了一个，且当前为待下单(pending)时，自动流转为已下单(confirmed)
 function autoDoorConfirmIfAllStocked(order){
   if(order.type !== 'door' || order.status !== 'pending') return false;
   if(!order.items || !order.items.length) return false;
-  const allStocked = order.items.every(it => it.stock === '是');
-  if(allStocked){
-    // 上门订单备货齐自动转「已下单」：先固化成本快照（此后不再随商品库变动）
+  const allFilled = order.items.every(it => (it.shopArrive && String(it.shopArrive).trim() !== '') || (it.customerArrive && String(it.customerArrive).trim() !== ''));
+  if(allFilled){
+    // 上门订单「货到店/货到客户」全部填齐自动转「已下单」：先固化成本快照（此后不再随商品库变动）
     freezeOrderItemCosts(order);
     order.status = 'confirmed';
     order.confirmedAt = nowStr();
@@ -9119,6 +9132,33 @@ function saveItemStock(orderId, itemIndex, value) {
   showToast(flowed ? '全部商品已备货，订单已自动转为「已下单」' : '备货状态已更新', 'success');
 }
 
+// 上门订单：商品「货到店 / 货到客户」输入框内容（物流单号或文字），销售/管理员可直接编辑，无需进入完整编辑模式
+function saveItemArrive(orderId, itemIndex, type, value){
+  const orders = DB.get('orders');
+  const idx = orders.findIndex(o => o.id === orderId);
+  if(idx < 0) return;
+  if(currentUser.role !== 'admin' && currentUser.role !== 'sales'){
+    showToast('仅销售或管理员可修改', 'error');
+    return;
+  }
+  const it = orders[idx] && orders[idx].items && orders[idx].items[itemIndex];
+  if(!it) return;
+  const field = (type === 'shop') ? 'shopArrive' : 'customerArrive';
+  it[field] = (value == null ? '' : String(value));
+  const flowed = autoDoorConfirmIfAllStocked(orders[idx]);
+  orders[idx].updatedAt = nowStr();
+  DB.set('orders', orders);
+  _pinWriteLock(orderId); // 写入窗口锁：防止同步/重拉期间改动被旧云端数据覆盖
+  syncOrdersNow().catch(function(){});
+  renderOrderDetail();
+  if(flowed){
+    showToast('全部商品均已填写「货到店/货到客户」，订单已自动转为「已下单」', 'success');
+  } else {
+    const filled = orders[idx].items.filter(it => (it.shopArrive && String(it.shopArrive).trim() !== '') || (it.customerArrive && String(it.customerArrive).trim() !== '')).length;
+    showToast('已保存（' + filled + '/' + orders[idx].items.length + ' 个商品已填写货到店/货到客户，全部填写后自动转为「已下单」）', 'success');
+  }
+}
+
 // 上门订单详情（管理员查看）：保存商品「是否备货」修改，并回存损耗与日期
 function saveDoorDetail(orderId){
   const orders = DB.get('orders');
@@ -9136,8 +9176,10 @@ function saveDoorDetail(orderId){
   }
   o.updatedAt = nowStr(); // 关键：刷新时间戳，确保上门订单的备货/损耗/日期改动能同步到云端并被其它端识别为最新
   o.items.forEach((it, i) => {
-    const sEl = document.getElementById('doorStockItem_' + i);
-    if(sEl !== null) it.stock = (sEl.value === '是' ? '是' : '否');
+    const sEl = document.getElementById('doorShopItem_' + i);
+    if(sEl !== null) it.shopArrive = (sEl.value || '');
+    const cEl = document.getElementById('doorCustomerItem_' + i);
+    if(cEl !== null) it.customerArrive = (cEl.value || '');
     const wEl = document.getElementById('wasteItem_' + i);
     if(wEl !== null) it.waste = parseInt(wEl.value) || 0;
   });
@@ -9147,10 +9189,10 @@ function saveDoorDetail(orderId){
   syncOrdersNow().catch(function(){});
   let msg;
   if(flowed){
-    msg = '全部商品已备货，订单已自动转为「已下单」';
+    msg = '全部商品均已填写「货到店/货到客户」，订单已自动转为「已下单」';
   } else {
-    const stocked = o.items.filter(it => it.stock === '是').length;
-    msg = '已保存（' + stocked + '/' + o.items.length + ' 个商品已备货，全部备货后订单自动转为「已下单」）';
+    const filled = o.items.filter(it => (it.shopArrive && String(it.shopArrive).trim() !== '') || (it.customerArrive && String(it.customerArrive).trim() !== '')).length;
+    msg = '已保存（' + filled + '/' + o.items.length + ' 个商品已填写货到店/货到客户，全部填写后自动转为「已下单」）';
   }
   showToast(msg, 'success');
   renderOrderDetail();
