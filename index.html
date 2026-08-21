@@ -1315,7 +1315,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026082101</div>
+          <div class="brand-sub">v2026082102</div>
         </div>
       </div>
     </div>
@@ -8294,8 +8294,6 @@ async function saveEditOrder(orderId){
     it.qty = qty;
     it.subtotal = price * qty;
     total += it.subtotal;
-    const stockEl = document.getElementById('editItemStock_'+i);
-    if(stockEl) it.stock = stockEl.value;
     // 同时回读物流单号（管理员可在编辑态直接改运单号；分支2输入框现已带 id，避免保存时丢失）
     const tEl = document.getElementById('trackItem_'+i);
     if(tEl !== null) it.trackingNo = (tEl.value || '').trim();
@@ -8868,8 +8866,6 @@ function saveItemWaste(orderId, itemIndex, value) {
   schedulePushToCloud();  // 保留防抖推送（oninput 高频调用，不过度推云；写锁窗口内本地优先 + 字段级合并双保险）
   // 保存后立即重算利润显示（详情页管理员视图）
   recalcAdminProfit(orderId);
-  // 如果当前在列表页，刷新列表以反映最新损耗
-  if(currentRoute === 'orders') renderOrders();
 }
 
 // 管理员对订单逐商品标记"已下单"：点击后该商品 ordered=true；全部商品已下单则订单状态转为"已下单"(confirmed)
@@ -9110,26 +9106,6 @@ async function saveAdminOrder(orderId){
   // 返回对应列表（confirmed/shipped 归入「已下单」Tab；feedback_done 归入「已完成」Tab；completed 归入「已完成」Tab）
   window._orderTab = (o.status === 'pending') ? 'pending' : (o.status === 'feedback' ? 'feedback' : (o.status === 'feedback_done' ? 'completed' : (o.status === 'completed' ? 'completed' : 'confirmed')));
   renderOrders();
-}
-
-// 上门订单：标记商品是否备货（销售/管理员可直接编辑，无需进入完整编辑模式）
-function saveItemStock(orderId, itemIndex, value) {
-  const orders = DB.get('orders');
-  const idx = orders.findIndex(o => o.id === orderId);
-  if (idx < 0) return;
-  if (currentUser.role !== 'admin' && currentUser.role !== 'sales') {
-    showToast('仅销售或管理员可修改备货状态', 'error');
-    return;
-  }
-  orders[idx].items[itemIndex].stock = (value === '是' ? '是' : '否');
-  const flowed = autoDoorConfirmIfAllStocked(orders[idx]);
-  orders[idx].updatedAt = nowStr();
-  DB.set('orders', orders);
-  _pinWriteLock(orderId); // 写入窗口锁：防止同步/重拉期间备货/自动流转状态被旧云端数据覆盖
-  // 立即同步订单表到云端（关键状态变更），避免防抖/切页期间改动丢失
-  syncOrdersNow().catch(function(){});
-  renderOrderDetail();
-  showToast(flowed ? '全部商品已备货，订单已自动转为「已下单」' : '备货状态已更新', 'success');
 }
 
 // 上门订单：商品「货到店 / 货到客户」输入框内容（物流单号或文字），销售/管理员可直接编辑，无需进入完整编辑模式
