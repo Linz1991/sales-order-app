@@ -1315,7 +1315,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026082304</div>
+          <div class="brand-sub">v2026082305</div>
         </div>
       </div>
     </div>
@@ -7594,12 +7594,27 @@ function copyFullOrderInfo(orderId){
 // 导出用日期格式化：2026/8/1 19:07:00（斜杠分隔，无前导零，含秒）
 function fmtExportDateTime(dtStr){
   if(!dtStr) return '';
+  // 约定：createdAt 语义为「北京时间墙钟」字符串（nowStr 生成 / 云端同步回来带 Z 的 ISO，其数字即北京时刻）。
+  // 直接提取 Y-M-D H:M:S 数字分量格式化，不依赖 new Date 的时区解释——
+  // 否则带 Z 的 ISO 会被当 UTC 再叠加本地 +8h，使 14:25 显示成 22:25（导出时间对不上）。
+  // 与详情页 formatOrderDateTime 同一处理思路：去 T、去时区后缀后取数字。
+  var s = ('' + dtStr).trim().replace('T', ' ').replace(/[Zz]$/, '').replace(/[+\-]\d{2}:?\d{2}.*$/, '');
+  var m = s.match(/(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/);
+  if(m){
+    var Y=+m[1], Mo=+m[2], D=+m[3], H=+m[4], Mi=+m[5], S=(m[6]!==undefined?+m[6]:0);
+    return Y + '/' + Mo + '/' + D + ' ' +
+      String(H).padStart(2,'0') + ':' + String(Mi).padStart(2,'0') + ':' + String(S).padStart(2,'0');
+  }
+  // 兜底：无法匹配标准格式时，按北京时间格式化（避免极端脏数据直接显示 raw 串）
   var d = new Date(dtStr);
-  if(isNaN(d.getTime())) return dtStr;
-  return d.getFullYear() + '/' + (d.getMonth()+1) + '/' + d.getDate() + ' ' +
-    String(d.getHours()).padStart(2,'0') + ':' +
-    String(d.getMinutes()).padStart(2,'0') + ':' +
-    String(d.getSeconds()).padStart(2,'0');
+  if(isNaN(d.getTime())) return ('' + dtStr);
+  try{
+    var p = new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).formatToParts(d);
+    var map={}; p.forEach(function(x){ map[x.type]=x.value; });
+    return (map.year||'')+'/'+(map.month||'')+'/'+(map.day||'')+' '+(map.hour||'')+':'+(map.minute||'')+':'+(map.second||'');
+  }catch(e){
+    return d.getFullYear()+'/'+(d.getMonth()+1)+'/'+d.getDate()+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
+  }
 }
 
 // 一键复制当前订单信息（多行格式：客户行 + 每个商品一行 + 备注行）
@@ -14837,7 +14852,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082304';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082305';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
