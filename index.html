@@ -1315,7 +1315,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026082201</div>
+          <div class="brand-sub">v2026082301</div>
         </div>
       </div>
     </div>
@@ -1388,6 +1388,7 @@ const DB = {
   _camelToSnake: {
     customerId:'customer_id', salesId:'sales_id', orderId:'order_id', salesName:'sales_name',
     customerName:'customer_name', orderDate:'order_date', createdAt:'created_at', updatedAt:'updated_at',
+    confirmedAt:'confirmed_at', completedAt:'completed_at', shippedAt:'shipped_at',
     payDate:'pay_date', productId:'product_id', ownerId:'owner_id', trackingNo:'tracking_no',
     paymentMethod:'payment_method', expressCompany:'express_company', commissionId:'commission_id',
     period:'period', aftersaleId:'aftersale_id', orderItemId:'order_item_id',
@@ -14836,7 +14837,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082201';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082301';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
