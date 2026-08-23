@@ -1315,7 +1315,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026082302</div>
+          <div class="brand-sub">v2026082303</div>
         </div>
       </div>
     </div>
@@ -4985,7 +4985,8 @@ async function renderOrders(){
         o.id.toLowerCase().includes(kw) ||
         (o.customerName||'').toLowerCase().includes(kw) ||
         (o.contact||'').toLowerCase().includes(kw) ||
-        (o.phone||'').toLowerCase().includes(kw)
+        (o.phone||'').toLowerCase().includes(kw) ||
+        (o.items||[]).some(it => (it.name||'').toLowerCase().includes(kw))
       );
     }
     { const _s = window._expStart, _e = window._expEnd;
@@ -5021,15 +5022,6 @@ async function renderOrders(){
       filtered = filtered.filter(o => o.status === 'feedback');
     } else if(activeTab === 'completed'){
       filtered = filtered.filter(o => ['completed','feedback_done'].includes(o.status));
-    }
-    if(keyword){
-      const kw = keyword.toLowerCase();
-      filtered = filtered.filter(o =>
-        o.id.toLowerCase().includes(kw) ||
-        (o.customerName||'').includes(keyword) ||
-        (o.contact||'').includes(keyword) ||
-        (o.phone||'').includes(keyword)
-      );
     }
     // 时间筛选（按创建日期，影响列表与导出）
     const expStart = window._expStart, expEnd = window._expEnd;
@@ -14845,7 +14837,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082302';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082303';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
