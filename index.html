@@ -1315,7 +1315,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026082303</div>
+          <div class="brand-sub">v2026082304</div>
         </div>
       </div>
     </div>
@@ -3008,6 +3008,18 @@ function isOrderDeleted(o){
     const it = o.items && o.items[0];
     return !!(it && it._delSync && it._delSync.d === true);
   }catch(e){ return false; }
+}
+
+// 北京时间日期键（YYYY-MM-DD）：列表渲染与导出共用，统一口径避免跨日误判（原仅定义在 renderOrders 内部，导致 exportOrders 调用报 ReferenceError）
+function bjDateKey(d){
+  if (d instanceof Date) {
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  }
+  const m = String(d||'').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return m[1]+'-'+m[2]+'-'+m[3];
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return '';
+  return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
 }
 // HTML 转义（防注入：用于订单备注等用户自由文本渲染到 innerHTML）
 function escapeHtml(s){
@@ -4945,18 +4957,6 @@ async function renderOrders(){
   let status = window._orderStatus || '';
   const typeFilter = window._orderType || '';
   const dateFilter = window._orderDateFilter || '';
-  // 时区修正（2026-08-16）：与首页 dateKey 统一口径，直接取 created_at 的墙钟日期前缀(YYYY-MM-DD)判定"今天"，
-  // 而非 new Date() 本地转换——否则傍晚(北京16-24点)提交的订单会跨日误判到"明天"，导致列表"今日"漏单。
-  const bjDateKey = (d) => {
-    if (d instanceof Date) {
-      return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-    }
-    const m = String(d||'').match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (m) return m[1]+'-'+m[2]+'-'+m[3];
-    const dt = new Date(d);
-    if (isNaN(dt.getTime())) return '';
-    return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
-  };
 
   // 管理员：按Tab分状态显示（订单管理含 普通/留仓/上门 三类，通过类型分段切换分离；售后统一在「售后工单」模块）
   if(isAdmin){
@@ -14837,7 +14837,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082303';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082304';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
