@@ -1343,7 +1343,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026082403</div>
+          <div class="brand-sub">v2026082404</div>
         </div>
       </div>
     </div>
@@ -4062,7 +4062,7 @@ function startAutoSync(){
       }
     }
     finally{ window._autoSyncing = false; }
-  }, 30000);  // 自动同步间隔 5min→30s：Realtime 失效时的实时性兜底，缩短到 30s 让多设备最多 30 秒收敛（v2026082403）
+  }, 300000);  // 自动同步间隔：恢复 5min 轮询兜底。30s 过于频繁会触发 Supabase 请求量告警，故改回 5min；多设备真正即时一致且不增请求的方案是执行 supabase_enable_realtime_and_updated_at.sql 开启 Realtime 推送（v2026082404）
   // 联网/断网自动处理：断网标记离线；联网后先拉云端再推本地，保证离线提交的订单不丢
   window.addEventListener('online', function(){
     if(typeof updateSyncBadge === 'function') updateSyncBadge('syncing');
@@ -14915,7 +14915,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082403';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082404';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
