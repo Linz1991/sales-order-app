@@ -1343,7 +1343,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026082404</div>
+          <div class="brand-sub">v2026082405</div>
         </div>
       </div>
     </div>
@@ -1543,7 +1543,7 @@ const DB = {
   // 缺 updated_at 列（或低频变更）的小表：日常轮询全量拉并合并，保证客户/售后/收款/提成等
   // 改动在日常即可跨端可见，不再依赖 6h 全量兜底（修复「一端改了另一端要等数小时才看到」）。
   _fullPullTables: ['customers','aftersales','payments','commissions'],
-  _fullSyncIntervalMs: 6 * 60 * 60 * 1000, // 6 小时做一次全量兜底（删除传播 + 小表更新 + 一致性）。v2026081906：由 2h 拉长到 6h，降低 pullTableAuthoritative 全量拉取超时概率与 egress 压力
+  _fullSyncIntervalMs: 60 * 60 * 1000, // 1 小时做一次全量兜底（删除传播 + 小表更新 + 一致性）。v2026082405：由 6h 缩短到 1h——_fullPullTables 已从日常轮询移除，小表靠全量兜底；1h 在及时性和 egress 间取平衡，且 Realtime 开启后此轮询仅为兜底
 
   _getIncTs(){ try{ return localStorage.getItem('soms_inc_ts') || ''; }catch(e){ return ''; } },
   _setIncTs(ts){ try{ if(ts) localStorage.setItem('soms_inc_ts', ts); }catch(e){} },
@@ -1579,10 +1579,11 @@ const DB = {
     const lastTs = this._getIncTs();
     let maxTs = lastTs;
     let hasError = false;
-    // 增量表（含 updated_at）：仅拉 updated_at>=lastTs 的变化行；缺 updated_at 的小表：每次轮询全量拉并合并，
-    // 保证客户/售后/收款/提成等改动在日常即可跨端可见（不再依赖 6h 全量兜底）。
+    // 增量表（含 updated_at）：仅拉 updated_at>=lastTs 的变化行。
+    // v2026082405：_fullPullTables 不再日常全量拉—— customers/aftersales/payments/commissions 改回由 syncFromCloud 的
+    // _fullSyncIntervalMs（1h）全量兜底，避免每 5min 全量小表把 egress 打爆。orders/products 仍每轮增量同步。
     const _incTables = this._incrementalTables;
-    const _allTables = _incTables.concat(this._fullPullTables || []);
+    const _allTables = _incTables;
     for(let i=0;i<_allTables.length;i++){
       const t = _allTables[i];
       const _useInc = _incTables.indexOf(t) >= 0 && !!lastTs;
@@ -2595,7 +2596,7 @@ const DB = {
     } else {
       // 日常增量（v2026081904）：orders/products 增量拉 + 上推脏行（脏行上推由 DB.set→syncTable→_pushDirtyRows 触发）；
       // 小表（users/customers/aftersales/payments/commissions）跳过不拉，压低 egress。
-      // 删除传播与小表更新由 2h 全量兜底保证。
+      // 删除传播与小表更新由 1h 全量兜底保证（v2026082405）。
       try{
         const incOk = await this.syncIncremental();
         if(!incOk) hasError = true;
@@ -4062,7 +4063,7 @@ function startAutoSync(){
       }
     }
     finally{ window._autoSyncing = false; }
-  }, 300000);  // 自动同步间隔：恢复 5min 轮询兜底。30s 过于频繁会触发 Supabase 请求量告警，故改回 5min；多设备真正即时一致且不增请求的方案是执行 supabase_enable_realtime_and_updated_at.sql 开启 Realtime 推送（v2026082404）
+  }, 300000);  // 自动同步间隔：5min。日常只增量同步 orders/products（小表改回 1h 全量兜底），销售端改订单后管理员最多 5min 可见。30s 旧方案已导致 Supabase 免费组织 quota 告警。要真正秒级实时且几乎零请求，仍需执行 supabase_enable_realtime_and_updated_at.sql 开启 Realtime（v2026082405）
   // 联网/断网自动处理：断网标记离线；联网后先拉云端再推本地，保证离线提交的订单不丢
   window.addEventListener('online', function(){
     if(typeof updateSyncBadge === 'function') updateSyncBadge('syncing');
@@ -14915,7 +14916,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082404';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082405';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
