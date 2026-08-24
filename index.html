@@ -1315,7 +1315,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026082305</div>
+          <div class="brand-sub">v2026082401</div>
         </div>
       </div>
     </div>
@@ -6949,7 +6949,15 @@ function renderOrderDetail(){
           </div>
           <div class="form-group">
             <label class="form-label">所在地区</label>
-            <input type="text" class="form-control" id="custRegion" value="${(order.region||'').replace(/"/g,'&quot;')}" placeholder="省 市 区">
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <select class="form-control" id="custProvince" onchange="onProvinceChange()" style="flex:1;min-width:0"><option value="">省份</option></select>
+              <select class="form-control" id="custCity" onchange="onCityChange()" style="flex:1;min-width:0"><option value="">城市</option></select>
+              <select class="form-control" id="custDistrict" style="flex:1;min-width:0"><option value="">区县</option></select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">街道/乡镇（选填）</label>
+            <input type="text" class="form-control" id="custRegion" value="${(order.region||'').replace(/"/g,'&quot;')}" placeholder="街道/乡镇/小区等">
           </div>
           <div class="form-group">
             <label class="form-label">详细地址</label>
@@ -7433,6 +7441,16 @@ function renderOrderDetail(){
   // 编辑模式下初始化付款模式联动（与新建订单一致：收款金额自动带出且只读）
   if(!viewOnly && document.getElementById('doorCollected')){
     onDoorPayModeChange();
+  }
+
+  // 编辑客户信息：初始化并回填省/市/区三级联动，让销售员能直接修改省市区；
+  // 改动随 province/city/district 落库后被 formatOrderAddress 优先拼接展示，管理员即可看到。
+  // （此前编辑区只有 custRegion 文本框，销售员改的地址落入 region/address 被省市区拼接逻辑忽略，管理员看不到）
+  if(editMode && isPending){
+    try{
+      fillAreaSelectsInit();
+      setAreaSelects(order.province||'', order.city||'', order.district||'');
+    }catch(e){}
   }
 
   // 自动显示已缓存的物流轨迹
@@ -8365,6 +8383,14 @@ async function saveEditOrder(orderId){
   if(regionEl) order.region = regionEl.value.trim();
   const addrEl = document.getElementById('custAddress');
   if(addrEl) order.address = addrEl.value.trim();
+  // 保存省/市/区（三级联动）：确保销售员编辑的省市区能落库并被管理员查看
+  // （formatOrderAddress 优先用 province/city/district 拼接，缺省才回退 region/address）
+  const pvEl = document.getElementById('custProvince');
+  const cvEl = document.getElementById('custCity');
+  const dvEl = document.getElementById('custDistrict');
+  if(pvEl) order.province = pvEl.value.trim();
+  if(cvEl) order.city = cvEl.value.trim();
+  if(dvEl) order.district = dvEl.value.trim();
   // 保存备注
   const remarkEl = document.getElementById('editOrderRemark') || document.getElementById('editRemark');
   if(remarkEl) order.remark = remarkEl.value.trim();
@@ -14852,7 +14878,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082305';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082401';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
