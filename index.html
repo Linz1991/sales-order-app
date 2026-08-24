@@ -1343,7 +1343,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026082405</div>
+          <div class="brand-sub">v2026082406</div>
         </div>
       </div>
     </div>
@@ -4063,7 +4063,7 @@ function startAutoSync(){
       }
     }
     finally{ window._autoSyncing = false; }
-  }, 300000);  // 自动同步间隔：5min。日常只增量同步 orders/products（小表改回 1h 全量兜底），销售端改订单后管理员最多 5min 可见。30s 旧方案已导致 Supabase 免费组织 quota 告警。要真正秒级实时且几乎零请求，仍需执行 supabase_enable_realtime_and_updated_at.sql 开启 Realtime（v2026082405）
+  }, 900000);  // 自动同步间隔：15min。Realtime 已开启后，日常增量同步 orders/products 由 Realtime 推送即时到达；轮询仅作兜底，拉长到 15min 进一步压低请求量。小表 1h 全量兜底保留（v2026082406）
   // 联网/断网自动处理：断网标记离线；联网后先拉云端再推本地，保证离线提交的订单不丢
   window.addEventListener('online', function(){
     if(typeof updateSyncBadge === 'function') updateSyncBadge('syncing');
@@ -14916,7 +14916,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082405';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082406';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
