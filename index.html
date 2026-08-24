@@ -106,6 +106,13 @@ function setupRealtime(){
     window._rtCustomers = sb.channel('rt-customers')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, function(payload){ onRealtimeChange('customers'); })
       .subscribe(function(status){ onRealtimeStatus('customers', status); });
+    // 收款/提成表订阅：补全多端实时一致性（原漏订阅，需配合后台将表加入 supabase_realtime publication 才真正生效）
+    window._rtPayments = sb.channel('rt-payments')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'payments' }, function(payload){ onRealtimeChange('payments'); })
+      .subscribe(function(status){ onRealtimeStatus('payments', status); });
+    window._rtCommissions = sb.channel('rt-commissions')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'commissions' }, function(payload){ onRealtimeChange('commissions'); })
+      .subscribe(function(status){ onRealtimeStatus('commissions', status); });
     // 时钟校准（2026-0813 关键修复）：客户端→服务端时钟偏差是"下单回退"的根因之一。
     // 用 supabase /auth/v1/health 响应 Date 头算 clockSkewMs，nowStr 会补偿；每 5 分钟重校准以跟随 NTP / 跨时区漂移。
     try{
@@ -1336,7 +1343,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026082402</div>
+          <div class="brand-sub">v2026082403</div>
         </div>
       </div>
     </div>
@@ -4055,7 +4062,7 @@ function startAutoSync(){
       }
     }
     finally{ window._autoSyncing = false; }
-  }, 30000);  // 自动同步间隔 5min→30s：Realtime 失效时的实时性兜底，缩短到 30s 让多设备最多 30 秒收敛（v2026082402）
+  }, 30000);  // 自动同步间隔 5min→30s：Realtime 失效时的实时性兜底，缩短到 30s 让多设备最多 30 秒收敛（v2026082403）
   // 联网/断网自动处理：断网标记离线；联网后先拉云端再推本地，保证离线提交的订单不丢
   window.addEventListener('online', function(){
     if(typeof updateSyncBadge === 'function') updateSyncBadge('syncing');
@@ -14908,7 +14915,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082402';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082403';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
