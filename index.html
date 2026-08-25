@@ -1343,7 +1343,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v202608251605</div>
+          <div class="brand-sub">v202608251738</div>
         </div>
       </div>
     </div>
@@ -5511,9 +5511,38 @@ function viewOrder(orderId, forceViewOnly){
   if(window._sbpbClient){
     DB.pullTableAuthoritative('orders')
       .then(function(){
-        try{
-          if(currentRoute === 'order-detail' && window._currentOrderId === orderId && !window._orderEditMode) renderOrderDetail();
-        }catch(e){}
+        // 关键修复（v2026082517）：pullTableAuthoritative 内部 _mergeById 在「云端无 _syncEditAt 编辑戳」时
+        // 会走「本地优先」分支，把云端新改的客户姓名/价格回退成旧值（表现为管理员看不到销售改的内容）。
+        // 因此在查看模式下，打开订单后再直接从云端按 id 拉该订单全量，以云端为准硬覆盖本地对应字段
+        // （仅覆盖顶层客户信息标量 + 商品标量，且只在云端值非空时覆盖，不丢云端已有的新内容）。
+        if(!(currentRoute === 'order-detail' && window._currentOrderId === orderId && !window._orderEditMode)) return;
+        const url = SUPABASE_URL + '/rest/v1/orders?id=eq.' + encodeURIComponent(orderId) + '&select=*';
+        return fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } })
+          .then(function(r){ return r.json(); })
+          .then(function(arr){
+            const cloud = Array.isArray(arr) ? arr[0] : null;
+            if(!cloud) return;
+            const orders = DB.get('orders');
+            const i = orders.findIndex(function(o){ return o.id === orderId; });
+            if(i < 0) return;
+            const TOP_FIELDS = ['customerName','contact','phone','region','address','province','city','district','orderDate','completionDate','remark','status','type'];
+            TOP_FIELDS.forEach(function(k){
+              if(cloud[k] !== undefined && cloud[k] !== null && cloud[k] !== '') orders[i][k] = cloud[k];
+            });
+            if(Array.isArray(cloud.items) && Array.isArray(orders[i].items)){
+              const ITEM_FIELDS = ['name','price','qty','stock','subtotal','trackingNo','waste'];
+              cloud.items.forEach(function(ci, idx){
+                const t = orders[i].items[idx];
+                if(!t) return;
+                ITEM_FIELDS.forEach(function(fk){
+                  if(ci[fk] !== undefined && ci[fk] !== null && ci[fk] !== '') t[fk] = ci[fk];
+                });
+              });
+            }
+            DB.set('orders', orders);
+            if(currentRoute === 'order-detail' && window._currentOrderId === orderId && !window._orderEditMode) renderOrderDetail();
+          })
+          .catch(function(){});
       })
       .catch(function(){});
   }
@@ -14935,7 +14964,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '202608251605';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '202608251738';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
