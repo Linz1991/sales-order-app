@@ -1343,7 +1343,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026082406</div>
+          <div class="brand-sub">v202608251524</div>
         </div>
       </div>
     </div>
@@ -4174,7 +4174,11 @@ function _orderItemHasLockdownMismatch(localRow, cloudRow){
 window._clockSkewMs = window._clockSkewMs || 0;
 async function calibrateSupabaseClock(){
   try{
-    const resp = await fetch(SUPABASE_URL + '/auth/v1/health', { cache:'no-store', mode:'cors' });
+    const resp = await fetch(SUPABASE_URL + '/auth/v1/health', {
+      cache:'no-store',
+      mode:'cors',
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
+    });
     const ds = resp.headers.get('Date');
     if(!ds) return;
     const sv = Date.parse(ds);
@@ -14916,7 +14920,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '2026082406';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '202608251524';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
