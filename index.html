@@ -1343,7 +1343,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v202608251524</div>
+          <div class="brand-sub">v202608251605</div>
         </div>
       </div>
     </div>
@@ -4033,10 +4033,13 @@ function startAutoSync(){
       if(window._currentOrderId && !window._orderEditMode && document.getElementById('orderDetailPanel') && before['orders'] !== after['orders']){
         const _od = DB.get('orders').find(o => o.id === window._currentOrderId);
         if(_od){
-          // 只比关键字段（status + 物流单号），避免 updatedAt 等非可见字段变化触发重建
+          // 关键字段签名：状态 + 物流单号 + 客户信息 + 商品单价，任一项变化都重建详情，
+          // 让销售改了客户信息/商品价格后，正在查看的管理员端详情也能即时刷新（修复「订单里看不到改动」）。
           const _keySig = (function(){ try{
-            const _it = (_od.items||[]).map(it => (it&&it.trackingNo)||'').join('|');
-            return (_od.status||'') + '::' + _it;
+            const _it = (_od.items||[]).map(it => [it&&it.name, it&&it.price, it&&it.qty, it&&it.subtotal, it&&it.trackingNo].join(',')).join('|');
+            return (_od.status||'') + '|' + (_od.customerName||'') + '|' + (_od.contact||'') + '|' + (_od.phone||'')
+              + '|' + (_od.province||'') + '|' + (_od.city||'') + '|' + (_od.district||'') + '|' + (_od.address||'')
+              + '|' + (_od.remark||'') + '|' + (_od.orderDate||'') + '|' + (_od.completionDate||'') + '||' + _it;
           }catch(e){ return null; } })();
           if(_keySig !== (window._lastRenderedOrderKeySig || null)){
             window._lastRenderedOrderKeySig = _keySig;
@@ -5501,7 +5504,19 @@ function viewOrder(orderId, forceViewOnly){
   window._currentOrderId = orderId;
   window._orderEditMode = false;
   window._orderForceViewOnly = forceViewOnly === true;
-  navigate('order-detail');
+  navigate('order-detail'); // 先用本地缓存渲染，避免网络慢时打开订单卡顿
+  // 修复：打开订单详情后立即从云端全量拉取一次（绕过 Realtime 订阅与 updated_at 增量过滤），
+  // 让管理员/其它设备点开订单就能立即看到销售刚改的客户信息、商品价格等，
+  // 不再依赖「Realtime 没开」或「多设备时钟偏差导致增量漏更新」。
+  if(window._sbpbClient){
+    DB.pullTableAuthoritative('orders')
+      .then(function(){
+        try{
+          if(currentRoute === 'order-detail' && window._currentOrderId === orderId && !window._orderEditMode) renderOrderDetail();
+        }catch(e){}
+      })
+      .catch(function(){});
+  }
 }
 
 function deleteOrder(orderId){
@@ -14791,12 +14806,12 @@ function renderDraftBar(){
 // 查询云端该订单是否有更新（updatedAt 晚于本地）
 async function checkOrderCloudConflict(orderId, localUpdatedAt){
   try{
-    const url = SUPABASE_URL + '/rest/v1/orders?id=eq.' + encodeURIComponent(orderId) + '&select=updatedAt,status';
+    const url = SUPABASE_URL + '/rest/v1/orders?id=eq.' + encodeURIComponent(orderId) + '&select=updated_at,status';
     const res = await fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
     if(!res.ok) return null;
     const arr = await res.json();
     if(!arr || !arr.length) return null;
-    const serverUpdatedAt = arr[0].updatedAt;
+    const serverUpdatedAt = arr[0].updated_at;
     if(!serverUpdatedAt) return null;
     if(serverUpdatedAt > (localUpdatedAt || '')) return { newer: true, serverUpdatedAt: serverUpdatedAt };
     return null;
@@ -14920,7 +14935,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '202608251524';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '202608251605';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
