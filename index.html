@@ -1343,7 +1343,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v202608251806</div>
+          <div class="brand-sub">v202608251831</div>
         </div>
       </div>
     </div>
@@ -1639,7 +1639,7 @@ const DB = {
   async _loadTable(key){
     try{
       const table = key; // key 即表名
-      const { data, error } = await withTimeout(window._sbpbClient.from(table).select('*').order('created_at', { ascending: true }), 5000, '_loadTable(' + key + ')');
+      const { data, error } = await withTimeout(window._sbpbClient.from(table).select('*').order('created_at', { ascending: true }), 20000, '_loadTable(' + key + ')');
       if(error) throw error;
       // snake_case -> camelCase
       let cloud = this._toCamel(data || []);
@@ -1700,7 +1700,7 @@ const DB = {
   async pullTableAuthoritative(key){
     if(!window._sbpbClient) return null;
     try{
-      const { data, error } = await withTimeout(window._sbpbClient.from(key).select('*').order('created_at', { ascending: true }), 5000, 'pullTableAuthoritative(' + key + ')');
+      const { data, error } = await withTimeout(window._sbpbClient.from(key).select('*').order('created_at', { ascending: true }), 20000, 'pullTableAuthoritative(' + key + ')');
       if(error) throw error;
       let cloud = this._toCamel(data || []);
       // 尊重本地已删除标记：云端权威拉取后，仍要排除 _deletedOrderIds/_deletedProductIds/_deletedUserIds，
@@ -4613,7 +4613,7 @@ async function navigate(route){
     if(!hasLocalCache){
       mainEl.innerHTML = '<div style="padding:48px 16px;text-align:center;color:var(--text-muted)">⏳ 正在从云端加载最新数据…</div>';
     }
-    // 后台静默拉取，不阻塞首次渲染；每个 pullTableAuthoritative 内部已有 5s 超时
+    // 后台静默拉取，不阻塞首次渲染；每个 pullTableAuthoritative 内部已有 20s 超时（orders 表约 400KB，浏览器解析需更多时间）
     Promise.all(tables.map(function(tb){ return DB.pullTableAuthoritative(tb); }))
       .then(function(){
         // 拉取完成后：若用户仍停在本页，则刷新一次以展示最新数据
@@ -15021,7 +15021,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '202608251806';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '202608251831';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
