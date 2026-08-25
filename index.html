@@ -93,9 +93,13 @@ function setupRealtime(){
   if(!window._sbpbClient || typeof window._sbpbClient.channel !== 'function') return;
   try{
     const sb = window._sbpbClient;
-    window._rtOrders = sb.channel('rt-orders')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, function(payload){ onRealtimeChange('orders'); })
-      .subscribe(function(status){ onRealtimeStatus('orders', status); });
+    // 【2026-0825 配额优化】订单表已从 supabase_realtime publication 移除（后台执行：
+    // alter publication supabase_realtime drop table orders;）——订单的 Realtime Egress 原占总量 76%，
+    // 必须关闭。多端一致性改由「2 分钟增量同步 + 打开订单详情按 id 拉云端」保证，而非秒级 Realtime。
+    // 前端此处一并取消订阅 orders 实时变更，避免将来重新加入 publication 时流量反弹。
+    // window._rtOrders = sb.channel('rt-orders')
+    //   .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, function(payload){ onRealtimeChange('orders'); })
+    //   .subscribe(function(status){ onRealtimeStatus('orders', status); });
     window._rtProducts = sb.channel('rt-products')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, function(payload){ onRealtimeChange('products'); })
       .subscribe(function(status){ onRealtimeStatus('products', status); });
@@ -1343,7 +1347,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v202608251831</div>
+          <div class="brand-sub">v202608252000</div>
         </div>
       </div>
     </div>
@@ -4123,7 +4127,7 @@ function startAutoSync(){
       }
     }
     finally{ window._autoSyncing = false; }
-  }, 900000);  // 自动同步间隔：15min。Realtime 已开启后，日常增量同步 orders/products 由 Realtime 推送即时到达；轮询仅作兜底，拉长到 15min 进一步压低请求量。小表 1h 全量兜底保留（v2026082406）
+  }, 120000);  // 【2026-0825 配额优化】自动同步间隔改为 2min。订单表已关闭 Realtime（原占 Egress 76%），改由「2 分钟增量同步（只拉 updated_at 之后的变化行，流量极小）+ 打开订单详情按 id 拉」保证多端一致，延迟 ≤ 2min，取代秒级 Realtime。原 15min 拉长间隔是为压请求量，但增量同步本身很轻，2min 不会显著增流量。
   // 联网/断网自动处理：断网标记离线；联网后先拉云端再推本地，保证离线提交的订单不丢
   window.addEventListener('online', function(){
     if(typeof updateSyncBadge === 'function') updateSyncBadge('syncing');
@@ -4330,6 +4334,13 @@ function refreshCurrentViewForTable(table){
 
 // 写订单/商品后：立刻从云端重新拉取全量（网络权威），再刷新当前视图，不依赖本地状态（Req4）
 function afterWriteRefresh(table){
+  // 【2026-0825 配额优化】一端刚保存订单/商品（DB.set 已同步上云且本地已最新），无需再从云端全量重拉——
+  // 每次保存触发一次 392KB 全表拉取，是多端频繁操作下 PostgREST 流量暴涨的另一主因。
+  // 仅刷新当前视图即可；云端最新值由「2 分钟增量同步」和「打开订单详情按 id 拉」覆盖到其它设备。
+  if(table === 'orders' || table === 'products'){
+    refreshCurrentViewForTable(table);
+    return;
+  }
   if(!window._sbpbClient) return;
   DB.pullTableAuthoritative(table).then(function(){
     refreshCurrentViewForTable(table);
@@ -4613,8 +4624,14 @@ async function navigate(route){
     if(!hasLocalCache){
       mainEl.innerHTML = '<div style="padding:48px 16px;text-align:center;color:var(--text-muted)">⏳ 正在从云端加载最新数据…</div>';
     }
-    // 后台静默拉取，不阻塞首次渲染；每个 pullTableAuthoritative 内部已有 20s 超时（orders 表约 400KB，浏览器解析需更多时间）
-    Promise.all(tables.map(function(tb){ return DB.pullTableAuthoritative(tb); }))
+    // 后台静默拉取，不阻塞首次渲染；每个 pullTableAuthoritative 内部已有 20s 超时（orders 表约 400KB）。
+    // 【2026-0825 配额优化】本地已有订单缓存时，不再每次导航进页面都全表拉取 orders（每次约 392KB，PostgREST 暴涨主因之一）；
+    // 订单数据由「2 分钟增量同步」+「打开订单详情按 id 拉」+「手动刷新」保证最新。仅本地无缓存（首次/清空）时才全量拉。
+    var _tablesToPull = tables.filter(function(tb){
+      if(tb === 'orders') return !(DB.get('orders', []).length > 0);
+      return true;
+    });
+    Promise.all(_tablesToPull.map(function(tb){ return DB.pullTableAuthoritative(tb); }))
       .then(function(){
         // 拉取完成后：若用户仍停在本页，则刷新一次以展示最新数据
         if(currentRoute === route){
@@ -15021,7 +15038,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '202608251831';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '202608252000';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
