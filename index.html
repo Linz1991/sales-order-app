@@ -1343,7 +1343,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v202608251738</div>
+          <div class="brand-sub">v202608251806</div>
         </div>
       </div>
     </div>
@@ -1595,7 +1595,12 @@ const DB = {
         const cloud = this._toCamel(data || []);
         const local = this.get(t, []);
         const excludeIds = t === 'orders' ? this.get('_deletedOrderIds', []) : (t === 'products' ? this.get('_deletedProductIds', []) : null);
-        let merged = this._mergeById(local, cloud, excludeIds, t);
+        const isAdmin = typeof currentUser !== 'undefined' && currentUser && currentUser.role === 'admin';
+        // 关键修复（v202608251806）：管理员端对 orders 表采用「云端优先硬覆盖」合并，
+        // 避免本地被 checkOrderAutoFlow 刷新 updatedAt 后，销售改的客户姓名/价格被回退。
+        let merged = (t === 'orders' && isAdmin)
+          ? this._mergeAdminCloudPriority(local, cloud, excludeIds, t)
+          : this._mergeById(local, cloud, excludeIds, t);
         if(t === 'products'){
           // 保留本地 auto_added 标记（仿 loadProductsFromCloud）
           const _localFlag = {};
@@ -1664,14 +1669,16 @@ const DB = {
         localStorage.setItem('soms_'+key, JSON.stringify(key === 'users' ? this._scrubUserPasswords(mergedArr) : mergedArr));
         return mergedArr;
       }
-      // 本地优先合并：避免云端数据（可能为空或滞后）覆盖掉本地刚新增/修改的数据，
-      // 导致“刷新后订单丢失 / 销售下的单管理员看不到”等问题。与 syncTable 的合并策略一致。
+      // 关键修复（v202608251806）：管理员端对 orders 表采用「云端优先硬覆盖」合并；
+      // 销售端保持本地优先合并，避免云端数据（可能为空或滞后）覆盖掉本地刚新增/修改的数据。
       const local = this.get(key, []);
-      const merged = this._mergeById(local, cloud,
-        key === 'orders' ? this.get('_deletedOrderIds', []) :
+      const isAdmin2 = typeof currentUser !== 'undefined' && currentUser && currentUser.role === 'admin';
+      const excludeIds = key === 'orders' ? this.get('_deletedOrderIds', []) :
         key === 'products' ? this.get('_deletedProductIds', []) :
-        key === 'users' ? this.get('_deletedUserIds', []) : null
-      );
+        key === 'users' ? this.get('_deletedUserIds', []) : null;
+      const merged = (key === 'orders' && isAdmin2)
+        ? this._mergeAdminCloudPriority(local, cloud, excludeIds, key)
+        : this._mergeById(local, cloud, excludeIds, key);
       // 售后工单：云端已被清空（或本就为空）时，强制清空本地缓存，避免刷新后本地旧单被合并逻辑复活上云。
       // 正常新建售后单会即时上云（cloud 非空），不会受影响。
       if(key === 'aftersales' && (!cloud || cloud.length === 0)){
@@ -1709,7 +1716,16 @@ const DB = {
       //     “稍旧”的云端副本时，会把本地刚写入的较新改动覆盖回旧值（表现：下单按钮先变「已下单」、过一会又退回「下单」）；
       //  ② 仍保证他人删除的订单/商品能从本端移除（删除传播），不回归“清理后订单又出现”的旧 bug。
       const local = this.get(key, []);
-      let merged = this._mergeById(local, cloud, excludeIds, key);
+      const isAdmin = typeof currentUser !== 'undefined' && currentUser && currentUser.role === 'admin';
+      let merged;
+      // 关键修复（v202608251806）：管理员端对 orders 表采用「云端优先硬覆盖」合并。
+      // _mergeById 按 updatedAt 较新者优先，但 checkOrderAutoFlow 会在本地刷新订单 updatedAt，
+      // 导致销售改的客户姓名/价格被判定为"本地旧值更新"而丢弃，管理员永远看不到销售改的内容。
+      if(key === 'orders' && isAdmin){
+        merged = this._mergeAdminCloudPriority(local, cloud, excludeIds, key);
+      } else {
+        merged = this._mergeById(local, cloud, excludeIds, key);
+      }
       // 商品：保留本地 auto_added 标记。云端 products 表当前无 auto_added 列（加列 SQL 可选），
       // 拉回的云端副本不含此字段，_mergeById 整条替换会把“销售临时新增、待校准”标记冲掉，
       // 导致商品管理“待校准”角标在刷新后消失、管理员找不到要校准的商品。
@@ -2106,6 +2122,42 @@ const DB = {
       }
     });
     return Object.keys(map).map(id => map[id]);
+  },
+
+  // 管理员端专用合并：云端为权威（解决 _mergeById 中本地时间戳虚假胜利导致看不到销售改的内容）
+  // 对 orders 表，管理员只查看/下单/改状态，其「本地改动」已通过 syncTable 推上云；
+  // 拉取时直接用云端值覆盖本地，避免 checkOrderAutoFlow 自动刷新 updatedAt 导致本地旧值被误判为更新。
+  // 保留：① excludeIds 排除集；② 本地独有且 30 秒内新建的订单（防删除传播误删刚新建的）；
+  //        ③ 写锁窗口内的订单保留本地字段（管理员正在编辑时，云端旧值不覆盖本地）。
+  _mergeAdminCloudPriority(local, cloud, excludeIds, keyName){
+    const exSet = (excludeIds && excludeIds.length) ? new Set(excludeIds) : null;
+    const cloudById = {};
+    (cloud || []).forEach(function(r){ if(r && r.id != null) cloudById[r.id] = r; });
+    const result = [];
+    const inWriteLock = (keyName === 'orders' && typeof _isWriteLocked === 'function')
+      ? function(id){ try{ return _isWriteLocked(id); }catch(e){ return false; } }
+      : function(){ return false; };
+    // 云端有的行：直接用云端值；写锁窗口内保留本地
+    (cloud || []).forEach(function(r){
+      if(!r || r.id == null || (exSet && exSet.has(r.id))) return;
+      if(inWriteLock(r.id)){
+        const lr = (local || []).find(function(o){ return o && o.id === r.id; });
+        result.push(lr ? lr : r);
+      } else {
+        result.push(r);
+      }
+    });
+    // 本地独有行：仅保留 30 秒内新建的（与 _mergeById 删除传播宽限期一致）
+    const _graceCutoff = Date.now() - 30000;
+    (local || []).forEach(function(r){
+      if(!r || r.id == null || (exSet && exSet.has(r.id))) return;
+      if(cloudById[r.id]) return;
+      if(r.createdAt){
+        const ct = Date.parse((r.createdAt || '').replace(' ', 'T'));
+        if(!isNaN(ct) && ct > _graceCutoff){ result.push(r); }
+      }
+    });
+    return result;
   },
 
   // 同步单个表到 Supabase
@@ -2660,7 +2712,12 @@ const DB = {
     if(error) throw error;
     const cloud = this._toCamel(data || []);
     const local = this.get('orders', []);
-    const merged = this._mergeById(local, cloud, this.get('_deletedOrderIds', []), 'orders');
+    const isAdmin = typeof currentUser !== 'undefined' && currentUser && currentUser.role === 'admin';
+    // 关键修复（v202608251806）：管理员端对 orders 表采用「云端优先硬覆盖」合并，
+    // 根治 checkOrderAutoFlow 刷新本地 updatedAt 导致销售改的客户姓名/价格被回退。
+    const merged = isAdmin
+      ? this._mergeAdminCloudPriority(local, cloud, this.get('_deletedOrderIds', []), 'orders')
+      : this._mergeById(local, cloud, this.get('_deletedOrderIds', []), 'orders');
     // 修复(2026-0817): 合并写回本地前，保留已删除订单的墓碑，
     // 否则 loadOrdersFromCloud 会把已删订单从本地 soms_orders 剥离，导致回收站看不到该订单
     // （与 syncTable 的墓碑补回逻辑一致；订单列表/统计/导出仍按 isOrderDeleted 隐藏，不影响展示）。
@@ -14964,7 +15021,7 @@ function applyVirtualScroll(id){
 <script>
 (function(){
   // 版本号单一数据源：读取左侧 brand-sub
-  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '202608251738';
+  var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '202608251806';
   window.APP_VERSION = APP_VERSION;
   function doRefresh(){
     try{
