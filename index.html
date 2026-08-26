@@ -88,35 +88,46 @@ async function manualSyncAll(){
   }
 }
 
+// 多端实时一致性所需的订阅表（orders 已从 Realtime publication 移除——其 Egress 原占 76%，
+// 改由 2min 增量同步 + 打开订单详情按 id 拉云端保证一致，此处不再订阅）。
+// 仅关心“内容变化”两类事件：UPDATE 覆盖改名/改价/改状态/改收款；INSERT 覆盖新建客户/售后/收款（需及时跨端可见）。
+// 不订阅 DELETE——删除由 syncFromCloud 的 1h 全量兜底传播，避免 Realtime 为删除事件空耗 WS 连接与 payload。
+const _RT_TABLES = [
+  { name: 'products',    events: ['UPDATE','INSERT'] },
+  { name: 'aftersales',  events: ['UPDATE','INSERT'] },
+  { name: 'customers',   events: ['UPDATE','INSERT'] },
+  { name: 'payments',    events: ['UPDATE','INSERT'] },
+  { name: 'commissions', events: ['UPDATE','INSERT'] }
+];
+// 释放所有 Realtime 订阅（页面切后台/关闭前调用）。Supabase Realtime 的 egress 大头是
+// “持久 WS 连接的心跳 + 持续推送 payload”；页面不可见时主动 removeChannel，可砍掉这部分空闲流量。
+function teardownRealtime(){
+  // 清除断线补偿定时器，避免 hidden 期间仍触发一次补拉（会空烧流量）
+  if(window._rtRecoverTimer){ try{ clearTimeout(window._rtRecoverTimer); }catch(e){} window._rtRecoverTimer = null; }
+  try{
+    if(window._rtChannel && window._sbpbClient && typeof window._sbpbClient.removeChannel === 'function'){
+      window._sbpbClient.removeChannel(window._rtChannel);
+    }
+  }catch(e){ console.warn('[Realtime] 释放订阅失败：', (e && e.message) || e); }
+  window._rtChannel = null;
+  window._realtimeReady = false;
+}
 function setupRealtime(){
-  if(window._realtimeReady) return;
   if(!window._sbpbClient || typeof window._sbpbClient.channel !== 'function') return;
+  teardownRealtime(); // 先清旧 channel，确保重复调用幂等、不出现连接翻倍
   try{
     const sb = window._sbpbClient;
-    // 【2026-0825 配额优化】订单表已从 supabase_realtime publication 移除（后台执行：
-    // alter publication supabase_realtime drop table orders;）——订单的 Realtime Egress 原占总量 76%，
-    // 必须关闭。多端一致性改由「2 分钟增量同步 + 打开订单详情按 id 拉云端」保证，而非秒级 Realtime。
-    // 前端此处一并取消订阅 orders 实时变更，避免将来重新加入 publication 时流量反弹。
-    // window._rtOrders = sb.channel('rt-orders')
-    //   .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, function(payload){ onRealtimeChange('orders'); })
-    //   .subscribe(function(status){ onRealtimeStatus('orders', status); });
-    window._rtProducts = sb.channel('rt-products')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, function(payload){ onRealtimeChange('products'); })
-      .subscribe(function(status){ onRealtimeStatus('products', status); });
-    window._rtAftersales = sb.channel('rt-aftersales')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'aftersales' }, function(payload){ onRealtimeChange('aftersales'); })
-      .subscribe(function(status){ onRealtimeStatus('aftersales', status); });
-    // 客户表订阅：新建订单自动建档的客户、或在客户管理手动维护的客户，任一设备变更后其它设备实时刷新（修复"客户信息未维护到客户管理板块/跨设备看不到"）
-    window._rtCustomers = sb.channel('rt-customers')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, function(payload){ onRealtimeChange('customers'); })
-      .subscribe(function(status){ onRealtimeStatus('customers', status); });
-    // 收款/提成表订阅：补全多端实时一致性（原漏订阅，需配合后台将表加入 supabase_realtime publication 才真正生效）
-    window._rtPayments = sb.channel('rt-payments')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'payments' }, function(payload){ onRealtimeChange('payments'); })
-      .subscribe(function(status){ onRealtimeStatus('payments', status); });
-    window._rtCommissions = sb.channel('rt-commissions')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'commissions' }, function(payload){ onRealtimeChange('commissions'); })
-      .subscribe(function(status){ onRealtimeStatus('commissions', status); });
+    // 【配额优化】合并 5 张表到单个 channel（rt-multi）：减少 WS 连接数/心跳包开销，断线恢复也更简单。
+    const ch = sb.channel('rt-multi');
+    _RT_TABLES.forEach(function(t){
+      t.events.forEach(function(ev){
+        ch.on('postgres_changes',
+          { event: ev, schema: 'public', table: t.name },
+          function(payload){ onRealtimeChange(t.name); });
+      });
+    });
+    ch.subscribe(function(status){ onRealtimeStatus('multi', status); });
+    window._rtChannel = ch;
     // 时钟校准（2026-0813 关键修复）：客户端→服务端时钟偏差是"下单回退"的根因之一。
     // 用 supabase /auth/v1/health 响应 Date 头算 clockSkewMs，nowStr 会补偿；每 5 分钟重校准以跟随 NTP / 跨时区漂移。
     try{
@@ -1347,7 +1358,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v202608252000</div>
+          <div class="brand-sub">v202608261900</div>
         </div>
       </div>
     </div>
@@ -2125,7 +2136,20 @@ const DB = {
         }
       }
     });
-    return Object.keys(map).map(id => map[id]);
+    const mergedArr = Object.keys(map).map(id => map[id]);
+    // 售后损耗顶层字段还原（根治「状态流转/增量同步后金额丢失」）：
+    // orders.afterSaleLoss / aftersales.loss 不在云端列，随 items[0]._lossSync 同步上云；
+    // 合并函数（含管理员端云端优先）可能因“云端无此列”把顶层值清空，故返回前统一从 _lossSync 还原。
+    // _lossSync 为权威传输源：仅当其含有效值（含数字 0）时写回顶层；为空则不动顶层（保留本机现状）。
+    if(keyName === 'orders' || keyName === 'aftersales'){
+      mergedArr.forEach(function(o){
+        if(!o || !Array.isArray(o.items) || !o.items.length) return;
+        let v; o.items.forEach(function(it){ if(it && it._lossSync != null && it._lossSync !== '') v = it._lossSync; });
+        if(v == null || v === '') return;
+        if(keyName === 'orders') o.afterSaleLoss = v; else o.loss = v;
+      });
+    }
+    return mergedArr;
   },
 
   // 管理员端专用合并：云端为权威（解决 _mergeById 中本地时间戳虚假胜利导致看不到销售改的内容）
@@ -2161,6 +2185,16 @@ const DB = {
         if(!isNaN(ct) && ct > _graceCutoff){ result.push(r); }
       }
     });
+    // 售后损耗顶层字段还原（与 _mergeById 一致）：管理员端“云端优先”合并时，云端无 afterSaleLoss/loss 列，
+    // 直接覆盖会清空顶层值；返回前从 items[0]._lossSync 还原，保证售后损耗金额在状态流转/同步后不丢、且跨端一致。
+    if((keyName === 'orders' || keyName === 'aftersales') && Array.isArray(result)){
+      result.forEach(function(o){
+        if(!o || !Array.isArray(o.items) || !o.items.length) return;
+        let v; o.items.forEach(function(it){ if(it && it._lossSync != null && it._lossSync !== '') v = it._lossSync; });
+        if(v == null || v === '') return;
+        if(keyName === 'orders') o.afterSaleLoss = v; else o.loss = v;
+      });
+    }
     return result;
   },
 
@@ -4068,7 +4102,7 @@ function startAutoSync(){
     dashboard: renderDashboard, dashboard2: renderDashboard2, recycle: renderRecycleBin
   };
   window._routeRenderers = routeRenderers;
-  window._autoSyncTimer = setInterval(async () => {
+  async function autoSyncTick(){
     if(window._autoSyncing) return;
     window._autoSyncing = true;
     try{
@@ -4127,7 +4161,9 @@ function startAutoSync(){
       }
     }
     finally{ window._autoSyncing = false; }
-  }, 120000);  // 【2026-0825 配额优化】自动同步间隔改为 2min。订单表已关闭 Realtime（原占 Egress 76%），改由「2 分钟增量同步（只拉 updated_at 之后的变化行，流量极小）+ 打开订单详情按 id 拉」保证多端一致，延迟 ≤ 2min，取代秒级 Realtime。原 15min 拉长间隔是为压请求量，但增量同步本身很轻，2min 不会显著增流量。
+  }
+  window._autoSyncTimer = setInterval(autoSyncTick, 120000);  // 【2026-0825 配额优化】自动同步间隔改为 2min。订单表已关闭 Realtime（原占 Egress 76%），改由「2 分钟增量同步（只拉 updated_at 之后的变化行，流量极小）+ 打开订单详情按 id 拉」保证多端一致，延迟 ≤ 2min，取代秒级 Realtime。原 15min 拉长间隔是为压请求量，但增量同步本身很轻，2min 不会显著增流量。
+  // 页面切后台时由 visibilitychange 监听 clearInterval 暂停自动同步，切回前台时重新 setInterval(autoSyncTick, 120000)。
   // 联网/断网自动处理：断网标记离线；联网后先拉云端再推本地，保证离线提交的订单不丢
   window.addEventListener('online', function(){
     if(typeof updateSyncBadge === 'function') updateSyncBadge('syncing');
@@ -4147,7 +4183,26 @@ function startAutoSync(){
 // 页面从后台切回前台时，若正停留在首页/订单/留仓/上门/商品列表，强制刷新一次云端数据
 // （修复手机切换应用/锁屏后回到页面，仍显示旧缓存订单/商品的问题）
 document.addEventListener('visibilitychange', function(){
-  if(document.visibilityState !== 'visible') return;
+  // —— 页面不可见：释放 Realtime 连接 + 暂停自动同步，砍掉后台空烧的 Egress（心跳/推送/轮询）——
+  if(document.visibilityState !== 'visible'){
+    try{ if(window._autoSyncTimer){ clearInterval(window._autoSyncTimer); window._autoSyncTimer = null; } }catch(e){}
+    try{ teardownRealtime(); }catch(e){}
+    return;
+  }
+  // —— 回到前台：重建 Realtime + 恢复自动同步 + 立即补拉错过的变更（保证多端一致，不丢数据）——
+  if(window._sbpbClient){
+    if(!window._realtimeReady){ try{ setupRealtime(); }catch(e){} }
+    if(!window._autoSyncTimer){ try{ window._autoSyncTimer = setInterval(autoSyncTick, 120000); }catch(e){} }
+    // 立即补拉云端最新数据（覆盖 hidden 期间错过的变更）
+    if(typeof DB !== 'undefined' && DB.syncFromCloud){
+      DB.syncFromCloud().then(function(){
+        if(typeof schedulePushToCloud === 'function'){ try{ schedulePushToCloud(); }catch(e){} }
+        if(window._routeRenderers && currentRoute && window._routeRenderers[currentRoute]){
+          try{ window._routeRenderers[currentRoute](); }catch(e){}
+        }
+      }).catch(function(){});
+    }
+  }
   if(typeof currentUser === 'undefined' || !currentUser || !window._sbpbClient) return;
   const route = typeof currentRoute !== 'undefined' ? currentRoute : '';
   if(route === 'orders' && !(window._currentOrderId && document.getElementById('orderDetailPanel')) && typeof renderOrders === 'function') renderOrders();
@@ -13607,6 +13662,20 @@ function renderProfitReport(){
         p.cost += cost * it.qty;
         p.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
       });
+      // 【2026-0826 修复】商品维度按金额占比分摊订单级售后损耗(afterSaleLoss)，
+      // 确保"按商品/按销售员/按日期"三维度总利润严格相等（不重复减、不漏减）
+      var _orderLoss = (o.afterSaleLoss || 0);
+      if(_orderLoss){
+        var _its = (o.items||[]);
+        var _orderRev = _its.reduce(function(s,it){ return s + (it.price*it.qty); }, 0);
+        _its.forEach(function(it){
+          var _key = it.productId || it.name;
+          var _p = productMap[_key];
+          if(!_p) return;
+          var _share = _orderRev > 0 ? (it.price*it.qty)/_orderRev : (_its.length ? 1/_its.length : 0);
+          _p.profit -= _orderLoss * _share;
+        });
+      }
     });
 
     var totalQty = 0, totalRev2 = 0, totalCost2 = 0, totalProfit2 = 0;
@@ -13972,6 +14041,19 @@ function exportProfitCSV(){
         p.cost += cost * it.qty;
         p.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
       });
+      // 【2026-0826 修复】CSV导出「按商品」维度同样按金额占比分摊订单级售后损耗，与展示一致
+      var _orderLoss = (o.afterSaleLoss || 0);
+      if(_orderLoss){
+        var _its = (o.items||[]);
+        var _orderRev = _its.reduce(function(s,it){ return s + (it.price*it.qty); }, 0);
+        _its.forEach(function(it){
+          var _key = it.productId || it.name;
+          var _p = productMap[_key];
+          if(!_p) return;
+          var _share = _orderRev > 0 ? (it.price*it.qty)/_orderRev : (_its.length ? 1/_its.length : 0);
+          _p.profit -= _orderLoss * _share;
+        });
+      }
     });
     Object.keys(productMap).map(function(k){ var p = productMap[k]; p.k = k; return p; }).sort(function(a,b){ return b.profit - a.profit; }).forEach(function(p){
       csv += '"' + p.name.replace(/"/g,'""') + '",' + p.category + ',' + p.qty + ',' + Math.round(p.revenue) + ',';
