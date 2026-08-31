@@ -1358,7 +1358,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v202608261900</div>
+          <div class="brand-sub">v20260831</div>
         </div>
       </div>
     </div>
@@ -3132,6 +3132,16 @@ function nowStr(){
   return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+
     p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds())+'.'+String(d.getMilliseconds()).padStart(3,'0');
 }
+// 统一时间显示：将 ISO（云端写入）或 nowStr（本地写入）格式转成本地时区 "YYYY-MM-DD HH:mm:ss"
+// 售后工单表格列表用它把 "2026-08-31T01:08:31.199+00:00" 之类转成 "2026-08-31 09:08:31"，对用户友好。
+function fmtDateTime(s){
+  if(!s) return '-';
+  const d = new Date(s);
+  if(isNaN(d.getTime())) return s; // 无法解析时原样返回
+  const p = n => String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+
+    p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());
+}
 // 统一的「订单已删除」判定：同时认顶层 _deleted 标记 与 隐藏同步键 items[0]._delSync.d。
 // 用于所有「统计 / 列表 / 角标」计数，确保"除已删除的订单数量"口径一致、不会因只判某一处而漏算/误算。
 function isOrderDeleted(o){
@@ -4189,6 +4199,8 @@ document.addEventListener('visibilitychange', function(){
     try{ teardownRealtime(); }catch(e){}
     return;
   }
+  // —— 回到前台：检查是否有新版本（5 分钟节流，避免频繁请求 version.json）——
+  if(typeof window.checkNewVersion==='function'){ try{ window.checkNewVersion(); }catch(e){} }
   // —— 回到前台：重建 Realtime + 恢复自动同步 + 立即补拉错过的变更（保证多端一致，不丢数据）——
   if(window._sbpbClient){
     if(!window._realtimeReady){ try{ setupRealtime(); }catch(e){} }
@@ -12060,7 +12072,7 @@ function renderAftersales(){
   }
   const keyword = window._aftersaleKeyword || '';
   const activeTab = window._aftersaleTab || 'all';
-  // 日期范围筛选（按创建时间）
+  // 日期范围筛选（按提交售后日期 = createdAt 字段）
   const asStart = window._asStart || '', asEnd = window._asEnd || '';
   let filtered;
   if(activeTab === 'all'){
@@ -12085,7 +12097,11 @@ function renderAftersales(){
       return true;
     });
   }
-  filtered = [...filtered].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+  // 倒序：先按 createdAt（提交售后日期）降序，毫秒相同时按 id 降序，让顺序稳定可预期
+  filtered = [...filtered].sort((a,b)=>{
+    const c = (b.createdAt||'').localeCompare(a.createdAt||'');
+    return c !== 0 ? c : (b.id||'').localeCompare(a.id||'');
+  });
 
   const tabs = [
     {key:'all',label:'全部'},{key:'pending',label:'待处理'},
@@ -12117,7 +12133,7 @@ function renderAftersales(){
         }).join('')}
       </div>
       <div class="date-filter">
-        <span class="df-label">📅 创建时间</span>
+        <span class="df-label">📅 提交售后日期</span>
         <input type="date" class="df-input" value="${asStart}" onchange="window._asStart=this.value;renderAftersales()">
         <span class="df-sep">至</span>
         <input type="date" class="df-input" value="${asEnd}" onchange="window._asEnd=this.value;renderAftersales()">
@@ -12134,7 +12150,7 @@ function renderAftersales(){
               <th>售后商品</th>
               ${showLossCol ? '<th>售后损耗</th>' : ''}
               <th>当前状态</th>
-              <th>创建时间</th>
+              <th>提交售后日期</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -12145,7 +12161,7 @@ function renderAftersales(){
                 <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.items.map(it=>it.name+' x'+it.qty).join('、')}</td>
                 ${showLossCol ? '<td style="color:var(--danger);font-weight:600">'+(a.loss ? money(a.loss) : '-')+'</td>' : ''}
                 <td>${aftersaleStatusTag(a.status)}</td>
-                <td>${a.createdAt||'-'}</td>
+                <td>${fmtDateTime(a.createdAt)}</td>
                 <td>
                   <button class="btn btn-primary btn-sm" onclick="viewAftersale('${a.id}')">查看</button>
                 </td>
@@ -12186,7 +12202,7 @@ function viewAftersale(id){
         <div class="modal-body" style="max-height:70vh;overflow-y:auto">
           <div class="info-grid" style="margin-bottom:16px">
             <div class="info-item"><div class="info-label">状态</div><div class="info-value">${aftersaleStatusTag(as.status)}</div></div>
-            <div class="info-item"><div class="info-label">创建时间</div><div class="info-value">${as.createdAt||'-'}</div></div>
+            <div class="info-item"><div class="info-label">提交售后日期</div><div class="info-value">${fmtDateTime(as.createdAt)}</div></div>
             <div class="info-item"><div class="info-label">关联订单</div><div class="info-value"><a class="btn-link" onclick="closeModal();viewOrder('${as.orderId}')">${as.orderId}</a></div></div>
             <div class="info-item"><div class="info-label">客户</div><div class="info-value">${escapeHtml(as.customerName)}</div></div>
             <div class="info-item"><div class="info-label">电话</div><div class="info-value">${escapeHtml(as.phone)||'-'}</div></div>
@@ -12256,6 +12272,8 @@ function viewAftersale(id){
 }
 
 // 售后详情损耗预览
+// 语义统一：与新建售后的 calcAfterSaleLossPreview 保持一致，"原订单利润"= 不含售后损耗的真实毛利润，
+// 避免与"已扣旧损耗的当前利润"混淆；"修改后"= 真实毛利润 - 当前输入的售后损耗。
 function calcDetailLossPreview(orderId, oldLoss){
   const orders = DB.get('orders');
   const order = orders.find(o => o.id === orderId);
@@ -12263,9 +12281,9 @@ function calcDetailLossPreview(orderId, oldLoss){
   const previewEl = document.getElementById('detailLossPreview');
   if(!order || !lossEl || !previewEl) return;
   const newLoss = parseFloat(lossEl.value) || 0;
-  const origProfit = calcOrderProfit(order);
-  const adjustedProfit = origProfit + oldLoss - newLoss;
-  previewEl.innerHTML = '<span style="color:var(--text-muted)">原订单利润：'+money(origProfit)+' → 修改后：'+
+  const grossProfit = calcOrderProfit(order) + (order.afterSaleLoss || 0);
+  const adjustedProfit = grossProfit - newLoss;
+  previewEl.innerHTML = '<span style="color:var(--text-muted)">原订单利润：'+money(grossProfit)+' → 修改后：'+
     '<strong style="color:'+(adjustedProfit>=0?'var(--success)':'var(--danger)')+'">'+money(adjustedProfit)+'</strong></span>';
 }
 
@@ -12630,7 +12648,7 @@ function editAftersale(id){
             <div class="info-item"><div class="info-label">关联订单</div><div class="info-value">${as.orderId}</div></div>
             <div class="info-item"><div class="info-label">客户</div><div class="info-value">${escapeHtml(as.customerName)}</div></div>
             <div class="info-item"><div class="info-label">当前状态</div><div class="info-value">${aftersaleStatusTag(as.status)}</div></div>
-            <div class="info-item"><div class="info-label">创建时间</div><div class="info-value">${as.createdAt||'-'}</div></div>
+            <div class="info-item"><div class="info-label">提交售后日期</div><div class="info-value">${fmtDateTime(as.createdAt)}</div></div>
           </div>
           <div class="form-group">
             <label class="form-label">售后商品</label>
@@ -12668,6 +12686,7 @@ function editAftersale(id){
 }
 
 // 编辑损耗预览
+// 语义统一：与新建售后的 calcAfterSaleLossPreview 保持一致，"原订单利润"= 不含售后损耗的真实毛利润。
 function calcEditLossPreview(orderId, oldLoss){
   const orders = DB.get('orders');
   const order = orders.find(o => o.id === orderId);
@@ -12675,10 +12694,9 @@ function calcEditLossPreview(orderId, oldLoss){
   const previewEl = document.getElementById('editLossPreview');
   if(!order || !lossEl || !previewEl) return;
   const newLoss = parseFloat(lossEl.value) || 0;
-  const origProfit = calcOrderProfit(order);
-  // 原利润需要加回旧损耗再减新损耗
-  const adjustedProfit = origProfit + oldLoss - newLoss;
-  previewEl.innerHTML = '<span style="color:var(--text-muted)">原订单利润：'+money(origProfit)+' → 修改后：'+
+  const grossProfit = calcOrderProfit(order) + (order.afterSaleLoss || 0);
+  const adjustedProfit = grossProfit - newLoss;
+  previewEl.innerHTML = '<span style="color:var(--text-muted)">原订单利润：'+money(grossProfit)+' → 修改后：'+
     '<strong style="color:'+(adjustedProfit>=0?'var(--success)':'var(--danger)')+'">'+money(adjustedProfit)+'</strong></span>';
 }
 
@@ -15134,8 +15152,15 @@ function applyVirtualScroll(id){
     var t=document.getElementById('newVersionText');
     if(b&&t){ t.textContent='已发布新版本 v'+ver+'，点击更新以加载最新功能与修复'; b.style.display='flex'; }
   }
-  function checkNewVersion(){
-    fetch('./version.json?t='+Date.now(), {cache:'no-store'})
+  window.checkNewVersion = function(){
+    var now=Date.now();
+    // 节流：5 分钟内不重复请求（visibilitychange 每次切回页面都会调，避免频繁打 version.json）
+    if(window._lastVerCheckTs && (now-window._lastVerCheckTs)<300000) return;
+    window._lastVerCheckTs=now;
+    // 弹窗已在显示则不重复弹
+    var m=document.getElementById('newVersionModal');
+    if(m && m.style.display && m.style.display!=='none') return;
+    fetch('./version.json?t='+now, {cache:'no-store'})
       .then(function(r){ return r.json(); })
       .then(function(d){ if(d && d.version && d.version !== APP_VERSION){ showBanner(d.version); } })
       .catch(function(){});
@@ -15143,7 +15168,7 @@ function applyVirtualScroll(id){
   document.addEventListener('DOMContentLoaded', function(){
     var rf=document.getElementById('newVersionRefresh'); if(rf) rf.onclick=doRefresh;
     var cl=document.getElementById('newVersionClose'); if(cl) cl.onclick=function(){ var b=document.getElementById('newVersionModal'); if(b) b.style.display='none'; };
-    checkNewVersion();
+    window.checkNewVersion();
   });
 })();
 </script>
