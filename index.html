@@ -113,31 +113,11 @@ function teardownRealtime(){
   window._realtimeReady = false;
 }
 function setupRealtime(){
-  if(!window._sbpbClient || typeof window._sbpbClient.channel !== 'function') return;
-  teardownRealtime(); // 先清旧 channel，确保重复调用幂等、不出现连接翻倍
-  try{
-    const sb = window._sbpbClient;
-    // 【配额优化】合并 5 张表到单个 channel（rt-multi）：减少 WS 连接数/心跳包开销，断线恢复也更简单。
-    const ch = sb.channel('rt-multi');
-    _RT_TABLES.forEach(function(t){
-      t.events.forEach(function(ev){
-        ch.on('postgres_changes',
-          { event: ev, schema: 'public', table: t.name },
-          function(payload){ onRealtimeChange(t.name); });
-      });
-    });
-    ch.subscribe(function(status){ onRealtimeStatus('multi', status); });
-    window._rtChannel = ch;
-    // 时钟校准（2026-0813 关键修复）：客户端→服务端时钟偏差是"下单回退"的根因之一。
-    // 用 supabase /auth/v1/health 响应 Date 头算 clockSkewMs，nowStr 会补偿；每 5 分钟重校准以跟随 NTP / 跨时区漂移。
-    try{
-      calibrateSupabaseClock();
-      if(!window._clockCalibrateTimer){
-        window._clockCalibrateTimer = setInterval(function(){ try{ calibrateSupabaseClock(); }catch(e){} }, 5 * 60 * 1000);
-      }
-    }catch(e){ console.warn('[Clock] 校准失败:', (e && e.message) || e); }
-    window._realtimeReady = true;
-  }catch(e){ console.warn('[Realtime] 订阅失败：', (e && e.message) || e); }
+  // 【2026-09-02 配额关键优化】Realtime WebSocket 长连接的心跳/重连/推送是 Egress 最大头
+  // （9/2 占 68.2%，93.7MB）。完全关闭 Realtime 订阅，改为纯 2 分钟轮询 + 1h 全量兜底同步，
+  // 业务延迟最长 2 分钟，对销售管理场景可接受。保留函数体与 teardownRealtime，便于后续按需 reopen。
+  window._realtimeReady = false;
+  return;
 }
 _initSupabase();
 
@@ -1359,7 +1339,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260905</div>
+          <div class="brand-sub">v20260906</div>
         </div>
       </div>
     </div>
@@ -4179,6 +4159,13 @@ function startAutoSync(){
     if(window._autoSyncing) return;
     window._autoSyncing = true;
     try{
+      // 时钟校准：Realtime 关闭后，原先 setupRealtime 内的 5min 校准不再执行，迁移到这里。
+      // health endpoint 只取响应头 Date，体积极小，不计入 PostgREST/Realtime egress。
+      const now = Date.now();
+      if(!window._lastClockCalibrate || (now - window._lastClockCalibrate) > 5 * 60 * 1000){
+        window._lastClockCalibrate = now;
+        try{ calibrateSupabaseClock(); }catch(e){}
+      }
       const before = snapshotSyncTables();
       await DB.syncFromCloud();
       const after = snapshotSyncTables();
