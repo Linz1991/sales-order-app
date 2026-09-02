@@ -1339,7 +1339,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260906</div>
+          <div class="brand-sub">v20260907</div>
         </div>
       </div>
     </div>
@@ -1440,9 +1440,11 @@ const DB = {
   },
   set(key, val){
     if(key === 'users') val = this._scrubUserPasswords(val);
-    // v2026081904 行级脏标记：orders/products 写入时记录新增/变化 id，供增量上推只 upsert 脏行
+    // v2026081904 行级脏标记：写入时记录新增/变化 id，供增量上推只 upsert 脏行
     // （避免全量 upsert 刷新未改行的 updated_at，导致增量查询退化成全量、egress 暴涨）。
-    if(key === 'orders' || key === 'products'){
+    // v20260907：脏标记从 orders/products 扩展到全部上云表（含 customers/aftersales/payments/commissions），
+    // 使 pushLocalChanges/_pushDirtyRows 只推脏行、零变化零请求（此前小表走 syncTable 每 2min 全量双向同步）。
+    if(key === 'orders' || key === 'products' || key === 'customers' || key === 'aftersales' || key === 'payments' || key === 'commissions'){
       try{
         const oldArr = this.get(key, []) || [];
         const newArr = val || [];
@@ -1462,7 +1464,9 @@ const DB = {
     // audit_log 为本地审计日志，设计上无需跨端传播（见 pushToCloud/pushLocalChanges 注释），
     // 且其表结构/权限易致 upsert 失败并误报“部分数据同步失败（表：audit_log）”，故跳过上云同步。
     if(key !== 'audit_log'){
-      this.syncTable(key).catch(function(err){
+      // v20260907 降 egress：写后同步统一走只推脏行（orders/products 原本如此；customers/aftersales/payments/commissions
+      // 此前走 syncTable 全量双向同步——每 2min 轮询 + 每次本地写入都会全量 GET+upsert，是 9/2 egress 超量的主因）。
+      this._pushDirtyRows(key).catch(function(err){
         console.warn('后台同步失败 ['+key+']:', err.message);
       });
     }
@@ -1539,7 +1543,7 @@ const DB = {
   // 缺 updated_at 列（或低频变更）的小表：日常轮询全量拉并合并，保证客户/售后/收款/提成等
   // 改动在日常即可跨端可见，不再依赖 6h 全量兜底（修复「一端改了另一端要等数小时才看到」）。
   _fullPullTables: ['customers','aftersales','payments','commissions'],
-  _fullSyncIntervalMs: 60 * 60 * 1000, // 1 小时做一次全量兜底（删除传播 + 小表更新 + 一致性）。v2026082405：由 6h 缩短到 1h——_fullPullTables 已从日常轮询移除，小表靠全量兜底；1h 在及时性和 egress 间取平衡，且 Realtime 开启后此轮询仅为兜底
+  _fullSyncIntervalMs: 15 * 60 * 1000, // v20260907：1h → 15min。小表跨端拉取由「每 2min 双向全量同步」（原 pushLocalChanges→syncTable，每天 140MB/台）改为「只推脏行 + 每 15min 全量兜底拉取」：小表全量仅 ~98KB，15min 一次 ≈ 9.4MB/天/台，及时性与 egress 平衡。orders/products 走增量，不受影响
 
   _getIncTs(){ try{ return localStorage.getItem('soms_inc_ts') || ''; }catch(e){ return ''; } },
   _setIncTs(ts){ try{ if(ts) localStorage.setItem('soms_inc_ts', ts); }catch(e){} },
@@ -2596,8 +2600,11 @@ const DB = {
 
   // v2026081904 增量上推：仅 upsert「脏行」（DB.set 时记录的变更 id），不拉云端，压低 egress。
   // 仅 orders/products 调用（由 syncTable 增量分支转发）。脏行成功上推后清除标记，失败保留以便重试。
+  // v20260907：扩展支持 customers/aftersales/payments/commissions（pushLocalChanges 全部走脏行上推）。
+  // users 除外：账号由 Auth/登录拉取权威合并保护，绝不从本地脏行写回云端（防止旧密码/旧角色覆盖后台改动）。
   async _pushDirtyRows(key){
     if(!window._sbpbClient) return;
+    if(key === 'users' || key === 'audit_log') return; // users 只拉不推；audit_log 本地审计日志不上云
     this._initMapping();
     const dirty = this._getDirty(key);
     if(!dirty || !dirty.length){ return; }
@@ -2621,13 +2628,69 @@ const DB = {
       // 确保 updated_at 非空，与 syncTable 一致
       snakeData.forEach(function(o){ if(o.updated_at == null || o.updated_at === ''){ o.updated_at = (typeof window.nowStr === 'function' ? window.nowStr().slice(0,19) : ''); } });
     }
+    // v20260907：小表（customers/aftersales/payments/commissions）脏行上推也加列白名单，
+    // 与 syncTable 保持一致，避免把本地多余字段（gender/status/stage 等）推上云导致 PGRST204 整批失败。
+    if(key === 'customers'){
+      const coreCols = new Set(['id','name','contact','phone','email','region','address','remark','owner_id','created_at']);
+      snakeData = snakeData.map(function(o){ const f={}; Object.keys(o).forEach(function(k){ if(coreCols.has(k)) f[k]=o[k]; }); return f; });
+      snakeData.forEach(function(o){ if(o.created_at == null || o.created_at === ''){ o.created_at = (typeof window.nowStr === 'function' ? window.nowStr().slice(0,19) : ''); } });
+    }
+    if(key === 'aftersales'){
+      const asCols = new Set(['id','order_id','customer_name','phone','sales_id','sales_name','items','reason','images','status','remark','tracking_no','updated_at']);
+      snakeData = snakeData.map(function(o){ const f={}; Object.keys(o).forEach(function(k){ if(asCols.has(k)) f[k]=o[k]; }); return f; });
+      snakeData.forEach(function(o){ if(o.updated_at == null || o.updated_at === ''){ o.updated_at = (typeof window.nowStr === 'function' ? window.nowStr().slice(0,19) : ''); } });
+    }
+    if(key === 'payments'){
+      const _payColDefaults = { id:'', order_id:'', customer_name:'', sales_id:'', sales_name:'', amount:0, method:'', pay_date:'', status:'pending', created_at:null };
+      snakeData = snakeData.map(function(o){
+        const f = {};
+        Object.keys(_payColDefaults).forEach(function(k){
+          var v = o.hasOwnProperty(k) ? o[k] : _payColDefaults[k];
+          if(k === 'created_at' && (v == null || v === '')) v = new Date().toISOString();
+          f[k] = v;
+        });
+        return f;
+      });
+    }
+    if(key === 'commissions'){
+      const _comColDefaults = { id:'', sales_id:'', sales_name:'', order_id:'', customer_name:'', amount:0, rate:0, period:'', status:'pending', created_at:null };
+      snakeData = snakeData.map(function(o){
+        const f = {};
+        Object.keys(_comColDefaults).forEach(function(k){
+          var v = o.hasOwnProperty(k) ? o[k] : _comColDefaults[k];
+          if(k === 'created_at' && (v == null || v === '')) v = new Date().toISOString();
+          f[k] = v;
+        });
+        return f;
+      });
+    }
     // orders 走通用 snakeData（含 updated_at，云端 trg_orders_updated_at 触发器会再刷新为 now()）。
     try{
       const batchSize = 100;
       for(let i=0;i<snakeData.length;i+=batchSize){
         const batch = snakeData.slice(i, i+batchSize);
         const { error } = await withTimeout(window._sbpbClient.from(key).upsert(batch, { onConflict:'id' }), 8000, '_pushDirtyRows('+key+')');
-        if(error) throw error;
+        if(error){
+          // v20260907 容错：小表（aftersales 等）可选列（remark/tracking_no/updated_at）云端可能尚未
+          // ADD COLUMN，报「列不存在」时剔除该列后重试，保证基础列脏行可靠上推（与 syncTable 行为一致）。
+          const errMsg = String((error && error.message) || (error && error.code) || '');
+          const isUnknownColumn = /column .* does not exist|schema cache|PGRST204/i.test(errMsg);
+          if(isUnknownColumn){
+            const colMatch = errMsg.match(/(?:column ['"]?([^'"\s)]+)['"]?|['"]([^'"]+)['"] column).*(?:does not exist|schema cache)|Could not find the ['"]([^'"]+)['"] column of ['"]([^'"]+)['"] in the schema cache/i);
+            const badCols = [];
+            if(colMatch){ for(let ci = 1; ci < colMatch.length; ci++){ if(colMatch[ci]) badCols.push(colMatch[ci]); } }
+            const altMatch = errMsg.match(/columns? ['"]([^'"]+)['"] (?:do|does) not exist/i);
+            if(altMatch && altMatch[1]) badCols.push(...altMatch[1].split(/['"]?\s*,\s*['"]?/));
+            if(badCols.length){
+              const badSet = new Set(badCols.filter(Boolean));
+              const slim = batch.map(function(o){ const f = {}; Object.keys(o).forEach(function(k){ if(!badSet.has(k)) f[k] = o[k]; }); return f; });
+              const r2 = await withTimeout(window._sbpbClient.from(key).upsert(slim, { onConflict:'id' }), 8000, '_pushDirtyRows retry('+key+')');
+              if(r2.error) throw r2.error;
+              continue;
+            }
+          }
+          throw error;
+        }
       }
       this._clearDirty(key, dirty);
     }catch(e){
@@ -2730,12 +2793,15 @@ const DB = {
   // 自动同步时上推本地新增/修改的数据（不含 users：避免账号密码被本地旧值覆盖，users 由登录拉取时的云端权威合并保护；
   // 也不含 audit_log：本地审计日志无需跨端传播；也不含 products：商品由云端覆盖 + 单条上推保证一致，避免把旧缓存糊回云端）。
   // 使任一端创建的订单/售后/收款等最多 15 秒内出现在其他端，修复“一端创建的订单另一端看不到”的问题。
+  // v20260907 降 egress（关键修复）：此前每 2min 轮询对小表走 syncTable → 「全量 GET + 全量 upsert」双向整表同步，
+  // customers(88KB)+aftersales+payments+commissions 每轮 ~195KB × 720 轮/天 ≈ 140MB/台/天，正是 9/2 超量主因。
+  // 现改为只推脏行（有变化才推，无变化零请求）；小表跨端拉取由 1h 全量兜底（syncFromCloud needFull → _loadTable）负责。
   async pushLocalChanges(keys){
     if(!window._sbpbClient) return;
     const tables = keys || ['orders','aftersales','payments','commissions','customers'];
     for(let i = 0; i < tables.length; i++){
       try{
-        await this.syncTable(tables[i]);
+        await this._pushDirtyRows(tables[i]);
       }catch(e){
         console.warn('自动上推 ['+tables[i]+'] 失败:', e.message);
       }
@@ -6861,8 +6927,9 @@ function submitOrder(){
     DB.set('customers', customers);
   }
   // 立即把客户同步到云端，确保新建/更新后的客户可靠进入「客户管理」板块（不依赖 800ms 防抖推送）
+  // v20260907：DB.set 已触发 _pushDirtyRows 只推脏行；此处同步改用 _pushDirtyRows（原 syncTable 每次全量拉+推 customers 88KB）
   if(window._sbpbClient){
-    DB.syncTable('customers').catch(function(e){ console.warn('同步客户到云端失败:', (e&&e.message)||e); });
+    DB._pushDirtyRows('customers').catch(function(e){ console.warn('同步客户到云端失败:', (e&&e.message)||e); });
   }
 
   const total = cart.reduce((s,c)=>s+c.subtotal, 0);
