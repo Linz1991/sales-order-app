@@ -622,6 +622,7 @@ tbody tr:hover{background:#f0f5f4}
   font-size:12px;font-weight:500;white-space:nowrap;
 }
 .tag-pending{background:#fef3c7;color:#92400e}
+.tag-operator{background:#e0e7ff;color:#3730a3}
 .tag-confirmed{background:#dbeafe;color:#1e40af}
 .tag-feedback{background:#fef3c7;color:#92400e}
 .tag-feedback-done{background:#f3e8ff;color:#6b21a8}
@@ -1358,7 +1359,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260831</div>
+          <div class="brand-sub">v20260901</div>
         </div>
       </div>
     </div>
@@ -4077,7 +4078,7 @@ function showApp(){
   document.getElementById('loginPage').style.display = 'none';
   document.getElementById('appPage').style.display = 'flex';
   renderSidebar();
-  navigate('dashboard');
+  navigate(currentUser.role === 'operator' ? 'orders' : 'dashboard');
   const d = new Date();
   document.getElementById('headerDate').textContent =
     d.getFullYear()+'年'+(d.getMonth()+1)+'月'+d.getDate()+'日';
@@ -4505,13 +4506,14 @@ async function syncOrdersNow(){
 /* ============ 侧边栏渲染 ============ */
 function renderSidebar(){
   const isAdmin = currentUser.role === 'admin';
+  const isOperator = currentUser.role === 'operator';
   document.getElementById('sidebarRoleName').textContent = currentUser.name;
-  document.getElementById('sidebarRoleTag').textContent = isAdmin ? '管理员' : '销售';
+  document.getElementById('sidebarRoleTag').textContent = isAdmin ? '管理员' : (isOperator ? '下单操作员' : '销售');
   document.getElementById('footerAvatar').textContent = currentUser.name.slice(0,1);
   document.getElementById('footerUserName').textContent = currentUser.name;
-  document.getElementById('footerUserRole').textContent = isAdmin ? '系统管理员' : '销售人员';
+  document.getElementById('footerUserRole').textContent = isAdmin ? '系统管理员' : (isOperator ? '下单操作员' : '销售人员');
 
-  // 菜单项：管理员全部，销售仅 首页/订单/售后
+  // 菜单项：管理员全部，销售仅 首页/订单/售后，下单操作员仅 订单列表
   let menus;
   if(isAdmin){
     menus = [
@@ -4527,6 +4529,10 @@ function renderSidebar(){
       {route:'audit', icon:'📝', name:'操作日志'},
       {route:'settings', icon:'⚙️', name:'系统设置'}
     ];
+  }else if(isOperator){
+    menus = [
+      {route:'orders', icon:'📦', name:'订单列表'}
+    ];
   }else{
     menus = [
       {route:'dashboard', icon:'📊', name:'首页'},
@@ -4541,11 +4547,11 @@ function renderSidebar(){
   const nav = document.getElementById('sidebarNav');
   // 统计待处理数量
   const allOrders = DB.get('orders').filter(o => !isOrderDeleted(o));
-  const myOrders = isAdmin ? allOrders : allOrders.filter(o => o.salesId === currentUser.id);
+  const myOrders = (isAdmin || isOperator) ? allOrders : allOrders.filter(o => o.salesId === currentUser.id);
   const pendingCount = myOrders.filter(o => o.status === 'pending').length;
   const feedbackCount = myOrders.filter(o => o.status === 'feedback').length;
-  // 留仓订单（warehouse 类型）待下单数量徽标：销售只看自己、管理员看全部
-  const whPendingCount = (isAdmin ? allOrders : myOrders).filter(function(o){ return o.type === 'warehouse' && o.status === 'pending'; }).length;
+  // 留仓订单（warehouse 类型）待下单数量徽标：销售只看自己、管理员/下单操作员看全部
+  const whPendingCount = ((isAdmin || isOperator) ? allOrders : myOrders).filter(function(o){ return o.type === 'warehouse' && o.status === 'pending'; }).length;
   // 上门未完成订单数（全员可见：统计全部上门订单中未完成的数量，不按销售过滤）
   const deletedIds = (DB.get('_deletedOrderIds') || []);
   const doorIncompleteCount = allOrders.filter(o =>
@@ -4617,7 +4623,8 @@ async function navigate(route){
   const restrictedRoutes = ['customers','payments','dashboard2','settings','commissions','profit-report','audit'];
   if(!isAdmin && restrictedRoutes.includes(route)){
     showToast('无访问权限','error');
-    route = 'dashboard';
+    // 下单操作员无首页，兜底跳订单列表
+    route = (currentUser.role === 'operator') ? 'orders' : 'dashboard';
     currentRoute = route;
   }
   const t = routeTitles[route] || ['页面',''];
@@ -4738,9 +4745,9 @@ window.addEventListener('popstate', function(e){
     if(st.orderId) window._currentOrderId = st.orderId;
     navigate(st.route);
   } else {
-    // 回到初始页
+    // 回到初始页（下单操作员无首页，回订单列表）
     window._skipHistoryPush = true;
-    navigate('dashboard');
+    navigate((currentUser && currentUser.role === 'operator') ? 'orders' : 'dashboard');
   }
 });
 // 管理员直接关闭/刷新页面（而非在 SPA 内 navigate）时，若正持有某订单编辑锁，立即释放，
@@ -5133,11 +5140,12 @@ async function renderOrders(){
   // 渲染函数只负责展示，不自己拉网络：navigate()/Realtime/afterWriteRefresh 已保证数据为云端最新。
   if(typeof renderSidebar === 'function') renderSidebar();
   const isAdmin = currentUser.role === 'admin';
+  const isOperator = currentUser.role === 'operator';
   // 是否移动端（手机 ≤768px）：管理端与销售端列表统一用它切换「表格/卡片」布局
   const isMobile = window.innerWidth <= 768 || /Mobile|Android|iPhone/.test(navigator.userAgent);
   let orders = DB.get('orders').filter(o => !isOrderDeleted(o));
   const recycleCount = (DB.get('orders') || []).filter(o => o._deleted && !String(o._deletedBy||'').startsWith('PURGED:')).length;
-  if(!isAdmin) orders = orders.filter(o => o.salesId === currentUser.id);
+  if(!isAdmin && !isOperator) orders = orders.filter(o => o.salesId === currentUser.id);
 
   const keyword = window._orderFilter || '';
   let status = window._orderStatus || '';
@@ -5376,7 +5384,7 @@ async function renderOrders(){
     return;
   }
 
-  // === 销售端 ===
+  // === 销售端 / 下单操作员 ===
   // isMobile 已在函数顶部统一定义，销售端卡片布局直接复用
   const listType = window._orderListType || 'normal';
   // 类型分段状态Tab（普通/留仓含 待下单/已下单/待反馈/已完成；上门无待反馈环节，仅 全部/待下单/已下单/已完成）
@@ -5385,9 +5393,13 @@ async function renderOrders(){
     warehouse: [{key:'',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'}],
     door:      [{key:'',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'completed',label:'已完成'}]
   };
-  const salesTabs = salesStatusTabsByType[listType] || salesStatusTabsByType.normal;
-  // 切换类型后若当前状态Tab在该类型下不存在（如「上门」无「已反馈」），回退到「全部」
-  if(status && !salesTabs.some(t => t.key === status)){ status = ''; window._orderStatus = ''; }
+  // 下单操作员：仅 待下单/已下单/待反馈 三个Tab（无全部、无已完成），默认落在「待下单」
+  const operatorTabs = [{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},{key:'feedback',label:'待反馈'}];
+  const salesTabs = isOperator ? operatorTabs : (salesStatusTabsByType[listType] || salesStatusTabsByType.normal);
+  if(isOperator){
+    if(status && ['pending','confirmed','feedback'].indexOf(status) < 0){ status = 'pending'; window._orderStatus = 'pending'; }
+    if(!status){ status = 'pending'; window._orderStatus = 'pending'; }
+  } else if(status && !salesTabs.some(t => t.key === status)){ status = ''; window._orderStatus = ''; }
 
   // 关键词 + 日期 过滤，作为类型角标与列表的共同基础集（与 admin 一致）
   let baseBeforeType = orders;
@@ -5509,8 +5521,8 @@ async function renderOrders(){
     <div class="card-time" style="font-size:12px;color:var(--text-muted);margin-bottom:6px">发货日期：${o.orderDate ? formatOrderDate(o.orderDate) : '<span style="color:var(--text-muted)">未设置</span>'}</div>
     <div class="card-footer" style="display:flex;flex-direction:column;gap:6px;justify-content:center;align-items:center">
       <div style="display:flex;gap:4px;justify-content:center">
-        ${o.status === 'feedback' ? `<button class="btn btn-warning btn-sm" onclick="event.stopPropagation();markOrderFeedbackDone('${o.id}')">反馈</button>` : ''}
-        ${o.status === 'feedback' ? '' : opBtn}
+        ${o.status === 'feedback' && currentUser.role !== 'operator' ? `<button class="btn btn-warning btn-sm" onclick="event.stopPropagation();markOrderFeedbackDone('${o.id}')">反馈</button>` : ''}
+        ${(o.status === 'feedback' && currentUser.role !== 'operator') ? '' : opBtn}
       </div>
       ${o.status === 'feedback' ? `<button class="btn btn-default btn-sm" title="一键复制物流信息" onclick="event.stopPropagation();copyLogisticsInfo('${o.id}')">一键复制物流信息</button>` : ''}
     </div>
@@ -5520,7 +5532,7 @@ async function renderOrders(){
       html += `<div class="sales-empty">
         <div class="empty-icon">📦</div>
         <div class="empty-text">${keyword||status||salesDateStart||salesDateEnd ? '暂无符合条件的订单' : '还没有订单'}</div>
-        ${keyword||status||salesDateStart||salesDateEnd ? '' : `<button class="btn btn-primary" onclick="navigate('order-new')">➕ 去新建订单</button>`}
+        ${(keyword||status||salesDateStart||salesDateEnd || currentUser.role === 'operator') ? '' : `<button class="btn btn-primary" onclick="navigate('order-new')">➕ 去新建订单</button>`}
       </div>`;
     }
     html += `</div>`;
@@ -5542,7 +5554,7 @@ async function renderOrders(){
           });
           html += '</tbody></table></td>';
           let _opCell = '<td style="text-align:center;vertical-align:top">';
-          if(o.status === 'feedback'){
+          if(o.status === 'feedback' && currentUser.role !== 'operator'){
             _opCell += '<div style="display:flex;gap:4px;justify-content:center;margin-bottom:4px"><button class="btn btn-warning btn-sm" onclick="markOrderFeedbackDone(\''+o.id+'\')">反馈</button></div>';
             _opCell += '<button class="btn btn-default btn-sm" title="一键复制物流信息" onclick="copyLogisticsInfo(\''+o.id+'\')">一键复制物流信息</button>';
           } else {
@@ -5552,7 +5564,7 @@ async function renderOrders(){
           html += _opCell;
         });
       } else {
-        html += '<tr><td colspan="5"><div class="sales-empty"><div class="empty-icon">📦</div><div class="empty-text">'+(keyword||status||salesDateStart||salesDateEnd ? '暂无符合条件的订单' : '还没有订单')+'</div>'+(keyword||status||salesDateStart||salesDateEnd ? '' : '<button class="btn btn-primary" onclick="navigate(\'order-new\')">➕ 去新建订单</button>')+'</div></td></tr>';
+        html += '<tr><td colspan="5"><div class="sales-empty"><div class="empty-icon">📦</div><div class="empty-text">'+(keyword||status||salesDateStart||salesDateEnd ? '暂无符合条件的订单' : '还没有订单')+'</div>'+(keyword||status||salesDateStart||salesDateEnd || currentUser.role === 'operator' ? '' : '<button class="btn btn-primary" onclick="navigate(\'order-new\')">➕ 去新建订单</button>')+'</div></td></tr>';
       }
       html += '</tbody></table></div>';
     } else {
@@ -5592,7 +5604,7 @@ async function renderOrders(){
               <div class="sales-empty">
                 <div class="empty-icon">📦</div>
                 <div class="empty-text">${keyword||status||salesDateStart||salesDateEnd ? '暂无符合条件的订单' : '还没有订单'}</div>
-                ${keyword||status||salesDateStart||salesDateEnd ? '' : `<button class="btn btn-primary" onclick="navigate('order-new')">➕ 去新建订单</button>`}
+                ${(keyword||status||salesDateStart||salesDateEnd || currentUser.role === 'operator') ? '' : `<button class="btn btn-primary" onclick="navigate('order-new')">➕ 去新建订单</button>`}
               </div>
             </td></tr>`}
           </tbody>
@@ -7097,10 +7109,11 @@ function renderOrderDetail(){
     return;
   }
   const isAdmin = currentUser.role === 'admin';
+  const isOperator = currentUser.role === 'operator';
   const isOwner = order.salesId === currentUser.id;
   const canViewFinancials = isAdmin || isOwner;
-  // 非管理员查看非本人订单：仅上门订单允许查看（财务字段隐藏），其余类型无权限
-  if(!isAdmin && !isOwner && order.type !== 'door'){
+  // 非管理员查看非本人订单：下单操作员可查看全部订单（成本/利润/收款等财务字段隐藏）；其余非本人订单仅上门订单允许查看
+  if(!isAdmin && !isOwner && !isOperator && order.type !== 'door'){
     document.getElementById('mainContent').innerHTML = '<div class="empty-state"><div class="empty-icon">🔒</div><div class="empty-text">无权查看此订单</div></div>';
     return;
   }
@@ -7129,8 +7142,8 @@ function renderOrderDetail(){
   const dateLabel2 = isDoor ? '订单上门日期' : '订单完成日期';
   // 留仓/上门订单：管理员、提交人、上门订单全体可见成员均可随时修改两个日期
   const canSaveDates = isAdmin || isOwner;
-  // 销售查看「已下单/待反馈/已完成」订单：隐藏商品明细/收款信息，删除编辑订单与申请售后按钮
-  const isSalesRestrictedView = !isAdmin && (order.status === 'confirmed' || order.status === 'feedback' || order.status === 'completed');
+  // 销售查看「已下单/待反馈/已完成」订单：隐藏商品明细/收款信息，删除编辑订单与申请售后按钮（下单操作员不受此限制，需看商品明细以操作下单/填物流）
+  const isSalesRestrictedView = !isAdmin && currentUser.role !== 'operator' && (order.status === 'confirmed' || order.status === 'feedback' || order.status === 'completed');
   // 销售查看「已下单」订单：专属只读视图，商品明细中展示物流单号与查看按钮
   const isSalesConfirmedView = !isAdmin && isOwner && order.status === 'confirmed';
   // 管理员「查看」订单：统一只读视图——含客户信息/下单人/商品信息/金额/利润，可改损耗与物流，含保存修改（覆盖 待下单/已下单/待反馈/已完成）
@@ -7141,7 +7154,8 @@ function renderOrderDetail(){
   const isDoorConfirmedAdmin = isAdmin && isDoor && !editMode && order.status === 'confirmed';
   // 商品明细实际列数（销售仅 名称/数量/售价 3 列；管理员加 成本/损耗/利润）
   const _orderCols = isAdminDoorDetail ? 7
-    : 3 + (isAdmin ? 3 : 0) + (isDoor ? 1 : 0) + (editMode ? 1 : 0) + ((isAdmin && order.type==='warehouse') ? 2 : 0);
+    : 3 + (isAdmin ? 3 : 0) + (isDoor ? 1 : 0) + (editMode ? 1 : 0) + ((isAdmin && order.type==='warehouse') ? 2 : 0)
+      + ((isOperator && (order.status === 'pending' || order.items && order.items.some(it => it.ordered === true))) ? 1 : 0);
   const totalColspan = _orderCols - 1;
   // 当订单已具备独立「物流信息」模块（已下单/运输中/待反馈/已反馈/已完成）时，商品明细内联的「填写物流单号」列隐藏，避免重复
   const hideInlineTracking = ['confirmed','shipped','feedback','feedback_done','completed'].includes(order.status);
@@ -7299,7 +7313,7 @@ function renderOrderDetail(){
               <th>售价</th>
               ${isAdmin ? '<th>成本</th><th>损耗</th><th>利润</th>' : ''}
               ${isDoor ? '<th>是否备货</th>' : ''}
-              ${isAdmin && (order.status==='pending' || order.items && order.items.some(it=>it.ordered)) ? '<th>下单</th>' : ''}
+              ${(isAdmin || isOperator) && (order.status==='pending' || order.items && order.items.some(it=>it.ordered)) ? '<th>下单</th>' : ''}
               ${isAdmin && order.type==='warehouse' && !hideInlineTracking ? '<th>物流单号</th>' : ''}
               ${editMode ? '<th>操作</th>' : ''}
             `}
@@ -7327,7 +7341,7 @@ function renderOrderDetail(){
                   ${isAdmin ? `<td>${money(cost)}</td>` : ''}
                   ${isAdmin ? `<td><input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px;color:var(--danger);font-weight:600" id="wasteItem_${i}" oninput="saveItemWaste('${order.id}',${i},this.value)" onchange="saveItemWaste('${order.id}',${i},this.value)"></td>` : ''}
                   ${isAdmin ? `<td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}">${money(itemProfit)}</td>` : ''}
-                  ${(isAdmin && (order.status==='pending' || order.items && order.items.some(it=>it.ordered))) ? `<td>${it.ordered ? '<button class="btn btn-sm" title="双击撤回下单" ondblclick="markItemUnordered(\''+order.id+'\','+i+')" style="background:#3b82f6;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer">已下单</button>' : '<button class="btn btn-success btn-sm" onclick="markItemOrdered(\''+order.id+'\','+i+')">下单</button>'}</td>` : ''}
+                  ${((isAdmin || isOperator) && (order.status==='pending' || order.items && order.items.some(it=>it.ordered))) ? `<td>${it.ordered ? '<button class="btn btn-sm" title="双击撤回下单" ondblclick="markItemUnordered(\''+order.id+'\','+i+')" style="background:#3b82f6;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer">已下单</button>' : '<button class="btn btn-success btn-sm" onclick="markItemOrdered(\''+order.id+'\','+i+')">下单</button>'}</td>` : ''}
                   ${(isAdmin && order.type==='warehouse' && !hideInlineTracking) ? `<td><input type="text" class="form-control" id="whTrackItem_${i}" value="${escapeHtml(it.trackingNo) || ''}" placeholder="输入运单号" style="padding:6px 10px;min-width:150px">${it.trackingNo ? `<a class="btn-link" style="margin-left:6px;white-space:nowrap" onclick="queryLogistics(escapeJsStr(order.id), ${i}, document.getElementById('whTrackItem_${i}').value)">查询</a>` : ''}</td>` : ''}
                   ${isDoor ? `<td>${editMode ? `<select class="form-control" id="editItemStock_${i}" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : ((isAdmin || currentUser.role==='sales') ? `<select class="form-control" onchange="saveItemStock('${order.id}',${i},this.value)" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : (it.stock==='是'?'<span class="tag tag-completed">已备货</span>':'<span class="tag tag-pending">未备货</span>'))}</td>` : ''}
                   ${editMode ? `<td><button class="btn-link danger" onclick="removeEditItem(${i})">删除</button></td>` : ''}
@@ -7397,7 +7411,7 @@ function renderOrderDetail(){
         <div id="logistics-timeline-container"></div>
       </div>`;
   } else if(showLogistics && order.type!=='door'){
-    const canEditLogistics = isAdmin;
+    const canEditLogistics = isAdmin || currentUser.role === 'operator';
     html += `
       <div class="detail-section card">
         <h4>🚚 物流信息 ${order.noTracking ? '<span style="font-size:12px;color:var(--success);font-weight:normal">（已标记无需物流）</span>' : ''} ${!isAdmin ? '<button class="btn btn-primary btn-sm" style="margin-left:12px" onclick="copyLogisticsInfo(\''+order.id+'\')">📋 一键复制物流信息</button>' : ''}</h4>
@@ -7411,7 +7425,8 @@ function renderOrderDetail(){
                   <td>${escapeHtml(it.expressCompany) || '<span style="color:var(--text-muted)">-</span>'}</td>
                 <td>${canEditLogistics ? `
                   <input type="text" class="form-control" id="${order.type==='warehouse'?'whTrackItem_':'trackItem_'}${i}" value="${escapeHtml(it.trackingNo) || ''}" 
-                    placeholder="输入运单号" style="padding:6px 10px;min-width:160px"
+                    placeholder="${(currentUser.role==='operator' && (order.status==='shipped'||order.status==='feedback') && !it.trackingNo) ? '不可补填，仅可修改已有单号' : '输入运单号'}" 
+                    style="padding:6px 10px;min-width:160px"
                     onchange="saveTrackingNo('${order.id}', ${i}, this.value)">
                 ` : (it.trackingNo ? `<span class="mono" style="font-size:13px">${escapeHtml(it.trackingNo)}</span>` : '<span style="color:var(--text-muted)">-</span>')}
                 </td>
@@ -7601,8 +7616,8 @@ function renderOrderDetail(){
     if(isAdmin && order.status === 'confirmed' && order.type === 'warehouse'){
       html += `<div style="width:100%;display:flex;justify-content:center;margin-top:8px"><button class="btn btn-primary btn-sm" onclick="window._orderTab='confirmed';navigate('orders')">← 返回已下单列表</button></div>`;
     }
-    // 售后申请按钮（仅「已完成」状态的订单可申请售后；管理员与销售均可操作）——居中显示
-    if(['completed','feedback_done'].includes(order.status)){
+    // 售后申请按钮（仅「已完成」状态的订单可申请售后；管理员与销售均可操作，下单操作员除外）——居中显示
+    if(currentUser.role !== 'operator' && ['completed','feedback_done'].includes(order.status)){
       html += `<div style="width:100%;display:flex;justify-content:center;margin-top:4px"><button class="btn btn-warning btn-sm" onclick="window._aftersaleOrderId='${order.id}'; openNewAftersaleModal()">申请售后</button></div>`;
     }
   }
@@ -9532,14 +9547,20 @@ function saveTrackingNo(orderId, itemIndex, value) {
   _pinWriteLock(orderId); // 写入窗口锁：自动保存物流单号后 3 秒内拉回的云端旧副本（尚不含本次单号）不覆盖本地
   const auditBeforeTracking = item ? item.trackingNo : '';
   const auditBeforeStatus = orders[idx].status;
+  // 20260901：下单操作员在「运输中/待反馈」阶段不可补填物流单号（从空填起），只能修改已有单号
+  if(currentUser.role === 'operator' && (orders[idx].status === 'shipped' || orders[idx].status === 'feedback') && !auditBeforeTracking && (value||'').trim()){
+    showToast('⚠️ 运输中/待反馈阶段不可补填物流单号，只能修改已有单号', 'error');
+    renderOrderDetail(); // 还原输入框为原值
+    return;
+  }
   item.trackingNo = value.trim();
   item.expressCompany = value.trim() ? detectExpressCompany(value.trim()) : '';
   const order = orders[idx];
   order.updatedAt = nowStr(); // 关键：刷新时间戳，使云端合并以"本地新版"为准
   const allTracking = order.items.every(it => it.trackingNo);
   const isAdmin = currentUser.role === 'admin';
-  // 管理员填完最后一个物流单号：待下单/运输中状态弹确认框确认后转入待反馈；已下单(confirmed)不弹框，走下方自动流转直接转待反馈
-  if(isAdmin && allTracking && (order.status === 'pending' || order.status === 'shipped') && order.type !== 'door'){
+  // 管理员/下单操作员填完最后一个物流单号：待下单/运输中状态弹确认框确认后转入待反馈；已下单(confirmed)不弹框，走下方自动流转直接转待反馈
+  if((isAdmin || currentUser.role === 'operator') && allTracking && (order.status === 'pending' || order.status === 'shipped') && order.type !== 'door'){
     showConfirm('所有商品物流单号已录入，确认将该订单转入「待反馈」？', () => {
       order.status = 'feedback';
       order.feedbackAt = nowStr();
@@ -13114,7 +13135,7 @@ function renderSettings(){
   html += '<div><label style="font-size:13px;color:var(--text-muted)">姓名</label><input class="form-control" id="newUserName" placeholder="请输入姓名"></div>';
   html += '<div><label style="font-size:13px;color:var(--text-muted)">登录账号</label><input class="form-control" id="newUserAccount" placeholder="请输入登录账号"></div>';
   html += '<div><label style="font-size:13px;color:var(--text-muted)">密码</label><input class="form-control" id="newUserPassword" type="password" placeholder="请输入密码"></div>';
-  html += '<div><label style="font-size:13px;color:var(--text-muted)">角色</label><select class="form-control" id="newUserRole"><option value="sales">销售</option><option value="admin">管理员</option></select></div>';
+  html += '<div><label style="font-size:13px;color:var(--text-muted)">角色</label><select class="form-control" id="newUserRole"><option value="sales">销售</option><option value="operator">下单操作员</option><option value="admin">管理员</option></select></div>';
   html += '</div>';
   html += '<div style="margin-top:12px"><label style="font-size:13px;color:var(--text-muted)">微信金额（初始值，单位：元）</label><input class="form-control" id="newUserWechat" type="number" min="0" value="0" style="max-width:220px" placeholder="微信收款初始金额"></div>';
   html += '<div style="margin-top:12px"><button class="btn btn-primary btn-sm" onclick="addUser()">提交</button></div>';
@@ -13126,7 +13147,7 @@ function renderSettings(){
   html += '<div class="table-wrap"><table><thead><tr><th>姓名</th><th>登录账号</th><th>角色</th><th>创建时间</th><th>微信金额</th><th>操作</th></tr></thead><tbody>';
   users.forEach(function(u){
     var isMe = u.id === currentUser.id;
-    var roleTag = u.role === 'admin' ? '<span class="tag tag-completed">管理员</span>' : '<span class="tag tag-pending">销售</span>';
+    var roleTag = u.role === 'admin' ? '<span class="tag tag-completed">管理员</span>' : (u.role === 'operator' ? '<span class="tag tag-operator">下单操作员</span>' : '<span class="tag tag-pending">销售</span>');
     html += '<tr'+(isMe?' style="background:#fffbeb"':'')+'>';
     html += '<td>'+(isMe?'<b>'+escapeHtml(u.name)+'</b>':u.name)+'</td>';
     html += '<td>'+u.username+'</td>';
@@ -13136,6 +13157,7 @@ function renderSettings(){
     html += '<td>';
     html += '<select class="form-control" style="width:auto;padding:6px 10px;display:inline-block;margin-right:6px" onchange="changeUserRole(\''+u.id+'\',this.value)">';
     html += '<option value="sales" '+(u.role==='sales'?'selected':'')+'>销售</option>';
+    html += '<option value="operator" '+(u.role==='operator'?'selected':'')+'>下单操作员</option>';
     html += '<option value="admin" '+(u.role==='admin'?'selected':'')+'>管理员</option>';
     html += '</select> ';
     html += '<button class="btn btn-secondary btn-sm" onclick="resetUserPassword(\''+u.id+'\')">重置密码</button> ';
@@ -13188,7 +13210,7 @@ function renderUsers(){
   html += `<div><label style="font-size:13px;color:var(--text-muted)">姓名</label><input class="form-control" id="newUserName" placeholder="请输入姓名"></div>`;
   html += `<div><label style="font-size:13px;color:var(--text-muted)">登录账号</label><input class="form-control" id="newUserAccount" placeholder="请输入登录账号"></div>`;
   html += `<div><label style="font-size:13px;color:var(--text-muted)">密码</label><input class="form-control" id="newUserPassword" type="password" placeholder="请输入密码"></div>`;
-  html += `<div><label style="font-size:13px;color:var(--text-muted)">角色</label><select class="form-control" id="newUserRole"><option value="sales">销售</option><option value="admin">管理员</option></select></div>`;
+  html += `<div><label style="font-size:13px;color:var(--text-muted)">角色</label><select class="form-control" id="newUserRole"><option value="sales">销售</option><option value="operator">下单操作员</option><option value="admin">管理员</option></select></div>`;
   html += `</div>`;
   html += `<div style="margin-top:12px"><label style="font-size:13px;color:var(--text-muted)">微信金额（初始值，单位：元）</label><input class="form-control" id="newUserWechat" type="number" min="0" value="0" style="max-width:220px" placeholder="微信收款初始金额"></div>`;
   html += `<div style="margin-top:12px"><button class="btn btn-primary btn-sm" onclick="addUser()">提交</button></div>`;
