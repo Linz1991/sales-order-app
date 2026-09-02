@@ -1359,7 +1359,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260903</div>
+          <div class="brand-sub">v20260904</div>
         </div>
       </div>
     </div>
@@ -13410,7 +13410,7 @@ function toggleUserForm(){
 
 // 调用 admin-user-mgmt Edge Function（service_role 在函数 Secrets 中，前端零密钥暴露）
 async function callAdminUserMgmt(body){
-  const url = SUPABASE_URL.replace(/\.supabase\.co$/, '.functions.supabase.co') + '/admin-user-mgmt';
+  const url = SUPABASE_URL.replace(/\/$/, '') + '/functions/v1/admin-user-mgmt';
   let token = SUPABASE_KEY;
   try{
     const sess = await window._sbpbClient.auth.getSession();
