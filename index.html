@@ -1339,7 +1339,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260907</div>
+          <div class="brand-sub">v20260908</div>
         </div>
       </div>
     </div>
@@ -15311,14 +15311,15 @@ function applyVirtualScroll(id){
   }catch(e){}
 })();
 </script>
-<!-- 新版本提示 modal：检测到 version.json 版本高于本页时弹出（Req8） -->
+<!-- 新版本提示 modal：检测到 version.json 版本高于本页时强制自动刷新（Req8） -->
 <div id="newVersionModal" style="display:none;position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.45);align-items:center;justify-content:center;">
   <div style="background:#fff;border-radius:14px;max-width:360px;width:86%;padding:26px 22px;box-shadow:0 16px 48px rgba(0,0,0,.3);text-align:center;">
     <div style="font-size:42px;margin-bottom:6px">🚀</div>
     <div style="font-size:17px;font-weight:700;color:#111">发现新版本</div>
-    <div id="newVersionText" style="font-size:13px;color:#666;margin:10px 0 20px;line-height:1.6">已有新版本发布，点击更新以加载最新功能与修复</div>
-    <button id="newVersionRefresh" style="width:100%;padding:12px;border:none;background:#0958d9;color:#fff;border-radius:9px;font-size:15px;font-weight:600;cursor:pointer;">立即更新</button>
-    <button id="newVersionClose" style="width:100%;margin-top:10px;padding:11px;border:1px solid #d9d9d9;background:#fff;color:#666;border-radius:9px;font-size:14px;cursor:pointer;">稍后再说</button>
+    <div id="newVersionText" style="font-size:13px;color:#666;margin:10px 0 20px;line-height:1.6">正在加载新版本，10 秒后自动刷新…</div>
+    <div id="newVersionProgress" style="width:100%;height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden;margin-bottom:16px;">
+      <div id="newVersionBar" style="width:100%;height:100%;background:#0958d9;transition:width 10s linear;"></div>
+    </div>
   </div>
 </div>
 <script>
@@ -15326,7 +15327,9 @@ function applyVirtualScroll(id){
   // 版本号单一数据源：读取左侧 brand-sub
   var APP_VERSION = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || '202608252000';
   window.APP_VERSION = APP_VERSION;
+  var _autoTimer = null;
   function doRefresh(){
+    if(_autoTimer){ clearInterval(_autoTimer); _autoTimer=null; }
     try{
       if(navigator.serviceWorker){ navigator.serviceWorker.getRegistrations().then(function(regs){ (regs||[]).forEach(function(r){ r.unregister(); }); }); }
       if(window.caches){ caches.keys().then(function(ks){ (ks||[]).forEach(function(k){ caches.delete(k); }); }); }
@@ -15336,7 +15339,17 @@ function applyVirtualScroll(id){
   function showBanner(ver){
     var b=document.getElementById('newVersionModal');
     var t=document.getElementById('newVersionText');
-    if(b&&t){ t.textContent='已发布新版本 v'+ver+'，点击更新以加载最新功能与修复'; b.style.display='flex'; }
+    var bar=document.getElementById('newVersionBar');
+    if(!b || _autoTimer) return; // 已在倒计时则不重复弹
+    if(t) t.textContent='已发布新版本 v'+ver+'，为保证数据同步与配额修复，10 秒后自动刷新…';
+    if(bar){ try{ bar.style.transition='none'; bar.style.width='100%'; setTimeout(function(){ bar.style.transition='width 10s linear'; bar.style.width='0%'; },50); }catch(e){} }
+    b.style.display='flex';
+    var sec=10;
+    _autoTimer=setInterval(function(){
+      sec--;
+      if(sec<=0){ doRefresh(); return; }
+      if(t) t.textContent='已发布新版本 v'+ver+'，为保证数据同步与配额修复，'+sec+' 秒后自动刷新…';
+    },1000);
   }
   window.checkNewVersion = function(){
     var now=Date.now();
@@ -15352,8 +15365,6 @@ function applyVirtualScroll(id){
       .catch(function(){});
   }
   document.addEventListener('DOMContentLoaded', function(){
-    var rf=document.getElementById('newVersionRefresh'); if(rf) rf.onclick=doRefresh;
-    var cl=document.getElementById('newVersionClose'); if(cl) cl.onclick=function(){ var b=document.getElementById('newVersionModal'); if(b) b.style.display='none'; };
     window.checkNewVersion();
   });
 })();
