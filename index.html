@@ -1359,7 +1359,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260904</div>
+          <div class="brand-sub">v20260905</div>
         </div>
       </div>
     </div>
@@ -1566,6 +1566,33 @@ const DB = {
   _getLastFullAt(){ try{ return parseInt(localStorage.getItem('soms_last_full_at')||'0',10)||0; }catch(e){ return 0; } },
   _setLastFullAt(t){ try{ localStorage.setItem('soms_last_full_at', String(t)); }catch(e){} },
 
+  // v20260902 关键修复（egress 防全量退化）：计算表 t 的增量游标。
+  // 持久游标 som_inc_ts 可能因清缓存/隐私模式/并发写等丢失；丢失时若本地已有缓存，
+  // 用「本地最大 updated_at」兜底并前推 60s 重叠窗口，保证增量查询永不全量拉 orders/products
+  // （此前游标丢失→每次轮询全量拉 orders 550KB → egress 每天 100MB+）。
+  _localMaxUpdatedAt(t){
+    try{
+      const local = this.get(t, []);
+      let m = '';
+      (local || []).forEach(function(r){
+        const u = r && r.updated_at ? String(r.updated_at) : '';
+        if(u && u > m) m = u;
+      });
+      return m;
+    }catch(e){ return ''; }
+  },
+  _incCursor(t){
+    const persist = this._getIncTs();
+    if(persist) return persist;                  // 正常路径：持久游标（保持原行为）
+    const localMax = this._localMaxUpdatedAt(t);
+    if(!localMax) return '';                     // 本地无缓存：首拉全量（唯一合法全量场景）
+    try{                                          // 游标丢失兜底：本地 max 前推 60s
+      const d = new Date(localMax);
+      if(!isNaN(d.getTime())){ d.setSeconds(d.getSeconds() - 60); return d.toISOString(); }
+    }catch(e){}
+    return localMax;
+  },
+
   // 行级脏标记：orders/products 写入时记录「新增/变化」的行 id，供增量上推只 upsert 脏行，
   // 避免全量 upsert 刷新未改行的 updated_at（会让增量查询退化成全量，egress 暴涨）。
   _getDirty(table){ try{ return JSON.parse(localStorage.getItem('soms_dirty_'+table)||'[]'); }catch(e){ return []; } },
@@ -1592,8 +1619,7 @@ const DB = {
   async syncIncremental(){
     if(!window._sbpbClient) return true;
     this._initMapping();
-    const lastTs = this._getIncTs();
-    let maxTs = lastTs;
+    let maxTs = this._getIncTs();
     let hasError = false;
     // 增量表（含 updated_at）：仅拉 updated_at>=lastTs 的变化行。
     // v2026082405：_fullPullTables 不再日常全量拉—— customers/aftersales/payments/commissions 改回由 syncFromCloud 的
@@ -1602,10 +1628,13 @@ const DB = {
     const _allTables = _incTables;
     for(let i=0;i<_allTables.length;i++){
       const t = _allTables[i];
-      const _useInc = _incTables.indexOf(t) >= 0 && !!lastTs;
+      // v20260902 关键修复（egress 防全量退化）：游标丢失时用本地缓存最大 updated_at 兜底（前推 60s），
+      // 保证增量查询永不全量拉 orders（550KB）/products（72KB）——此前游标丢失时每 2min 全量拉 → 每天 100MB+。
+      const incCursor = this._incCursor(t);
+      const _useInc = _incTables.indexOf(t) >= 0 && !!incCursor;
       try{
         let query = window._sbpbClient.from(t).select('*').order('created_at', { ascending: true });
-        if(_useInc){ query = query.gte('updated_at', lastTs); }
+        if(_useInc){ query = query.gte('updated_at', incCursor); }
         const { data, error } = await withTimeout(query, 5000, 'syncIncremental('+t+(_useInc?' inc':' full')+')');
         if(error) throw error;
         const cloud = this._toCamel(data || []);
@@ -1647,7 +1676,8 @@ const DB = {
         hasError = true;
       }
     }
-    if(maxTs && maxTs !== lastTs) this._setIncTs(maxTs);
+    // v20260902：游标每次有返回值即写回（原「!== lastTs」在游标丢失时永不写，导致游标无法自愈）
+    if(maxTs) this._setIncTs(maxTs);
     return !hasError;
   },
 
@@ -2747,16 +2777,17 @@ const DB = {
     // 软删订单删除时 updated_at 同步刷新，增量可拉到墓碑），避免每次全量拖垮配额；
     // 游标为空（首拉/缓存清空）或本地缓存为空时回退全量，保证数据完整性。
     const local = this.get('orders', []);
-    const lastTs = this._getIncTs();
-    const useInc = !!lastTs && (local || []).length > 0;
+    // v20260902：游标丢失时用本地缓存最大 updated_at 兜底，避免「本地有缓存却全量拉 orders」
+    const incCursor = this._incCursor('orders');
+    const useInc = !!incCursor && (local || []).length > 0;
     let query = window._sbpbClient.from('orders').select('*').order('created_at', { ascending: true });
-    if(useInc){ query = query.gte('updated_at', lastTs); }
+    if(useInc){ query = query.gte('updated_at', incCursor); }
     const { data, error } = await withTimeout(query, 20000, 'loadOrdersFromCloud' + (useInc ? ' inc' : ' full'));
     if(error) throw error;
     const cloud = this._toCamel(data || []);
-    let maxTs = lastTs;
+    let maxTs = this._getIncTs() || incCursor || '';
     (cloud || []).forEach(function(r){ if(r && r.updated_at && (!maxTs || r.updated_at > maxTs)) maxTs = r.updated_at; });
-    if(maxTs && maxTs !== lastTs) this._setIncTs(maxTs);
+    if(maxTs) this._setIncTs(maxTs);
     const isAdmin = typeof currentUser !== 'undefined' && currentUser && currentUser.role === 'admin';
     // 关键修复（v202608251806）：管理员端对 orders 表采用「云端优先硬覆盖」合并，
     // 根治 checkOrderAutoFlow 刷新本地 updatedAt 导致销售改的客户姓名/价格被回退。
@@ -2791,16 +2822,17 @@ const DB = {
     // （保留 auto_added 标记，仿 syncIncremental）；游标为空或本地缓存为空时回退全量，
     // 云端为唯一真相直接覆盖（保持原「任意浏览器看到的商品数量 = 云端数量」的多端一致约定）。
     const local = this.get('products', []);
-    const lastTs = this._getIncTs();
-    const useInc = !!lastTs && (local || []).length > 0;
+    // v20260902：游标丢失时用本地缓存最大 updated_at 兜底，避免「本地有缓存却全量拉 products」
+    const incCursor = this._incCursor('products');
+    const useInc = !!incCursor && (local || []).length > 0;
     let query = window._sbpbClient.from('products').select('*').order('created_at', { ascending: true });
-    if(useInc){ query = query.gte('updated_at', lastTs); }
+    if(useInc){ query = query.gte('updated_at', incCursor); }
     const { data, error } = await withTimeout(query, 20000, 'loadProductsFromCloud' + (useInc ? ' inc' : ' full'));
     if(error) throw error;
     const cloud = this._toCamel(data || []);
-    let maxTs = lastTs;
+    let maxTs = this._getIncTs() || incCursor || '';
     (cloud || []).forEach(function(r){ if(r && r.updated_at && (!maxTs || r.updated_at > maxTs)) maxTs = r.updated_at; });
-    if(maxTs && maxTs !== lastTs) this._setIncTs(maxTs);
+    if(maxTs) this._setIncTs(maxTs);
     let merged;
     if(useInc){
       merged = this._mergeById(local, cloud, this.get('_deletedProductIds', []), 'products');
