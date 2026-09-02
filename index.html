@@ -1359,7 +1359,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260901</div>
+          <div class="brand-sub">v20260902</div>
         </div>
       </div>
     </div>
@@ -13378,14 +13378,51 @@ function toggleUserForm(){
   el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
+// 调用 admin-user-mgmt Edge Function（service_role 在函数 Secrets 中，前端零密钥暴露）
+async function callAdminUserMgmt(body){
+  const url = SUPABASE_URL.replace(/\.supabase\.co$/, '.functions.supabase.co') + '/admin-user-mgmt';
+  let token = SUPABASE_KEY;
+  try{
+    const sess = await window._sbpbClient.auth.getSession();
+    if(sess && sess.data && sess.data.session && sess.data.session.access_token) token = sess.data.session.access_token;
+  }catch(e){}
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + token },
+    body: JSON.stringify(body)
+  });
+  let j = null;
+  try{ j = await res.json(); }catch(e){ j = null; }
+  if(!j || typeof j.ok === 'undefined') throw new Error('服务器无响应（' + res.status + '），请稍后重试');
+  if(!j.ok) throw new Error(j.message || '操作失败');
+  return j;
+}
+
 async function addUser(){
-  // 方案二(Auth)：账号由 Supabase Auth 统一管理，前端不持有 service_role，无法直接建号。
-  // 点按钮后弹确认，说明原因并由用户决定是否打开后台，避免被感觉"跳到 sub 网站"。
-  const url = 'https://supabase.com/dashboard/project/mfimcrzewhnlbtkjgqlq/auth/users';
-  if(confirm('新建账号需管理员在 Supabase 后台操作（前端无 service_role 权限）。\n\n操作步骤：\n1. 在后台 Users 页点 "Add user"\n2. email 填：登录账号@soms.local\n3. password 填初始密码\n4. 回到系统把该用户的「角色/姓名/微信金额」补充正确\n\n是否现在打开 Supabase 后台 Users 页面？')){
-    window.open(url, '_blank');
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可新增账号','error'); return; }
+  const name = (document.getElementById('newUserName') || {}).value || '';
+  const username = ((document.getElementById('newUserAccount') || {}).value || '').trim();
+  const password = (document.getElementById('newUserPassword') || {}).value || '';
+  const role = (document.getElementById('newUserRole') || {}).value || 'sales';
+  const wechatAmount = parseInt((document.getElementById('newUserWechat') || {}).value) || 0;
+  if(!username){ showToast('请填写登录账号','error'); return; }
+  if(!password || password.length < 6){ showToast('密码至少 6 位','error'); return; }
+  showToast('正在创建账号…','info');
+  try{
+    const r = await callAdminUserMgmt({ action: 'create', username, name, password, role, wechatAmount });
+    // 本地补一行，立即显示（云端已有该行，后续同步幂等）
+    try{
+      const users = DB.get('users') || [];
+      if(!users.some(u => u.id === r.id)){
+        users.push({ id: r.id, username: r.username, name: r.name, role: r.role, wechatAmount, createdAt: nowStr(), updatedAt: nowStr() });
+        DB.set('users', users);
+      }
+    }catch(e){}
+    showToast('✅ 账号「' + r.username + '」创建成功','success');
+    renderSettings();
+  }catch(e){
+    showToast('⚠️ 创建失败：' + (e.message || e), 'error');
   }
-  showToast('请管理员到 Supabase 后台 → Authentication → Users → Add user 新建账号','info', 8000);
 }
 
 function saveUserWechat(id){
@@ -13412,29 +13449,40 @@ function deleteUser(id){
   if(id === currentUser.id){ showToast('不能删除自己的账号','error'); return; }
   const u = (DB.get('users') || []).find(x => x.id === id);
   const label = u ? `${escapeHtml(u.name)}（${u.username}）` : '此人员';
-  showConfirm(`确定删除 ${label} 吗？\n删除后该账号无法登录，历史订单数据仍会保留。`, async () => {
+  showConfirm(`确定删除 ${label} 吗？\n将同时删除该账号的登录权限（Supabase 认证账号），删除后无法再登录；历史订单数据仍会保留。`, async () => {
+    try{
+      await callAdminUserMgmt({ action: 'delete', id: id });
+    }catch(e){
+      showToast('⚠️ 删除失败：' + (e.message || e), 'error');
+      return;
+    }
     const ok = await _deleteUserPhysical(id);
     if(ok){
       showToast('账号已删除','success');
-      renderUsers();
+      renderSettings();
     }else{
-      showToast('删除失败','error');
+      showToast('认证账号已删除，但本地清理失败，请刷新页面','warning');
+      renderSettings();
     }
   });
 }
 
 async function resetUserPassword(id){
-  // 方案二(Auth)：重置密码需要 service_role 权限，前端不能持有，必须到 Supabase 后台操作。
-  // 改为弹确认框，说明原因并由用户决定是否打开后台，避免被感觉"跳到 sub 网站"。
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可重置密码','error'); return; }
   const users = DB.get('users');
   const u = users.find(function(x){ return x.id === id; });
-  const username = u ? (u.username || '') : '';
-  const name = u ? (u.name || username) : '';
-  const url = 'https://supabase.com/dashboard/project/mfimcrzewhnlbtkjgqlq/auth/users' + (username ? ('?search=' + encodeURIComponent(username)) : '');
-  if(confirm('重置「' + name + '」的密码需管理员在 Supabase 后台操作（前端无 service_role 权限）。\n\n操作步骤：\n1. 在后台搜索用户：' + (username || '') + '\n2. 点击对应用户行\n3. 选 "Reset password" 或 "Send password reset"\n\n是否现在打开 Supabase 后台 Users 页面？')){
-    window.open(url, '_blank');
+  const label = u ? (u.name || u.username || '该账号') : '该账号';
+  const newPwd = window.prompt('为「' + label + '」设置新密码（至少 6 位）：');
+  if(newPwd === null) return; // 用户取消
+  const pwd = String(newPwd || '').trim();
+  if(!pwd){ showToast('密码不能为空','error'); return; }
+  if(pwd.length < 6){ showToast('密码至少 6 位','error'); return; }
+  try{
+    await callAdminUserMgmt({ action: 'reset_password', id: id, password: pwd });
+    showToast('✅ 已重置「' + label + '」的密码','success');
+  }catch(e){
+    showToast('⚠️ 重置失败：' + (e.message || e), 'error');
   }
-  showToast('请管理员到 Supabase 后台搜索 "' + name + '" 并重置密码','info', 8000);
 }
 
 /* ============ 销售看板（管理员） ============ */
