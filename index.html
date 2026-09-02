@@ -1359,7 +1359,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260902</div>
+          <div class="brand-sub">v20260903</div>
         </div>
       </div>
     </div>
@@ -2659,29 +2659,25 @@ const DB = {
     const needFull = !lastFull || (now - lastFull) > this._fullSyncIntervalMs;
     let hasError = false;
     if(needFull){
-      // 全量兜底：所有表全量拉（保证删除传播 + 小表更新 + 一致性）。每 2h 或首次执行一次，避免日常轮询全量拖垮 egress。
-      const tables = ['users','customers','products','orders','aftersales','payments','commissions','audit_log'];
+      // 全量兜底（v20260902 降 egress）：订单/商品改走 loadXxxFromCloud（本地缓存存在时自动切增量，
+      // 只拉 updated_at 之后的变化行，含删除传播）；小表全量拉（users 无 updated_at 列必须全量；
+      // customers/aftersales/payments/commissions 行数小、体积小）；audit_log 为纯本地审计日志，不跨端，不拉取。
+      const tables = ['users','customers','aftersales','payments','commissions'];
       for(let i = 0; i < tables.length; i++){
         try{
-          let result;
-          // 订单/商品走 NetworkOnly：先推本地未同步数据上云，再用云端全量替换本地缓存（删除传播 + 一致性）。
-          if(tables[i] === 'orders'){
-            result = await this.loadOrdersFromCloud();
-          } else if(tables[i] === 'products'){
-            result = await this.loadProductsFromCloud();
-          } else {
-            result = await this._loadTable(tables[i]);
-          }
-          if(result === null){
-            // audit_log 表可能尚未在 Supabase 创建（需用户跑一次 copyRlsSql 的建表语句），
-            // 此时跳过该表，避免把整体同步状态误报为"失败"。本地审计始终可用。
-            if(tables[i] === 'audit_log'){ console.warn('audit_log 表尚未创建，跳过同步（本地审计仍可用）'); continue; }
-            hasError = true;
-          }
+          const result = await this._loadTable(tables[i]);
+          if(result === null){ hasError = true; }
         }catch(e){
           console.warn('同步表 ['+tables[i]+'] 失败:', e.message);
           hasError = true;
         }
+      }
+      // 订单/商品：先推本地未同步数据上云，再拉云端（增量/全量自适应），保证删除传播 + 一致性。
+      try{ await this.loadOrdersFromCloud(); }catch(e){
+        console.warn('同步订单失败:', e.message); hasError = true;
+      }
+      try{ await this.loadProductsFromCloud(); }catch(e){
+        console.warn('同步商品失败:', e.message); hasError = true;
       }
       this._setLastFullAt(now);
     } else {
@@ -2746,11 +2742,21 @@ const DB = {
       console.warn('推订单上云失败，放弃本次拉取以防旧云端数据覆盖本地:', e.message);
       throw e;
     }
-    // 第二步：第一步成功后再拉取云端最新订单，按 updatedAt 较新者优先合并到本地（本地有更新的改动不会被覆盖）
-    const { data, error } = await window._sbpbClient.from('orders').select('*').order('created_at', { ascending: true });
+    // 第二步：第一步成功后再拉取云端订单。
+    // v20260902 降 egress：本地已有缓存且增量游标存在时，只拉 updated_at 之后的变化行（含删除传播，
+    // 软删订单删除时 updated_at 同步刷新，增量可拉到墓碑），避免每次全量拖垮配额；
+    // 游标为空（首拉/缓存清空）或本地缓存为空时回退全量，保证数据完整性。
+    const local = this.get('orders', []);
+    const lastTs = this._getIncTs();
+    const useInc = !!lastTs && (local || []).length > 0;
+    let query = window._sbpbClient.from('orders').select('*').order('created_at', { ascending: true });
+    if(useInc){ query = query.gte('updated_at', lastTs); }
+    const { data, error } = await withTimeout(query, 20000, 'loadOrdersFromCloud' + (useInc ? ' inc' : ' full'));
     if(error) throw error;
     const cloud = this._toCamel(data || []);
-    const local = this.get('orders', []);
+    let maxTs = lastTs;
+    (cloud || []).forEach(function(r){ if(r && r.updated_at && (!maxTs || r.updated_at > maxTs)) maxTs = r.updated_at; });
+    if(maxTs && maxTs !== lastTs) this._setIncTs(maxTs);
     const isAdmin = typeof currentUser !== 'undefined' && currentUser && currentUser.role === 'admin';
     // 关键修复（v202608251806）：管理员端对 orders 表采用「云端优先硬覆盖」合并，
     // 根治 checkOrderAutoFlow 刷新本地 updatedAt 导致销售改的客户姓名/价格被回退。
@@ -2781,11 +2787,35 @@ const DB = {
   // 保证任意浏览器/设备看到的商品数量都 = 云端数量，彻底解决「网页178、手机300+」这类多端不一致。
   async loadProductsFromCloud(){
     if(!window._sbpbClient) return;
-    const { data, error } = await window._sbpbClient.from('products').select('*').order('created_at', { ascending: true });
+    // v20260902 降 egress：本地已有缓存且增量游标存在时，只拉 updated_at 之后的变化行并入本地缓存
+    // （保留 auto_added 标记，仿 syncIncremental）；游标为空或本地缓存为空时回退全量，
+    // 云端为唯一真相直接覆盖（保持原「任意浏览器看到的商品数量 = 云端数量」的多端一致约定）。
+    const local = this.get('products', []);
+    const lastTs = this._getIncTs();
+    const useInc = !!lastTs && (local || []).length > 0;
+    let query = window._sbpbClient.from('products').select('*').order('created_at', { ascending: true });
+    if(useInc){ query = query.gte('updated_at', lastTs); }
+    const { data, error } = await withTimeout(query, 20000, 'loadProductsFromCloud' + (useInc ? ' inc' : ' full'));
     if(error) throw error;
     const cloud = this._toCamel(data || []);
-    localStorage.setItem('soms_products', JSON.stringify(cloud));
-    return cloud;
+    let maxTs = lastTs;
+    (cloud || []).forEach(function(r){ if(r && r.updated_at && (!maxTs || r.updated_at > maxTs)) maxTs = r.updated_at; });
+    if(maxTs && maxTs !== lastTs) this._setIncTs(maxTs);
+    let merged;
+    if(useInc){
+      merged = this._mergeById(local, cloud, this.get('_deletedProductIds', []), 'products');
+      const _localFlag = {};
+      (local || []).forEach(function(r){ if(r && r.id != null && r.auto_added === true) _localFlag[r.id] = true; });
+      merged = merged.map(function(r){
+        if(r && r.id != null && _localFlag[r.id] && r.auto_added !== true){ r = Object.assign({}, r); r.auto_added = true; }
+        return r;
+      });
+    } else {
+      merged = cloud;
+    }
+    localStorage.setItem('soms_products', JSON.stringify(merged));
+    window._lastCloudProducts = cloud || [];
+    return merged;
   },
 
   // 同步状态管理
