@@ -1339,7 +1339,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260908</div>
+          <div class="brand-sub">v20260909</div>
         </div>
       </div>
     </div>
@@ -7633,13 +7633,15 @@ function renderOrderDetail(){
       </div>
     `;
     }
-  } else {
+  } else if(!isOperator){
+    // 无财务权限且非 operator（如销售查看他人订单）：保留只读提示
     html += `
     <div class="detail-section card">
       <h4>💰 收款信息</h4>
       <div class="detail-box detail-locked">🔒 收款金额仅提交人（${escapeHtml(order.salesName) || '销售'}）及管理员可见</div>
     </div>`;
   }
+  // operator（操作员）无财务权限查看他人订单：整块收款信息（含提示）不渲染
 
   // 操作按钮区
   html += `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;border-top:1px solid var(--border);padding-top:16px">`;
