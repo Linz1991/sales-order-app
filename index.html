@@ -1339,7 +1339,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260909</div>
+          <div class="brand-sub">v20260910</div>
         </div>
       </div>
     </div>
@@ -1540,6 +1540,14 @@ const DB = {
   // 其余小表（users/customers/aftersales/payments/commissions）无 updated_at 或行数极小，
   // 保持全量，但只在「全量兜底周期」(每 2h) 拉取，日常 60s 轮询不拉，以压低 egress。
   _incrementalTables: ['orders','products'],
+  // v20260910 关键修复（9/3 PostgREST 470MB 根因）：products 表历史遗留 updated_at 全为 null，
+  // 导致 _localMaxUpdatedAt 返回空 → _incCursor 兜底失败 → useInc=false → 每 2min 全量拉 products 76KB。
+  // 5 台设备 × 720 次/天 ≈ 274MB/天 单 products 一张表。修复：products 表改用 created_at 做增量游标（products 几乎不更新，created_at 已足够）；
+  // orders 表保持 updated_at（v202608251806 起 salesName 等修改会刷新 updated_at）。
+  _incrementalCursorFields: { orders: 'updated_at', products: 'created_at' },
+  // v20260910：首拉/游标丢失时（useInc=false）的窗口保护，避免一次性拉全表。
+  // 30 天窗口：保证业务可见性（订单查询 90% 在 30 天内），同时把首拉流量从 ~700KB 降到 ~50-100KB。
+  _initialSyncWindowDays: 30,
   // 缺 updated_at 列（或低频变更）的小表：日常轮询全量拉并合并，保证客户/售后/收款/提成等
   // 改动在日常即可跨端可见，不再依赖 6h 全量兜底（修复「一端改了另一端要等数小时才看到」）。
   _fullPullTables: ['customers','aftersales','payments','commissions'],
@@ -1618,7 +1626,16 @@ const DB = {
       const _useInc = _incTables.indexOf(t) >= 0 && !!incCursor;
       try{
         let query = window._sbpbClient.from(t).select('*').order('created_at', { ascending: true });
-        if(_useInc){ query = query.gte('updated_at', incCursor); }
+        if(_useInc){
+          // v20260910：游标字段按表配置（products.created_at / orders.updated_at），products updated_at 全 null 走 created_at
+          const _cursorField = (this._incrementalCursorFields && this._incrementalCursorFields[t]) || 'updated_at';
+          query = query.gte(_cursorField, incCursor);
+        } else {
+          // v20260910 首拉窗口保护：useInc=false 时（首拉/游标丢失/本地缓存空）限定最近 30 天，
+          // 避免一次性全量拉 orders(617KB)+products(76KB)（防 9/3 设备集中重连事件）
+          const _since = new Date(Date.now() - this._initialSyncWindowDays*24*60*60*1000).toISOString();
+          query = query.gte('created_at', _since);
+        }
         const { data, error } = await withTimeout(query, 5000, 'syncIncremental('+t+(_useInc?' inc':' full')+')');
         if(error) throw error;
         const cloud = this._toCamel(data || []);
@@ -1654,7 +1671,9 @@ const DB = {
           });
         }
         localStorage.setItem('soms_'+t, JSON.stringify(t === 'users' ? this._scrubUserPasswords(merged) : merged));
-        (cloud||[]).forEach(function(r){ if(r && r.updated_at && (!maxTs || r.updated_at > maxTs)) maxTs = r.updated_at; });
+        // v20260910：游标 maxTs 按表配置字段取值（products.created_at / orders.updated_at）
+        const _cursorField2 = (this._incrementalCursorFields && this._incrementalCursorFields[t]) || 'updated_at';
+        (cloud||[]).forEach(function(r){ if(r && r[_cursorField2] && (!maxTs || r[_cursorField2] > maxTs)) maxTs = r[_cursorField2]; });
       }catch(e){
         console.warn('增量拉取 ['+t+'] 失败:', e.message);
         hasError = true;
@@ -2827,12 +2846,21 @@ const DB = {
     const incCursor = this._incCursor('orders');
     const useInc = !!incCursor && (local || []).length > 0;
     let query = window._sbpbClient.from('orders').select('*').order('created_at', { ascending: true });
-    if(useInc){ query = query.gte('updated_at', incCursor); }
+    if(useInc){
+      // v20260910：orders 表游标字段 updated_at
+      query = query.gte((this._incrementalCursorFields && this._incrementalCursorFields.orders) || 'updated_at', incCursor);
+    } else {
+      // v20260910 首拉窗口保护：限定最近 30 天，避免一次性拉全表（防 9/3 设备集中重连事件）
+      const _since = new Date(Date.now() - this._initialSyncWindowDays*24*60*60*1000).toISOString();
+      query = query.gte('created_at', _since);
+    }
     const { data, error } = await withTimeout(query, 20000, 'loadOrdersFromCloud' + (useInc ? ' inc' : ' full'));
     if(error) throw error;
     const cloud = this._toCamel(data || []);
     let maxTs = this._getIncTs() || incCursor || '';
-    (cloud || []).forEach(function(r){ if(r && r.updated_at && (!maxTs || r.updated_at > maxTs)) maxTs = r.updated_at; });
+    // v20260910：maxTs 按表配置字段取值
+    const _cfOrders = (this._incrementalCursorFields && this._incrementalCursorFields.orders) || 'updated_at';
+    (cloud || []).forEach(function(r){ if(r && r[_cfOrders] && (!maxTs || r[_cfOrders] > maxTs)) maxTs = r[_cfOrders]; });
     if(maxTs) this._setIncTs(maxTs);
     const isAdmin = typeof currentUser !== 'undefined' && currentUser && currentUser.role === 'admin';
     // 关键修复（v202608251806）：管理员端对 orders 表采用「云端优先硬覆盖」合并，
@@ -2869,15 +2897,25 @@ const DB = {
     // 云端为唯一真相直接覆盖（保持原「任意浏览器看到的商品数量 = 云端数量」的多端一致约定）。
     const local = this.get('products', []);
     // v20260902：游标丢失时用本地缓存最大 updated_at 兜底，避免「本地有缓存却全量拉 products」
+    // v20260910：products 表用 created_at 游标（updated_at 历史遗留全 null，会导致兜底失败退化为全量）
     const incCursor = this._incCursor('products');
     const useInc = !!incCursor && (local || []).length > 0;
     let query = window._sbpbClient.from('products').select('*').order('created_at', { ascending: true });
-    if(useInc){ query = query.gte('updated_at', incCursor); }
+    if(useInc){
+      // v20260910：products 表游标字段 created_at
+      query = query.gte((this._incrementalCursorFields && this._incrementalCursorFields.products) || 'created_at', incCursor);
+    } else {
+      // v20260910 首拉窗口保护：限定最近 30 天，避免一次性拉全表（防 9/3 设备集中重连事件）
+      const _since = new Date(Date.now() - this._initialSyncWindowDays*24*60*60*1000).toISOString();
+      query = query.gte('created_at', _since);
+    }
     const { data, error } = await withTimeout(query, 20000, 'loadProductsFromCloud' + (useInc ? ' inc' : ' full'));
     if(error) throw error;
     const cloud = this._toCamel(data || []);
     let maxTs = this._getIncTs() || incCursor || '';
-    (cloud || []).forEach(function(r){ if(r && r.updated_at && (!maxTs || r.updated_at > maxTs)) maxTs = r.updated_at; });
+    // v20260910：maxTs 按表配置字段取值
+    const _cfProducts = (this._incrementalCursorFields && this._incrementalCursorFields.products) || 'created_at';
+    (cloud || []).forEach(function(r){ if(r && r[_cfProducts] && (!maxTs || r[_cfProducts] > maxTs)) maxTs = r[_cfProducts]; });
     if(maxTs) this._setIncTs(maxTs);
     let merged;
     if(useInc){
