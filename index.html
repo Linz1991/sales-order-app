@@ -1339,7 +1339,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260910</div>
+          <div class="brand-sub">v20260911</div>
         </div>
       </div>
     </div>
@@ -7578,8 +7578,8 @@ function renderOrderDetail(){
                   <td>${it.qty}</td>
                   <td>${escapeHtml(it.expressCompany) || '<span style="color:var(--text-muted)">-</span>'}</td>
                 <td>${canEditLogistics ? `
-                  <input type="text" class="form-control" id="${order.type==='warehouse'?'whTrackItem_':'trackItem_'}${i}" value="${escapeHtml(it.trackingNo) || ''}" 
-                    placeholder="${(currentUser.role==='operator' && (order.status==='shipped'||order.status==='feedback') && !it.trackingNo) ? '不可补填，仅可修改已有单号' : '输入运单号'}" 
+                  <input type="text" class="form-control" id="${order.type==='warehouse'?'whTrackItem_':'trackItem_'}${i}" value="${escapeHtml(it.trackingNo) || ''}"
+                    placeholder="输入运单号"
                     style="padding:6px 10px;min-width:160px"
                     onchange="saveTrackingNo('${order.id}', ${i}, this.value)">
                 ` : (it.trackingNo ? `<span class="mono" style="font-size:13px">${escapeHtml(it.trackingNo)}</span>` : '<span style="color:var(--text-muted)">-</span>')}
@@ -9703,12 +9703,8 @@ function saveTrackingNo(orderId, itemIndex, value) {
   _pinWriteLock(orderId); // 写入窗口锁：自动保存物流单号后 3 秒内拉回的云端旧副本（尚不含本次单号）不覆盖本地
   const auditBeforeTracking = item ? item.trackingNo : '';
   const auditBeforeStatus = orders[idx].status;
-  // 20260901：下单操作员在「运输中/待反馈」阶段不可补填物流单号（从空填起），只能修改已有单号
-  if(currentUser.role === 'operator' && (orders[idx].status === 'shipped' || orders[idx].status === 'feedback') && !auditBeforeTracking && (value||'').trim()){
-    showToast('⚠️ 运输中/待反馈阶段不可补填物流单号，只能修改已有单号', 'error');
-    renderOrderDetail(); // 还原输入框为原值
-    return;
-  }
+  // v20260911：放开 operator 在「运输中/待反馈」阶段补填物流单号的限制（v20260901 加的限制业务上过于严格，
+  // 运输中订单常有中途补录/补填单号的需求，现在允许从空填起）。
   item.trackingNo = value.trim();
   item.expressCompany = value.trim() ? detectExpressCompany(value.trim()) : '';
   const order = orders[idx];
