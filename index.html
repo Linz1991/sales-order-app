@@ -1339,7 +1339,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260913</div>
+          <div class="brand-sub">v20260914</div>
         </div>
       </div>
     </div>
@@ -4346,8 +4346,8 @@ function startAutoSync(){
     }
     finally{ window._autoSyncing = false; }
   }
-  window._autoSyncTimer = setInterval(autoSyncTick, 120000);  // 【2026-0825 配额优化】自动同步间隔改为 2min。订单表已关闭 Realtime（原占 Egress 76%），改由「2 分钟增量同步（只拉 updated_at 之后的变化行，流量极小）+ 打开订单详情按 id 拉」保证多端一致，延迟 ≤ 2min，取代秒级 Realtime。原 15min 拉长间隔是为压请求量，但增量同步本身很轻，2min 不会显著增流量。
-  // 页面切后台时由 visibilitychange 监听 clearInterval 暂停自动同步，切回前台时重新 setInterval(autoSyncTick, 120000)。
+  window._autoSyncTimer = setInterval(autoSyncTick, 300000);  // 【v20260914 紧急】自动同步间隔 2min → 5min。9/4 半天 140MB PostgREST Egress 严重超标（918 配额剩余紧），临时砍半轮询频率。延时会从 ≤2min 变 ≤5min，对销售场景无感（销售主要靠详情页即时拉取，不依赖轮询）。待确认所有设备升级 v20260912+ / 排查 v20260913 实际流量贡献后，择机回滚到 2min。
+  // 页面切后台时由 visibilitychange 监听 clearInterval 暂停自动同步，切回前台时重新 setInterval(autoSyncTick, 300000)。
   // 联网/断网自动处理：断网标记离线；联网后先拉云端再推本地，保证离线提交的订单不丢
   window.addEventListener('online', function(){
     if(typeof updateSyncBadge === 'function') updateSyncBadge('syncing');
@@ -4378,7 +4378,7 @@ document.addEventListener('visibilitychange', function(){
   // —— 回到前台：重建 Realtime + 恢复自动同步 + 立即补拉错过的变更（保证多端一致，不丢数据）——
   if(window._sbpbClient){
     if(!window._realtimeReady){ try{ setupRealtime(); }catch(e){} }
-    if(!window._autoSyncTimer){ try{ window._autoSyncTimer = setInterval(autoSyncTick, 120000); }catch(e){} }
+    if(!window._autoSyncTimer){ try{ window._autoSyncTimer = setInterval(autoSyncTick, 300000); }catch(e){} }
     // 立即补拉云端最新数据（覆盖 hidden 期间错过的变更）
     if(typeof DB !== 'undefined' && DB.syncFromCloud){
       DB.syncFromCloud().then(function(){
