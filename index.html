@@ -1339,7 +1339,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260912</div>
+          <div class="brand-sub">v20260913</div>
         </div>
       </div>
     </div>
@@ -1547,6 +1547,13 @@ const DB = {
   // 9/4 云端已执行 UPDATE 补齐 products.updated_at（335 行 0 null），切回条件成熟。
   // orders 表保持 updated_at（v202608251806 起 salesName 等修改会刷新 updated_at）。
   _incrementalCursorFields: { orders: 'updated_at', products: 'updated_at' },
+  // v20260913 增量白名单：把 select('*') 改为显式字段，降低单条 JSON 体积（防 918 配额）。
+  // 覆盖了 grep 全文（100+ 处）所有访问到的字段。新增字段需同步更新，否则下游静默 undefined。
+  // items JSONB 必须原样返回（含 _delSync/_lossSync/_afterMeta 等私有字段，破坏 delta 合并会丢数据）。
+  _ORDERS_COLS: 'id,order_no,status,type,total,items,sales_id,sales_name,customer_name,contact,phone,region,address,remark,tracking_no,created_at,updated_at,confirmed_at,shipped_at,completed_at,feedback_at,synced_at,order_date,completion_date,images,payment_method,collected_amount,full_payment,deposit,final_payment,no_tracking,after_sale_loss,province,city,district,express_company,locked_by,locked_at,_deleted,_deleted_at,_deleted_by',
+  // products 增量白名单：v20260912 后云端已有 updated_at（335 行 0 null，line 2646 prodCols 已确认）。
+  // auto_added 是本地标记（line 1662-1664 本地合并保留），云端无此列——不需进白名单。
+  _PRODUCTS_COLS: 'id,name,price,cost,status,category,created_at,updated_at',
   // v20260910：首拉/游标丢失时（useInc=false）的窗口保护，避免一次性拉全表。
   // 30 天窗口：保证业务可见性（订单查询 90% 在 30 天内），同时把首拉流量从 ~700KB 降到 ~50-100KB。
   _initialSyncWindowDays: 30,
@@ -1634,9 +1641,11 @@ const DB = {
       const incCursor = this._incCursor(t);
       const _useInc = _incTables.indexOf(t) >= 0 && !!incCursor;
       try{
-        let query = window._sbpbClient.from(t).select('*').order('created_at', { ascending: true });
+        // v20260913：白名单替代 select('*')，按表选用 _ORDERS_COLS / _PRODUCTS_COLS。
+        const _cols = (t === 'orders') ? this._ORDERS_COLS : this._PRODUCTS_COLS;
+        let query = window._sbpbClient.from(t).select(_cols).order('created_at', { ascending: true });
         if(_useInc){
-          // v20260910：游标字段按表配置（products.created_at / orders.updated_at），products updated_at 全 null 走 created_at
+          // v20260912：游标字段按表配置（orders/products 均 updated_at）。
           const _cursorField = (this._incrementalCursorFields && this._incrementalCursorFields[t]) || 'updated_at';
           query = query.gte(_cursorField, incCursor);
         } else {
@@ -2854,9 +2863,10 @@ const DB = {
     // v20260902：游标丢失时用本地缓存最大 updated_at 兜底，避免「本地有缓存却全量拉 orders」
     const incCursor = this._incCursor('orders');
     const useInc = !!incCursor && (local || []).length > 0;
-    let query = window._sbpbClient.from('orders').select('*').order('created_at', { ascending: true });
+    // v20260913：显式白名单 _ORDERS_COLS（替代 select('*')），节省 egress。
+    let query = window._sbpbClient.from('orders').select(this._ORDERS_COLS).order('created_at', { ascending: true });
     if(useInc){
-      // v20260910：orders 表游标字段 updated_at
+      // v20260912：orders 表游标字段 updated_at
       query = query.gte((this._incrementalCursorFields && this._incrementalCursorFields.orders) || 'updated_at', incCursor);
     } else {
       // v20260910 首拉窗口保护：限定最近 30 天，避免一次性拉全表（防 9/3 设备集中重连事件）
@@ -2909,10 +2919,11 @@ const DB = {
     // v20260910：products 表用 created_at 游标（updated_at 历史遗留全 null，会导致兜底失败退化为全量）
     const incCursor = this._incCursor('products');
     const useInc = !!incCursor && (local || []).length > 0;
-    let query = window._sbpbClient.from('products').select('*').order('created_at', { ascending: true });
+    // v20260913：显式白名单 _PRODUCTS_COLS（替代 select('*')），节省 egress。
+    let query = window._sbpbClient.from('products').select(this._PRODUCTS_COLS).order('created_at', { ascending: true });
     if(useInc){
-      // v20260910：products 表游标字段 created_at
-      query = query.gte((this._incrementalCursorFields && this._incrementalCursorFields.products) || 'created_at', incCursor);
+      // v20260912：products 表游标字段 updated_at（云端已补齐，335 行 0 null）
+      query = query.gte((this._incrementalCursorFields && this._incrementalCursorFields.products) || 'updated_at', incCursor);
     } else {
       // v20260910 首拉窗口保护：限定最近 30 天，避免一次性拉全表（防 9/3 设备集中重连事件）
       const _since = new Date(Date.now() - this._initialSyncWindowDays*24*60*60*1000).toISOString();
