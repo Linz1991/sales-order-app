@@ -1339,7 +1339,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260916</div>
+          <div class="brand-sub">v20260917</div>
         </div>
       </div>
     </div>
@@ -1550,7 +1550,7 @@ const DB = {
   // v20260913 增量白名单：把 select('*') 改为显式字段，降低单条 JSON 体积（防 918 配额）。
   // 覆盖了 grep 全文（100+ 处）所有访问到的字段。新增字段需同步更新，否则下游静默 undefined。
   // items JSONB 必须原样返回（含 _delSync/_lossSync/_afterMeta 等私有字段，破坏 delta 合并会丢数据）。
-  _ORDERS_COLS: 'id,order_no,status,type,total,items,customer_id,sales_id,sales_name,customer_name,contact,phone,region,address,remark,tracking_no,created_at,updated_at,confirmed_at,shipped_at,completed_at,feedback_at,synced_at,order_date,completion_date,images,payment_method,collected_amount,full_payment,deposit,final_payment,no_tracking,after_sale_loss,province,city,district,express_company,locked_by,locked_at,_deleted,_deleted_at,_deleted_by',
+  _ORDERS_COLS: 'id,status,type,total,items,customer_id,sales_id,sales_name,customer_name,contact,phone,region,address,remark,tracking_no,created_at,updated_at,confirmed_at,shipped_at,completed_at,feedback_at,synced_at,order_date,completion_date,images,payment_method,collected_amount,full_payment,deposit,final_payment,no_tracking,after_sale_loss,province,city,district,express_company,locked_by,locked_at,_deleted,_deleted_at,_deleted_by',
   // products 增量白名单：v20260912 后云端已有 updated_at（335 行 0 null，line 2646 prodCols 已确认）。
   // auto_added 是本地标记（line 1662-1664 本地合并保留），云端无此列——不需进白名单。
   _PRODUCTS_COLS: 'id,name,price,cost,status,category,created_at,updated_at',
