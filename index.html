@@ -1339,7 +1339,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260917</div>
+          <div class="brand-sub">v20260918</div>
         </div>
       </div>
     </div>
@@ -4265,22 +4265,26 @@ function showApp(){
 function startAutoSync(){
   if(window._autoSyncTimer) return;
   if(!window._sbpbClient) return;
-  // v20260915 紧急：首次访问上报设备心跳到 device_heartbeats 表（每个版本一次），便于服务端排查"哪台设备是旧版本"。
+  // v20260918 修复：心跳上报 ① 版本号改为动态读取（此前硬编码 'v20260915'，设备跑新版也报旧版号）
+  // ② localStorage 标记 key 跟版本走（每发布一个新版本，每台设备会重新上报一次心跳），
+  // 这样 device_heartbeats 表能真实反映每台设备的当前版本，可定位"谁还在跑旧代码"。
   // 失败不抛错，避免阻塞同步逻辑。
   try{
-    if(!localStorage.getItem('soms_heartbeat_v20260915') && typeof currentUser !== 'undefined' && currentUser && window._sbpbClient){
+    var _hbVer = ((document.querySelector('.brand-sub')||{}).textContent || '').trim() || 'unknown';
+    var _hbFlag = 'soms_heartbeat_' + _hbVer;
+    if(!localStorage.getItem(_hbFlag) && typeof currentUser !== 'undefined' && currentUser && window._sbpbClient){
       window._sbpbClient.from('device_heartbeats').insert({
         user_id: String(currentUser.id || ''),
         username: String(currentUser.username || ''),
         role: String(currentUser.role || ''),
-        version: 'v20260915',
+        version: _hbVer,
         user_agent: String(navigator.userAgent || ''),
         platform: String(navigator.platform || ''),
         language: String(navigator.language || ''),
         screen: String((screen.width || 0) + 'x' + (screen.height || 0)),
         tz_offset: Number(new Date().getTimezoneOffset())
       }).then(function(res){
-        if(!res || !res.error){ try{ localStorage.setItem('soms_heartbeat_v20260915','1'); }catch(e){} }
+        if(!res || !res.error){ try{ localStorage.setItem(_hbFlag,'1'); }catch(e){} }
         else { console.warn('heartbeat insert failed:', res.error.message); }
       }).catch(function(e){ console.warn('heartbeat err:', e.message); });
     }
