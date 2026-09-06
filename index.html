@@ -1339,7 +1339,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260921</div>
+          <div class="brand-sub">v20260922</div>
         </div>
       </div>
     </div>
@@ -9300,10 +9300,14 @@ function effectiveItemCost(order, item){
   const products = DB.get('products');
   const prod = products.find(p => p.id === item.productId);
   const prodCost = prod ? (prod.cost || 0) : 0;
-  // 成本取值逻辑（对齐业务语义）：优先 item.cost（提交时=售价 / 管理员改后值 / 转已下单时冻结的快照）；
-  // 缺值则退售价兜底，再退商品库成本。商品库后续改动一律不影响已固化值。
-  const baseCost = (item.cost != null) ? item.cost : (item.price != null ? item.price : prodCost);
-  return baseCost;
+  const isPending = (order && order.status === 'pending') && item.ordered !== true;
+  if(isPending){
+    // 待下单：成本跟随「商品库当前值」（管理员改商品成本即生效）；商品库无成本则退 item.cost，再退售价兜底
+    if(prodCost > 0) return prodCost;
+    return (item.cost != null) ? item.cost : (item.price != null ? item.price : 0);
+  }
+  // 已下单：冻结快照 item.cost（转单时由 freezeOrderItemCosts 固化），商品库后续改动一律不影响
+  return (item.cost != null) ? item.cost : (item.price != null ? item.price : prodCost);
 }
 
 // 订单转「已下单」前固化成本快照：把每个商品成本刷新为商品库最新值并落盘，
@@ -9312,11 +9316,12 @@ function freezeOrderItemCosts(order){
   if(!order || !Array.isArray(order.items)) return;
   const products = DB.get('products');
   order.items.forEach(function(it){
-    // 仅当成本为空时回填（退售价→商品库成本）；已设值（售价/管理员改后值）一律保留，避免被商品库成本覆盖
-    if(it.cost == null || it.cost === ''){
-      const prod = products.find(function(p){ return p.id === it.productId; });
-      it.cost = (it.price != null) ? it.price : (prod && prod.cost != null ? prod.cost : 0);
-    }
+    const prod = products.find(function(p){ return p.id === it.productId; });
+    const prodCost = prod ? (prod.cost || 0) : 0;
+    // 转已下单时固化「当前商品库成本」（待下单期管理员改过的商品成本即此值），此后不再随商品库变动。
+    // 若商品库无成本，则保留现有 item.cost（缺则退售价），避免清零导致利润跳变。
+    if(prodCost > 0) it.cost = prodCost;
+    else if(it.cost == null || it.cost === '') it.cost = (it.price != null ? it.price : 0);
   });
 }
 
