@@ -18,31 +18,77 @@ if('serviceWorker' in navigator){
   });
 }
 </script>
-<!-- Supabase SDK -->
-<script src="./libs/supabase.min.js"></script>
-<script src="./libs/chart.umd.min.js"></script>
+<!-- CloudBase JS SDK v3（腾讯云开发 for Supabase 版，PostgreSQL 模式；无 UMD 全局构建，用 jsDelivr /+esm 引入） -->
+<script type="module">
+  import cloudbase from 'https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@3.9.2/+esm';
+  window.cloudbase = cloudbase;
+  window.dispatchEvent(new Event('cloudbase-ready'));
+</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bcryptjs@2.4.3/dist/bcrypt.min.js"></script>
 <script>
-const SUPABASE_URL = 'https://mfimcrzewhnlbtkjgqlq.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_x1lj1wREId-JMCVTqxJG6w_mcBK0j2Q';
-const APP_SECRET = 'soms_2025_secure_access_key_8f3k9q2m';
-function _initSupabase(){
-  if(window.supabase){
-    try{ window._sbpbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { global: { headers: { 'x-app-secret': APP_SECRET } } }); }
-    catch(e){ console.warn('[Supabase] 初始化失败：', (e && e.message) || e); }
-    // Realtime 订阅依赖 DB / 渲染器等后续定义的对象，必须等整段脚本执行完（DOMContentLoaded）再挂
-    window.addEventListener('DOMContentLoaded', function(){ try{ setupRealtime(); }catch(e){ console.warn('[Realtime] 初始化失败：', (e && e.message) || e); } });
-    return;
+// ===== CloudBase（腾讯云开发 for Supabase 版）接入配置 =====
+const CLOUDBASE_ENV_ID = 'daxianjiadian-d4g1o6gpped9f0678';
+const CLOUDBASE_REGION = 'ap-shanghai';
+const CLOUDBASE_ACCESS_KEY = 'eyJhbGciOiJSUzI1NiIsImtpZCI6ImZmNTA5ZTA4LTQyNTUtNDkzNS1iODgzLTMxNThiZTM3ODNhYSJ9.eyJpc3MiOiJodHRwczovL2RheGlhbmppYWRpYW4tZDRnMW82Z3BwZWQ5ZjA2NzguYXAtc2hhbmdoYWkudGNiLWFwaS50ZW5jZW50Y2xvdWRhcGkuY29tIiwic3ViIjoiYW5vbiIsImF1ZCI6ImRheGlhbmppYWRpYW4tZDRnMW82Z3BwZWQ5ZjA2NzgiLCJleHAiOjQwOTIxNzU3ODcsImlhdCI6MTc4ODQ5MjU4Nywibm9uY2UiOiJ5MHpNcV95YlFEUzUyaFZSQkthOW1RIiwiYXRfaGFzaCI6Inkwek1xX3liUURTNTJoVlJCS2E5bVEiLCJuYW1lIjoiQW5vbnltb3VzIiwic2NvcGUiOiJhbm9ueW1vdXMiLCJwcm9qZWN0X2lkIjoiZGF4aWFuamlhZGlhbi1kNGcxbzZncHBlZDlmMDY3OCIsIm1ldGEiOnsicGxhdGZvcm0iOiJQdWJsaXNoYWJsZUtleSJ9LCJyb2xlIjoiYW5vbiIsImlzX2Fub255bW91cyI6dHJ1ZSwiYXBwX21ldGFkYXRhIjp7InByb3ZpZGVyIjoiYW5vbnltb3VzIiwicHJvdmlkZXJzIjpbImFub255bW91cyJdfSwidXNlcl9tZXRhZGF0YSI6eyJuYW1lIjoiQW5vbnltb3VzIn0sInVzZXJfdHlwZSI6IiIsImNsaWVudF90eXBlIjoiY2xpZW50X3VzZXIiLCJpc19zeXN0ZW1fYWRtaW4iOmZhbHNlfQ.fghiKep91IG1zsHwMMUlFz81NInctqGHHfBUcFUJ6DdDk7lhxjumEOpZC5nG3--PquP2xW9XoHsmtYHA0GZS_saYKhckuJFax5suoizZ2aWBqNCKh9yah5xZHHCiZW-7TjawJZiHVJsSGNd1OJG7uHzSaUoaADVBHwsORsOGZDlnyacPj44RRr3YDngGdlfsd4UFQRp3PDfjL8BivRIvYNbv5j42rNtVMOU4hMFxeFK62L4s8-MF7hW1KKbtOgwvjzPaOYRohODbuYdTvuLMxDW3cWAIRj592GpBVkGF_suHdN9rgMMkbEb0KRFb5jwASirU_hAqpM9t7nbmT0LU1g';
+// 云函数 HTTP 网关域名（HTTPSERVICE 默认域，*.ap-shanghai.app.tcloudbase.com）。
+// 三个云函数 auth-login / admin-user-mgmt / query-kuaidi100 均已在网关建公开路由(EnableAuth=false)，
+// CORS 已放行本环境静态托管域名；路径即函数名。勿改末尾 -1481017261（网关分配的环境短码）。
+const CLOUDBASE_FN_ORIGIN = 'https://' + CLOUDBASE_ENV_ID + '-1481017261.ap-shanghai.app.tcloudbase.com';
+// 兼容别名：旧逻辑仍引用这两个常量，保留以避免散落改动（值不再用于真实请求）
+const SUPABASE_URL = 'https://' + CLOUDBASE_ENV_ID + '.api.tcloudbasegateway.com';
+const SUPABASE_KEY = CLOUDBASE_ACCESS_KEY;
+const APP_SECRET = ''; // CloudBase 不需要 app-secret
+
+// 把 CloudBase JS SDK 包装成与 supabase-js 兼容的客户端：业务代码继续用 .from().select()/.insert() 与 .auth.*
+function _buildCloudbaseClient(){
+  if(!window.cloudbase) return null;
+  const app = cloudbase.init({
+    env: CLOUDBASE_ENV_ID,
+    region: CLOUDBASE_REGION,
+    accessKey: CLOUDBASE_ACCESS_KEY,
+    auth: { detectSessionInUrl: true }
+  });
+  window._cbApp = app;
+  const rdb = app.rdb();
+  return {
+    auth: app.auth,
+    from: function(t){ return rdb.from(t); },
+    rpc: function(n, p){ return rdb.rpc(n, p); },
+    storage: app.storage,
+    callFunction: function(name, data){
+      // 云函数改为「HTTP 网关路由」公开端点（见下方 CLOUDBASE_FN_ORIGIN），
+      // 前端用 fetch 直连，绕开 JS SDK 专用端点 /v1/functions/* 的 EXCEED_AUTHORITY 限制。
+      // 网关对 Event 函数直接透传返回值，因此把响应包成与 SDK app.callFunction 一致的
+      // { result: <函数返回JSON> } 形状，业务调用点无需改动。
+      return fetch(CLOUDBASE_FN_ORIGIN + '/' + name, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data || {})
+      }).then(function(resp){
+        if(!resp.ok){ throw new Error('云函数网关 HTTP ' + resp.status); }
+        return resp.json();
+      }).then(function(j){ return { result: j }; });
+    },
+    _app: app
+  };
+}
+function _doInit(){
+  if(window._cbInitDone) return;
+  window._cbInitDone = true;
+  try{ window._sbpbClient = _buildCloudbaseClient(); }
+  catch(e){ console.warn('[CloudBase] 初始化失败：', (e && e.message) || e); window._sbpbClient = null; }
+  if(document.readyState === 'loading'){
+    window.addEventListener('DOMContentLoaded', function(){ try{ setupRealtime(); }catch(e){} });
+  } else {
+    try{ setupRealtime(); }catch(e){}
   }
-  window._sbpbClient = null;
-  // CDN 兜底：本地 libs/supabase.min.js 加载失败时，动态从 jsDelivr 加载 supabase 库，确保云同步可用
-  try{
-    var _sb = document.createElement('script');
-    _sb.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
-    _sb.onload = function(){ try{ window._sbpbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { global: { headers: { 'x-app-secret': APP_SECRET } } }); setupRealtime(); }catch(e){ window._sbpbClient = null; } };
-    _sb.onerror = function(){ console.warn('[Supabase] CDN 兜底加载失败，云同步不可用'); };
-    document.head.appendChild(_sb);
-  }catch(e){}
+}
+function _initSupabase(){
+  if(window.cloudbase){ _doInit(); return; }
+  // ESM 模块脚本是 deferred，可能晚于本段执行；等其就绪事件，或兜底定时器
+  window.addEventListener('cloudbase-ready', _doInit, { once: true });
+  setTimeout(function(){ if(window.cloudbase) _doInit(); }, 2500);
 }
 // Supabase Realtime 实时订阅：订单/商品表被其它设备增删改时，当前设备自动拉取最新并刷新（Req3）
 // 注意：需在 Supabase 后台开启表的实时（见随附 SQL），否则订阅收不到事件。
@@ -131,7 +177,19 @@ _initSupabase();
  * 函数地址由 Supabase 项目自动推导。部署函数并在函数 Secrets 中配置
  * KUAIDI100_KEY / KUAIDI100_CUSTOMER 后即生效。
  */
-const KUAIDI100_PROXY = SUPABASE_URL.replace(/\.supabase\.co$/, '.functions.supabase.co') + '/query-kuaidi100';
+// 快递100 代理现在走 CloudBase 云函数 query-kuaidi100（密钥仅存于云函数环境变量，前端零密钥暴露）。
+// KUAIDI100_ENABLED 控制是否启用真实物流查询；改为 false 则降级为「演示轨迹」。
+const KUAIDI100_ENABLED = true;
+// 统一经 CloudBase 云函数 query-kuaidi100 查询，返回结构与旧 Supabase Edge Function 一致：
+// { status:'200', data:[{time,status,context,...}], com, ... } 或 { status:'error', message }
+async function queryKuaidi(num, com){
+  if(!window._sbpbClient) return { status:'error', message:'系统未就绪' };
+  try{
+    const r = await window._sbpbClient.callFunction('query-kuaidi100', { num: num, com: com });
+    const body = (r && typeof r.result !== 'undefined') ? r.result : r;
+    return (body && typeof body === 'object') ? body : {};
+  }catch(e){ return { status:'error', message: (e && e.message) || '查询失败' }; }
+}
 // ── 快递100 密钥：不再硬编码于前端 ──
 //   公开 PWA 代码里的密钥会被任何人抓取并盗刷查询次数。所有查询统一经 Supabase Edge Function
 //   代理中转（见 supabase/functions/query-kuaidi100/index.ts），密钥仅存于函数 Secrets。
@@ -1339,7 +1397,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260920</div>
+          <div class="brand-sub">v20260906</div>
         </div>
       </div>
     </div>
@@ -1547,20 +1605,13 @@ const DB = {
   // 9/4 云端已执行 UPDATE 补齐 products.updated_at（335 行 0 null），切回条件成熟。
   // orders 表保持 updated_at（v202608251806 起 salesName 等修改会刷新 updated_at）。
   _incrementalCursorFields: { orders: 'updated_at', products: 'updated_at' },
-  // v20260913 增量白名单：把 select('*') 改为显式字段，降低单条 JSON 体积（防 918 配额）。
-  // 覆盖了 grep 全文（100+ 处）所有访问到的字段。新增字段需同步更新，否则下游静默 undefined。
-  // items JSONB 必须原样返回（含 _delSync/_lossSync/_afterMeta 等私有字段，破坏 delta 合并会丢数据）。
-  _ORDERS_COLS: 'id,status,type,total,items,customer_id,sales_id,sales_name,customer_name,contact,phone,region,address,remark,tracking_no,created_at,updated_at,confirmed_at,shipped_at,completed_at,feedback_at,synced_at,order_date,completion_date,images,payment_method,collected_amount,full_payment,deposit,final_payment,no_tracking,after_sale_loss,province,city,district,express_company,locked_by,locked_at,_deleted,_deleted_at,_deleted_by',
-  // products 增量白名单：v20260912 后云端已有 updated_at（335 行 0 null，line 2646 prodCols 已确认）。
-  // auto_added 是本地标记（line 1662-1664 本地合并保留），云端无此列——不需进白名单。
-  _PRODUCTS_COLS: 'id,name,price,cost,status,category,created_at,updated_at',
   // v20260910：首拉/游标丢失时（useInc=false）的窗口保护，避免一次性拉全表。
   // 30 天窗口：保证业务可见性（订单查询 90% 在 30 天内），同时把首拉流量从 ~700KB 降到 ~50-100KB。
   _initialSyncWindowDays: 30,
   // 缺 updated_at 列（或低频变更）的小表：日常轮询全量拉并合并，保证客户/售后/收款/提成等
   // 改动在日常即可跨端可见，不再依赖 6h 全量兜底（修复「一端改了另一端要等数小时才看到」）。
   _fullPullTables: ['customers','aftersales','payments','commissions'],
-  _fullSyncIntervalMs: 60 * 60 * 1000, // v20260920：15min → 60min。9/5 实测全天 26.7MB 仍偏高，月底前需压到 15MB/天以下。小表全量 ~98KB，15min 一次 ≈ 9.4MB/天/台；改 60min 后 ≈ 2.4MB/天/台。跨端小表变化最迟 1 小时可见（orders/products 增量不受影响，实时性由手动同步/新建订单触发保证）
+  _fullSyncIntervalMs: 15 * 60 * 1000, // v20260907：1h → 15min。小表跨端拉取由「每 2min 双向全量同步」（原 pushLocalChanges→syncTable，每天 140MB/台）改为「只推脏行 + 每 15min 全量兜底拉取」：小表全量仅 ~98KB，15min 一次 ≈ 9.4MB/天/台，及时性与 egress 平衡。orders/products 走增量，不受影响
 
   _getIncTs(){ try{ return localStorage.getItem('soms_inc_ts') || ''; }catch(e){ return ''; } },
   _setIncTs(ts){ try{ if(ts) localStorage.setItem('soms_inc_ts', ts); }catch(e){} },
@@ -1575,8 +1626,9 @@ const DB = {
     try{
       const local = this.get(t, []);
       let m = '';
+      const _cf = this._cursorCamField(t);
       (local || []).forEach(function(r){
-        const u = r && r.updated_at ? String(r.updated_at) : '';
+        const u = r && r[_cf] ? String(r[_cf]) : '';
         if(u && u > m) m = u;
       });
       return m;
@@ -1587,11 +1639,26 @@ const DB = {
     if(persist) return persist;                  // 正常路径：持久游标（保持原行为）
     const localMax = this._localMaxUpdatedAt(t);
     if(!localMax) return '';                     // 本地无缓存：首拉全量（唯一合法全量场景）
-    try{                                          // 游标丢失兜底：本地 max 前推 60s
-      const d = new Date(localMax);
-      if(!isNaN(d.getTime())){ d.setSeconds(d.getSeconds() - 60); return d.toISOString(); }
+    try{                                          // 游标丢失兜底：本地 max 前推 60s（保持本地 nowStr 格式，与云端列格式一致，避免 toISOString 变 ISO 导致 .gte 比较错位）
+      const dt = new Date(localMax);
+      if(!isNaN(dt.getTime())){ dt.setSeconds(dt.getSeconds() - 60); return this._fmtTs(dt); }
     }catch(e){}
     return localMax;
+  },
+  // v20260913 增量游标修复：游标字段在 JS 对象里是 camelCase（本地缓存直接存 camelCase；
+  // 云端响应经 _toCamel 也转 camelCase），但 _incrementalCursorFields 配置的是 snake_case 列名
+  // （仅用于 Supabase .gte() 查询）。读游标必须按 camelCase 取值，否则 r['updated_at'] 恒为 undefined
+  // → 游标永推不进 → 每次同步退化为 30 天全量拉取（egress 暴涨根因）。
+  _cursorCamField(t){
+    const f = (this._incrementalCursorFields && this._incrementalCursorFields[t]) || 'updated_at';
+    return f.replace(/_([a-z])/g, function(_, c){ return c.toUpperCase(); });
+  },
+  // 把 Date 格式化为本地 nowStr 同款格式 YYYY-MM-DD HH:MM:SS.mmm，供游标丢失兜底构造与云端列格式一致的游标值
+  // （不再用 toISOString 转成 ISO，否则 .gte('updated_at', ISO) 在文本/字符串语义下列字典序错位，兜底可能漏拉最近变更）。
+  _fmtTs(d){
+    const p = n => String(n).padStart(2,'0');
+    return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+
+      p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds())+'.'+String(d.getMilliseconds()).padStart(3,'0');
   },
 
   // 行级脏标记：orders/products 写入时记录「新增/变化」的行 id，供增量上推只 upsert 脏行，
@@ -1641,11 +1708,9 @@ const DB = {
       const incCursor = this._incCursor(t);
       const _useInc = _incTables.indexOf(t) >= 0 && !!incCursor;
       try{
-        // v20260913：白名单替代 select('*')，按表选用 _ORDERS_COLS / _PRODUCTS_COLS。
-        const _cols = (t === 'orders') ? this._ORDERS_COLS : this._PRODUCTS_COLS;
-        let query = window._sbpbClient.from(t).select(_cols).order('created_at', { ascending: true });
+        let query = window._sbpbClient.from(t).select('*').order('created_at', { ascending: true });
         if(_useInc){
-          // v20260912：游标字段按表配置（orders/products 均 updated_at）。
+          // v20260910：游标字段按表配置（products.created_at / orders.updated_at），products updated_at 全 null 走 created_at
           const _cursorField = (this._incrementalCursorFields && this._incrementalCursorFields[t]) || 'updated_at';
           query = query.gte(_cursorField, incCursor);
         } else {
@@ -1691,7 +1756,8 @@ const DB = {
         localStorage.setItem('soms_'+t, JSON.stringify(t === 'users' ? this._scrubUserPasswords(merged) : merged));
         // v20260910：游标 maxTs 按表配置字段取值（products.created_at / orders.updated_at）
         const _cursorField2 = (this._incrementalCursorFields && this._incrementalCursorFields[t]) || 'updated_at';
-        (cloud||[]).forEach(function(r){ if(r && r[_cursorField2] && (!maxTs || r[_cursorField2] > maxTs)) maxTs = r[_cursorField2]; });
+        const _cursorFieldCam = this._cursorCamField(t);
+        (cloud||[]).forEach(function(r){ if(r && r[_cursorFieldCam] && (!maxTs || r[_cursorFieldCam] > maxTs)) maxTs = r[_cursorFieldCam]; });
       }catch(e){
         console.warn('增量拉取 ['+t+'] 失败:', e.message);
         hasError = true;
@@ -2863,10 +2929,9 @@ const DB = {
     // v20260902：游标丢失时用本地缓存最大 updated_at 兜底，避免「本地有缓存却全量拉 orders」
     const incCursor = this._incCursor('orders');
     const useInc = !!incCursor && (local || []).length > 0;
-    // v20260913：显式白名单 _ORDERS_COLS（替代 select('*')），节省 egress。
-    let query = window._sbpbClient.from('orders').select(this._ORDERS_COLS).order('created_at', { ascending: true });
+    let query = window._sbpbClient.from('orders').select('*').order('created_at', { ascending: true });
     if(useInc){
-      // v20260912：orders 表游标字段 updated_at
+      // v20260910：orders 表游标字段 updated_at
       query = query.gte((this._incrementalCursorFields && this._incrementalCursorFields.orders) || 'updated_at', incCursor);
     } else {
       // v20260910 首拉窗口保护：限定最近 30 天，避免一次性拉全表（防 9/3 设备集中重连事件）
@@ -2879,7 +2944,8 @@ const DB = {
     let maxTs = this._getIncTs() || incCursor || '';
     // v20260910：maxTs 按表配置字段取值
     const _cfOrders = (this._incrementalCursorFields && this._incrementalCursorFields.orders) || 'updated_at';
-    (cloud || []).forEach(function(r){ if(r && r[_cfOrders] && (!maxTs || r[_cfOrders] > maxTs)) maxTs = r[_cfOrders]; });
+    const _cfOrdersCam = this._cursorCamField('orders');
+    (cloud || []).forEach(function(r){ if(r && r[_cfOrdersCam] && (!maxTs || r[_cfOrdersCam] > maxTs)) maxTs = r[_cfOrdersCam]; });
     if(maxTs) this._setIncTs(maxTs);
     const isAdmin = typeof currentUser !== 'undefined' && currentUser && currentUser.role === 'admin';
     // 关键修复（v202608251806）：管理员端对 orders 表采用「云端优先硬覆盖」合并，
@@ -2919,11 +2985,10 @@ const DB = {
     // v20260910：products 表用 created_at 游标（updated_at 历史遗留全 null，会导致兜底失败退化为全量）
     const incCursor = this._incCursor('products');
     const useInc = !!incCursor && (local || []).length > 0;
-    // v20260913：显式白名单 _PRODUCTS_COLS（替代 select('*')），节省 egress。
-    let query = window._sbpbClient.from('products').select(this._PRODUCTS_COLS).order('created_at', { ascending: true });
+    let query = window._sbpbClient.from('products').select('*').order('created_at', { ascending: true });
     if(useInc){
-      // v20260912：products 表游标字段 updated_at（云端已补齐，335 行 0 null）
-      query = query.gte((this._incrementalCursorFields && this._incrementalCursorFields.products) || 'updated_at', incCursor);
+      // v20260910：products 表游标字段 created_at
+      query = query.gte((this._incrementalCursorFields && this._incrementalCursorFields.products) || 'created_at', incCursor);
     } else {
       // v20260910 首拉窗口保护：限定最近 30 天，避免一次性拉全表（防 9/3 设备集中重连事件）
       const _since = new Date(Date.now() - this._initialSyncWindowDays*24*60*60*1000).toISOString();
@@ -2935,7 +3000,8 @@ const DB = {
     let maxTs = this._getIncTs() || incCursor || '';
     // v20260910：maxTs 按表配置字段取值
     const _cfProducts = (this._incrementalCursorFields && this._incrementalCursorFields.products) || 'created_at';
-    (cloud || []).forEach(function(r){ if(r && r[_cfProducts] && (!maxTs || r[_cfProducts] > maxTs)) maxTs = r[_cfProducts]; });
+    const _cfProductsCam = this._cursorCamField('products');
+    (cloud || []).forEach(function(r){ if(r && r[_cfProductsCam] && (!maxTs || r[_cfProductsCam] > maxTs)) maxTs = r[_cfProductsCam]; });
     if(maxTs) this._setIncTs(maxTs);
     let merged;
     if(useInc){
@@ -4169,24 +4235,38 @@ async function finishLoginViaAuth(username){
   DB.set('users', DB.get('users', []));
 }
 
+// CloudBase 自建会话：用 auth-login 云函数返回的令牌与用户资料建立本地会话
+// （不依赖 CloudBase 内建 Auth，业务表 RLS 已放开；令牌仅用于服务端鉴权）
+function establishSession(user, token){
+  const { password, ...safe } = user;
+  currentUser = safe;
+  try{
+    sessionStorage.setItem('soms_current_user', JSON.stringify(safe));
+    if(token) sessionStorage.setItem('soms_auth_token', token);
+  }catch(e){}
+  showApp();
+  showToast('登录成功，欢迎回来 ' + (safe.name || user.username),'success');
+  DB.syncFromCloud().catch(function(){});
+}
+function getSessionToken(){
+  try{ return sessionStorage.getItem('soms_auth_token') || ''; }catch(e){ return ''; }
+}
+
 async function handleLogin(){
   const user = document.getElementById('loginUser').value.trim();
   const pass = document.getElementById('loginPass').value;
   if(!user || !pass){ showToast('请输入用户名和密码','error'); return; }
-  // —— 方案二(Auth)：优先走 Supabase 官方认证（密码哈希在服务端校验，绝不下发前端）——
+  // —— CloudBase 自建账号体系：优先走 auth-login 云函数（密码哈希在服务端校验，绝不下发前端）——
   if(window._sbpbClient){
     try{
-      const { data, error } = await window._sbpbClient.auth.signInWithPassword({
-        email: user + '@soms.local',
-        password: pass
-      });
-      if(data && data.user){
-        await finishLoginViaAuth(user);
+      const r = await window._sbpbClient.callFunction('auth-login', { username: user, password: pass });
+      const j = (r && typeof r.result !== 'undefined') ? r.result : r;
+      if(j && j.ok && j.user){
+        establishSession(j.user, j.token);
         return;
       }
-      // Auth 未成功（账号未迁移到 Auth / 凭证无效 / Auth 不可用）：不再直接拦截报错误，
-      // 而是降级到下方本地 bcrypt 校验。账号密码真相源是 public.users 表，Auth 仅作增强，
-      // Auth 缺失不应把本地有正确密码的账号挡在门外（修复“登录不进去”）。
+      if(j && j.ok === false){ showToast(j.message || '用户名或密码错误','error'); return; }
+      // ok 未返回（云函数异常）：降级到下方本地离线兜底
     }catch(e){ /* 真正的异常（网络中断/客户端未就绪）：降级到下方本地离线兜底 */ }
   }
   // 兼容期回退：Auth 账号尚未迁移时，用本地缓存的 sha256 校验（开通 RLS 后此分支自动失效，不会更不安全）
@@ -4233,6 +4313,7 @@ async function handleLogin(){
 function handleLogout(){
   currentUser = null;
   sessionStorage.removeItem('soms_current_user');
+  sessionStorage.removeItem('soms_auth_token');
   if(window._sbpbClient){ try{ window._sbpbClient.auth.signOut(); }catch(e){} }
   document.getElementById('appPage').style.display = 'none';
   document.getElementById('loginPage').style.display = 'flex';
@@ -4265,30 +4346,6 @@ function showApp(){
 function startAutoSync(){
   if(window._autoSyncTimer) return;
   if(!window._sbpbClient) return;
-  // v20260918 修复：心跳上报 ① 版本号改为动态读取（此前硬编码 'v20260915'，设备跑新版也报旧版号）
-  // ② localStorage 标记 key 跟版本走（每发布一个新版本，每台设备会重新上报一次心跳），
-  // 这样 device_heartbeats 表能真实反映每台设备的当前版本，可定位"谁还在跑旧代码"。
-  // 失败不抛错，避免阻塞同步逻辑。
-  try{
-    var _hbVer = ((document.querySelector('.brand-sub')||{}).textContent || '').trim() || 'unknown';
-    var _hbFlag = 'soms_heartbeat_' + _hbVer;
-    if(!localStorage.getItem(_hbFlag) && typeof currentUser !== 'undefined' && currentUser && window._sbpbClient){
-      window._sbpbClient.from('device_heartbeats').insert({
-        user_id: String(currentUser.id || ''),
-        username: String(currentUser.username || ''),
-        role: String(currentUser.role || ''),
-        version: _hbVer,
-        user_agent: String(navigator.userAgent || ''),
-        platform: String(navigator.platform || ''),
-        language: String(navigator.language || ''),
-        screen: String((screen.width || 0) + 'x' + (screen.height || 0)),
-        tz_offset: Number(new Date().getTimezoneOffset())
-      }).then(function(res){
-        if(!res || !res.error){ try{ localStorage.setItem(_hbFlag,'1'); }catch(e){} }
-        else { console.warn('heartbeat insert failed:', res.error.message); }
-      }).catch(function(e){ console.warn('heartbeat err:', e.message); });
-    }
-  }catch(e){ console.warn('heartbeat outer err:', e.message); }
   // 路由 -> 该路由依赖的数据表（schedule/warehouse 由 orders 派生，故都看 orders；dashboard/dashboard2 也依赖订单/商品）
   const routeTable = {
     orders:'orders', schedule:'orders', warehouse:'orders',
@@ -4370,11 +4427,8 @@ function startAutoSync(){
     }
     finally{ window._autoSyncing = false; }
   }
-  // v20260915 紧急止血：完全禁用 setInterval 轮询。9/4 半天 178MB Egress，5min 间隔仍未止住（说明有设备没升级/反复拉全量），
-  // 改成「手动点同步按钮 + 切回前台」双触发，业务影响：销售切回前台时立刻同步（≤1min），不切应用需手动点同步。
-  // 待心跳表确认全员 v20260915 / Egress 回到 30MB/天后，再择机恢复轮询（建议从 10min 起步）。
-  // window._autoSyncTimer = setInterval(autoSyncTick, 300000);  // v20260915 关闭
-  // 页面切后台时由 visibilitychange 监听 clearInterval 暂停自动同步，切回前台时调一次 autoSyncTick（不再重建 setInterval）。
+  window._autoSyncTimer = setInterval(autoSyncTick, 120000);  // 【2026-0825 配额优化】自动同步间隔改为 2min。订单表已关闭 Realtime（原占 Egress 76%），改由「2 分钟增量同步（只拉 updated_at 之后的变化行，流量极小）+ 打开订单详情按 id 拉」保证多端一致，延迟 ≤ 2min，取代秒级 Realtime。原 15min 拉长间隔是为压请求量，但增量同步本身很轻，2min 不会显著增流量。
+  // 页面切后台时由 visibilitychange 监听 clearInterval 暂停自动同步，切回前台时重新 setInterval(autoSyncTick, 120000)。
   // 联网/断网自动处理：断网标记离线；联网后先拉云端再推本地，保证离线提交的订单不丢
   window.addEventListener('online', function(){
     if(typeof updateSyncBadge === 'function') updateSyncBadge('syncing');
@@ -4405,14 +4459,9 @@ document.addEventListener('visibilitychange', function(){
   // —— 回到前台：重建 Realtime + 恢复自动同步 + 立即补拉错过的变更（保证多端一致，不丢数据）——
   if(window._sbpbClient){
     if(!window._realtimeReady){ try{ setupRealtime(); }catch(e){} }
-    // v20260915：取消重建 setInterval（轮询已关闭），只触发一次 autoSyncTick
-    // if(!window._autoSyncTimer){ try{ window._autoSyncTimer = setInterval(autoSyncTick, 300000); }catch(e){} }
+    if(!window._autoSyncTimer){ try{ window._autoSyncTimer = setInterval(autoSyncTick, 120000); }catch(e){} }
     // 立即补拉云端最新数据（覆盖 hidden 期间错过的变更）
-    // v20260920 节流：60 秒内已同步过则跳过（频繁切 App 的用户每次回前台都全量拉小表，
-    // 一天几十次 × 98KB 是 egress 大头；隐藏不足 60 秒基本不会有新数据）
-    var _lastFgSync = window._lastFgSyncAt || 0;
-    if(typeof DB !== 'undefined' && DB.syncFromCloud && (Date.now() - _lastFgSync) > 60000){
-      window._lastFgSyncAt = Date.now();
+    if(typeof DB !== 'undefined' && DB.syncFromCloud){
       DB.syncFromCloud().then(function(){
         if(typeof schedulePushToCloud === 'function'){ try{ schedulePushToCloud(); }catch(e){} }
         if(window._routeRenderers && currentRoute && window._routeRenderers[currentRoute]){
@@ -4510,24 +4559,9 @@ function _orderItemHasLockdownMismatch(localRow, cloudRow){
 // 让本地 nowStr() 输出值与 supabase 服务端时间对齐，根治"客户端时钟漂移导致 _mergeById 误判云端更新"问题。
 window._clockSkewMs = window._clockSkewMs || 0;
 async function calibrateSupabaseClock(){
-  try{
-    const resp = await fetch(SUPABASE_URL + '/auth/v1/health', {
-      cache:'no-store',
-      mode:'cors',
-      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
-    });
-    const ds = resp.headers.get('Date');
-    if(!ds) return;
-    const sv = Date.parse(ds);
-    if(isNaN(sv)) return;
-    const skew = sv - Date.now();
-    // 仅当偏差显著变化（>50ms）或之前尚未校准过（_clockSkewMs 仍是初值 0）时刷新并打日志，避免噪声。
-    const prev = window._clockSkewMs || 0;
-    if(prev === 0 || Math.abs(skew - prev) > 50){
-      window._clockSkewMs = skew;
-      try{ console.log('[Clock] 本地 vs supabase 服务端偏差 =', skew, 'ms (nowStr 已补偿)'); }catch(e){}
-    }
-  }catch(e){ /* CORS/网络失败 → 保持 _clockSkewMs 不变；旧逻辑退化为无补偿 */ }
+  // CloudBase 版：无等价 /auth/v1/health 端点与 Date 响应头，时钟不做服务端补偿。
+  // 旧逻辑在网络/CORS 失败时即退化为「无补偿」（_clockSkewMs 保持 0），此处直接保持该降级行为。
+  try{ window._clockSkewMs = window._clockSkewMs || 0; }catch(e){}
 }
 
 // 路由 → 依赖的数据表（进入该页面需先从云端权威拉取这些表）
@@ -5868,39 +5902,38 @@ function viewOrder(orderId, forceViewOnly){
   // 不再依赖「Realtime 没开」或「多设备时钟偏差导致增量漏更新」。
   if(window._sbpbClient){
     DB.pullTableAuthoritative('orders')
-      .then(function(){
+      .then(async function(){
         // 关键修复（v2026082517）：pullTableAuthoritative 内部 _mergeById 在「云端无 _syncEditAt 编辑戳」时
         // 会走「本地优先」分支，把云端新改的客户姓名/价格回退成旧值（表现为管理员看不到销售改的内容）。
         // 因此在查看模式下，打开订单后再直接从云端按 id 拉该订单全量，以云端为准硬覆盖本地对应字段
         // （仅覆盖顶层客户信息标量 + 商品标量，且只在云端值非空时覆盖，不丢云端已有的新内容）。
+        // CloudBase 版：原本直连 /rest/v1/orders 的 fetch 改为经 app.rdb() 查询，逻辑保持不变。
         if(!(currentRoute === 'order-detail' && window._currentOrderId === orderId && !window._orderEditMode)) return;
-        const url = SUPABASE_URL + '/rest/v1/orders?id=eq.' + encodeURIComponent(orderId) + '&select=*';
-        return fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } })
-          .then(function(r){ return r.json(); })
-          .then(function(arr){
-            const cloud = Array.isArray(arr) ? arr[0] : null;
-            if(!cloud) return;
-            const orders = DB.get('orders');
-            const i = orders.findIndex(function(o){ return o.id === orderId; });
-            if(i < 0) return;
-            const TOP_FIELDS = ['customerName','contact','phone','region','address','province','city','district','orderDate','completionDate','remark','status','type'];
-            TOP_FIELDS.forEach(function(k){
-              if(cloud[k] !== undefined && cloud[k] !== null && cloud[k] !== '') orders[i][k] = cloud[k];
+        let cloud = null;
+        try{
+          const res = await window._sbpbClient.from('orders').select('*').eq('id', orderId).limit(1);
+          cloud = (res && res.data && res.data.length && !res.error) ? res.data[0] : null;
+        }catch(e){ cloud = null; }
+        if(!cloud) return;
+        const orders = DB.get('orders');
+        const i = orders.findIndex(function(o){ return o.id === orderId; });
+        if(i < 0) return;
+        const TOP_FIELDS = ['customerName','contact','phone','region','address','province','city','district','orderDate','completionDate','remark','status','type'];
+        TOP_FIELDS.forEach(function(k){
+          if(cloud[k] !== undefined && cloud[k] !== null && cloud[k] !== '') orders[i][k] = cloud[k];
+        });
+        if(Array.isArray(cloud.items) && Array.isArray(orders[i].items)){
+          const ITEM_FIELDS = ['name','price','qty','stock','subtotal','trackingNo','waste'];
+          cloud.items.forEach(function(ci, idx){
+            const t = orders[i].items[idx];
+            if(!t) return;
+            ITEM_FIELDS.forEach(function(fk){
+              if(ci[fk] !== undefined && ci[fk] !== null && ci[fk] !== '') t[fk] = ci[fk];
             });
-            if(Array.isArray(cloud.items) && Array.isArray(orders[i].items)){
-              const ITEM_FIELDS = ['name','price','qty','stock','subtotal','trackingNo','waste'];
-              cloud.items.forEach(function(ci, idx){
-                const t = orders[i].items[idx];
-                if(!t) return;
-                ITEM_FIELDS.forEach(function(fk){
-                  if(ci[fk] !== undefined && ci[fk] !== null && ci[fk] !== '') t[fk] = ci[fk];
-                });
-              });
-            }
-            DB.set('orders', orders);
-            if(currentRoute === 'order-detail' && window._currentOrderId === orderId && !window._orderEditMode) renderOrderDetail();
-          })
-          .catch(function(){});
+          });
+        }
+        DB.set('orders', orders);
+        if(currentRoute === 'order-detail' && window._currentOrderId === orderId && !window._orderEditMode) renderOrderDetail();
       })
       .catch(function(){});
   }
@@ -7191,9 +7224,10 @@ async function pushNewOrderToCloudWithRetry(orderId, maxRetries){
     try{ await DB.syncTable('orders'); }catch(e){ console.warn('pushNewOrder syncTable 异常:', e && e.message); }
     // 验证云端是否真的有这一单，并且 updated_at 不比本地旧（防 syncTable 静默吞错误或编辑内容未落地）
     try{
-      const { data, error } = await window._sbpbClient.from('orders').select('id,updated_at').eq('id', orderId).maybeSingle();
-      if(data && !error && data.id === orderId){
-        const cloudUpdatedAt = data.updated_at ? Date.parse((''+data.updated_at).replace(' ', 'T')) : 0;
+      const { data, error } = await window._sbpbClient.from('orders').select('id,updated_at').eq('id', orderId).limit(1);
+      const row = (data && data.length && !error) ? data[0] : null;
+      if(row && !error && row.id === orderId){
+        const cloudUpdatedAt = row.updated_at ? Date.parse((''+row.updated_at).replace(' ', 'T')) : 0;
         // 云端存在即满足新建订单；编辑场景额外要求云端时间不比本地旧超过 5s（容差：服务端/客户端时钟偏差、毫秒截断）
         if(localUpdatedAt <= 0 || !cloudUpdatedAt || cloudUpdatedAt >= localUpdatedAt - 5000){
           return { ok: true, attempts: attempt };
@@ -9291,13 +9325,12 @@ function effectiveItemCost(order, item){
   const products = DB.get('products');
   const prod = products.find(p => p.id === item.productId);
   const prodCost = prod ? (prod.cost || 0) : 0;
-  const frozen = (order && order.status !== 'pending') || item.ordered === true;
-  if(frozen){
-    return (item.cost != null) ? item.cost : 0;
-  }
-  // 待下单且未下单：跟随商品库最新成本（商品库无成本记录时保留快照）
-  if(prodCost > 0) return prodCost;
-  return (item.cost != null) ? item.cost : 0;
+  // 成本取值统一规则（销售员/日期/商品三维度共用，保证一致）：
+  //  - 默认取 item.cost：销售提交时=商品售价；管理员在「待下单」前可改为真实采购价；订单转「已下单」时由 freezeOrderItemCosts 固化为快照
+  //  - item.cost 缺失时退到商品售价兜底，再退商品库成本兜底，避免出现 0 导致三维度对不上
+  //  - 已下单订单的 item.cost 已被冻结，故商品库后续改动不影响已下单订单成本（符合「后面修改商品成本不影响已下单」）
+  const baseCost = (item.cost != null) ? item.cost : (item.price != null ? item.price : prodCost);
+  return baseCost;
 }
 
 // 订单转「已下单」前固化成本快照：把每个商品成本刷新为商品库最新值并落盘，
@@ -13582,22 +13615,14 @@ function toggleUserForm(){
   el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
-// 调用 admin-user-mgmt Edge Function（service_role 在函数 Secrets 中，前端零密钥暴露）
+// 调用 CloudBase 云函数 admin-user-mgmt（密钥/管理权限仅存于云函数内，前端零密钥暴露）
 async function callAdminUserMgmt(body){
-  const url = SUPABASE_URL.replace(/\/$/, '') + '/functions/v1/admin-user-mgmt';
-  let token = SUPABASE_KEY;
-  try{
-    const sess = await window._sbpbClient.auth.getSession();
-    if(sess && sess.data && sess.data.session && sess.data.session.access_token) token = sess.data.session.access_token;
-  }catch(e){}
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + token },
-    body: JSON.stringify(body)
-  });
-  let j = null;
-  try{ j = await res.json(); }catch(e){ j = null; }
-  if(!j || typeof j.ok === 'undefined') throw new Error('服务器无响应（' + res.status + '），请稍后重试');
+  if(!window._sbpbClient){ throw new Error('系统未就绪，请稍后重试'); }
+  // 自建账号体系：callFunction 不会自动带登录态，改为显式带上会话令牌，云函数内据令牌校验管理员身份。
+  const payload = Object.assign({ token: getSessionToken() }, body);
+  const r = await window._sbpbClient.callFunction('admin-user-mgmt', payload);
+  const j = (r && typeof r.result !== 'undefined') ? r.result : r;
+  if(!j || typeof j.ok === 'undefined') throw new Error('服务器无响应，请稍后重试');
   if(!j.ok) throw new Error(j.message || '操作失败');
   return j;
 }
@@ -13948,7 +13973,7 @@ function renderProfitReport(){
         }
         var p = productMap[key];
         var prod2 = products.find(function(p2){ return p2.id === it.productId; });
-        var cost = prod2 ? (prod2.cost||0) : 0;
+        var cost = effectiveItemCost(o, it);
         p.qty += it.qty;
         p.revenue += it.price * it.qty;
         p.cost += cost * it.qty;
@@ -14327,7 +14352,7 @@ function exportProfitCSV(){
         }
         var p = productMap[key];
         var prod2 = products.find(function(p2){ return p2.id === it.productId; });
-        var cost = prod2 ? (prod2.cost||0) : 0;
+        var cost = effectiveItemCost(o, it);
         p.qty += it.qty;
         p.revenue += it.price * it.qty;
         p.cost += cost * it.qty;
@@ -14464,7 +14489,7 @@ function collectSalesLogisticsInfo(orderId){
   if(!order){ showToast('订单不存在','error'); return; }
   const items = order.items.filter(it => it.trackingNo && it.trackingNo.trim());
   if(items.length === 0){ showToast('暂无物流单号可收集','error'); return; }
-  if(!KUAIDI100_PROXY){ copyLogisticsInfo(orderId); showToast('未配置物流代理，已复制单号','info'); return; }
+  if(!KUAIDI100_ENABLED){ copyLogisticsInfo(orderId); showToast('未配置物流代理，已复制单号','info'); return; }
   openLogiCollectModal(order, items);
 }
 
@@ -14492,8 +14517,7 @@ function openLogiCollectModal(order, items){
   document.getElementById('modalContainer').innerHTML = modalHtml;
   items.forEach((it, i) => {
     const com = expressCodeOf(it.expressCompany) || expressCodeOf(detectExpressCompany(it.trackingNo)) || 'auto';
-    const url = KUAIDI100_PROXY + '?num=' + encodeURIComponent(it.trackingNo) + '&com=' + encodeURIComponent(com);
-    fetch(url).then(r => r.json()).then(resp => {
+    queryKuaidi(it.trackingNo, com).then(resp => {
       const el = document.getElementById('logiCollStatus_' + i);
       if(resp && resp.status === '200' && resp.data && resp.data.length){
         const latest = resp.data[0];
@@ -14607,16 +14631,15 @@ function submitChangePassword(){
   if(idx < 0){ showToast('账号异常','error'); return; }
   const cur = users[idx];
   (async () => {
-      // 方案二(Auth)：用官方接口改密码。先校验原密码（重新登录一次），再 updateUser。
+      // CloudBase 自建账号体系：先校验原密码（调 auth-login），再重置（调 admin-user-mgmt reset_password）
       if(window._sbpbClient && currentUser && currentUser.username){
         try{
-          const { error: verr } = await window._sbpbClient.auth.signInWithPassword({
-            email: currentUser.username + '@soms.local',
-            password: oldPass
-          });
-          if(verr){ showToast('原密码错误','error'); return; }
-          const { error: uerr } = await window._sbpbClient.auth.updateUser({ password: newPass });
-          if(uerr){ showToast('修改失败：' + (uerr.message||''), 'error'); return; }
+          const lr = await window._sbpbClient.callFunction('auth-login', { username: currentUser.username, password: oldPass });
+          const lj = (lr && typeof lr.result !== 'undefined') ? lr.result : lr;
+          if(!lj || !lj.ok){ showToast('原密码错误','error'); return; }
+          const rr = await window._sbpbClient.callFunction('admin-user-mgmt', { token: lj.token, action:'reset_password', id: currentUser.id, password: newPass });
+          const rj = (rr && typeof rr.result !== 'undefined') ? rr.result : rr;
+          if(!rj || !rj.ok){ showToast('修改失败：' + (rj && rj.message || ''), 'error'); return; }
           closeModal();
           showToast('密码修改成功','success');
           return;
@@ -14959,12 +14982,10 @@ function queryLogistics(orderId, itemIndex, trackingNo, containerEl){
 
   // 3）后台尝试真实接口，成功则用真实轨迹替换
   const tryReal = function(){
-    if(!KUAIDI100_PROXY){ showLogiError(container, trackingNo, '未配置物流代理'); return; }
+    if(!KUAIDI100_ENABLED){ showLogiError(container, trackingNo, '未配置物流代理'); return; }
     const ctrl = new AbortController();
     const timer = setTimeout(function(){ ctrl.abort(); }, 5000);
-    fetch(KUAIDI100_PROXY + '?num=' + encodeURIComponent(trackingNo) + '&com=' + encodeURIComponent(com), { headers:{ 'Accept':'application/json' }, signal:ctrl.signal })
-      .then(function(r){ return r.json(); })
-      .then(function(resp){
+    queryKuaidi(trackingNo, com).then(function(resp){
         clearTimeout(timer);
         if(resp && resp.status === '200' && resp.data && resp.data.length){
           try{ localStorage.setItem(cacheKey, JSON.stringify(resp)); }catch(e){}
@@ -15153,18 +15174,16 @@ window.onload = async function(){
     console.warn('云端对齐去重失败:', e.message);
   }
 
-  // 恢复正常登录流程
-  // 优先用 Supabase Auth 会话恢复登录（方案二）
-  if(window._sbpbClient){
-    try{
-      const { data: sess } = await window._sbpbClient.auth.getSession();
-      if(sess && sess.session && sess.session.user){
-        const meta = (sess.session.user.app_metadata) || {};
-        const uname = meta.username || '';
-        if(uname){ await finishLoginViaAuth(uname); return; }
-      }
-    }catch(e){ /* 客户端未就绪，走下方 sessionStorage 兜底 */ }
-  }
+  // 恢复正常登录流程：优先用本地会话令牌恢复登录（自建账号体系，不依赖 CloudBase 内建 Auth）
+  try{
+    const savedUser = sessionStorage.getItem('soms_current_user');
+    const token = sessionStorage.getItem('soms_auth_token');
+    if(savedUser && token){
+      currentUser = JSON.parse(savedUser);
+      showApp();
+      DB.syncFromCloud().catch(function(){});
+    }
+  }catch(e){ /* 走下方登录页兜底 */ }
   const saved = sessionStorage.getItem('soms_current_user');
   if(saved){
     try{ currentUser = JSON.parse(saved); showApp(); }catch(e){}
@@ -15283,12 +15302,11 @@ function renderDraftBar(){
 // 查询云端该订单是否有更新（updatedAt 晚于本地）
 async function checkOrderCloudConflict(orderId, localUpdatedAt){
   try{
-    const url = SUPABASE_URL + '/rest/v1/orders?id=eq.' + encodeURIComponent(orderId) + '&select=updated_at,status';
-    const res = await fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
-    if(!res.ok) return null;
-    const arr = await res.json();
-    if(!arr || !arr.length) return null;
-    const serverUpdatedAt = arr[0].updated_at;
+    // CloudBase 版：原本直连 /rest/v1/orders 的 fetch 改为经 app.rdb() 查询，逻辑保持不变。
+    const res = await window._sbpbClient.from('orders').select('updated_at,status').eq('id', orderId).limit(1);
+    const row = (res && res.data && res.data.length && !res.error) ? res.data[0] : null;
+    if(!row) return null;
+    const serverUpdatedAt = row.updated_at;
     if(!serverUpdatedAt) return null;
     if(serverUpdatedAt > (localUpdatedAt || '')) return { newer: true, serverUpdatedAt: serverUpdatedAt };
     return null;
