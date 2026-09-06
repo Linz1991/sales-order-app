@@ -1,23 +1,23 @@
 // 销售订单管理系统 Service Worker：仅缓存应用壳资源，不缓存 Supabase API 与 version.json，
 // 确保订单等实时业务数据走 network-only，避免多设备看到旧缓存。
 // 缓存名含版本号：每次部署换名 → SW 重新安装 → 强制重新拉取 index.html / 静态资源，杜绝旧 js 残留。
-const CACHE = 'soms-v20260919';
+const CACHE = 'soms-v20260920';
 const ASSETS = [
   './',
   './index.html',
-  './libs/supabase.min.js',
-  './libs/chart.umd.min.js',
   './manifest.json',
   './icon-192.png'
 ];
 
-// 判断请求是否为需要绕过 SW 缓存的实时接口（Supabase REST/Realtime、版本标记）
+// 判断请求是否为需要绕过 SW 缓存的实时接口（CloudBase/Supabase REST、版本标记）
 function shouldBypassCache(url) {
   try {
     const u = new URL(url);
+    if (u.hostname.includes('tcloudbase')) return true;
     if (u.hostname.includes('supabase.co')) return true;
     if (u.pathname.includes('/rest/v1/')) return true;
     if (u.pathname.includes('/realtime/')) return true;
+    if (u.pathname.includes('/rdb/rest/')) return true;
     if (u.pathname.endsWith('/version.json')) return true;
   } catch (_) {}
   return false;
