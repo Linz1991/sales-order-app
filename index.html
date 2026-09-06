@@ -1339,7 +1339,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260919</div>
+          <div class="brand-sub">v20260920</div>
         </div>
       </div>
     </div>
@@ -1560,7 +1560,7 @@ const DB = {
   // 缺 updated_at 列（或低频变更）的小表：日常轮询全量拉并合并，保证客户/售后/收款/提成等
   // 改动在日常即可跨端可见，不再依赖 6h 全量兜底（修复「一端改了另一端要等数小时才看到」）。
   _fullPullTables: ['customers','aftersales','payments','commissions'],
-  _fullSyncIntervalMs: 15 * 60 * 1000, // v20260907：1h → 15min。小表跨端拉取由「每 2min 双向全量同步」（原 pushLocalChanges→syncTable，每天 140MB/台）改为「只推脏行 + 每 15min 全量兜底拉取」：小表全量仅 ~98KB，15min 一次 ≈ 9.4MB/天/台，及时性与 egress 平衡。orders/products 走增量，不受影响
+  _fullSyncIntervalMs: 60 * 60 * 1000, // v20260920：15min → 60min。9/5 实测全天 26.7MB 仍偏高，月底前需压到 15MB/天以下。小表全量 ~98KB，15min 一次 ≈ 9.4MB/天/台；改 60min 后 ≈ 2.4MB/天/台。跨端小表变化最迟 1 小时可见（orders/products 增量不受影响，实时性由手动同步/新建订单触发保证）
 
   _getIncTs(){ try{ return localStorage.getItem('soms_inc_ts') || ''; }catch(e){ return ''; } },
   _setIncTs(ts){ try{ if(ts) localStorage.setItem('soms_inc_ts', ts); }catch(e){} },
@@ -4408,7 +4408,11 @@ document.addEventListener('visibilitychange', function(){
     // v20260915：取消重建 setInterval（轮询已关闭），只触发一次 autoSyncTick
     // if(!window._autoSyncTimer){ try{ window._autoSyncTimer = setInterval(autoSyncTick, 300000); }catch(e){} }
     // 立即补拉云端最新数据（覆盖 hidden 期间错过的变更）
-    if(typeof DB !== 'undefined' && DB.syncFromCloud){
+    // v20260920 节流：60 秒内已同步过则跳过（频繁切 App 的用户每次回前台都全量拉小表，
+    // 一天几十次 × 98KB 是 egress 大头；隐藏不足 60 秒基本不会有新数据）
+    var _lastFgSync = window._lastFgSyncAt || 0;
+    if(typeof DB !== 'undefined' && DB.syncFromCloud && (Date.now() - _lastFgSync) > 60000){
+      window._lastFgSyncAt = Date.now();
       DB.syncFromCloud().then(function(){
         if(typeof schedulePushToCloud === 'function'){ try{ schedulePushToCloud(); }catch(e){} }
         if(window._routeRenderers && currentRoute && window._routeRenderers[currentRoute]){
