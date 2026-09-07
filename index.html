@@ -1339,7 +1339,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260923</div>
+          <div class="brand-sub">v20260924</div>
         </div>
       </div>
     </div>
@@ -1564,6 +1564,9 @@ const DB = {
 
   _getIncTs(){ try{ return localStorage.getItem('soms_inc_ts') || ''; }catch(e){ return ''; } },
   _setIncTs(ts){ try{ if(ts) localStorage.setItem('soms_inc_ts', ts); }catch(e){} },
+  // 客户表增量游标：独立键，不与 orders/products 共享 soms_inc_ts（避免相互污染导致增量漏拉/重拉）
+  _getCustIncTs(){ try{ return localStorage.getItem('soms_cust_inc_ts') || ''; }catch(e){ return ''; } },
+  _setCustIncTs(ts){ try{ if(ts) localStorage.setItem('soms_cust_inc_ts', ts); }catch(e){} },
   _getLastFullAt(){ try{ return parseInt(localStorage.getItem('soms_last_full_at')||'0',10)||0; }catch(e){ return 0; } },
   _setLastFullAt(t){ try{ localStorage.setItem('soms_last_full_at', String(t)); }catch(e){} },
 
@@ -1601,6 +1604,13 @@ const DB = {
       if(!isNaN(d.getTime())){ d.setSeconds(d.getSeconds() - 60); return this._fmtTs(d); }
     }catch(e){}
     return localMax;
+  },
+  // 客户表增量游标（v20260907 降 egress）：独立键 soms_cust_inc_ts，不与 orders/products 的 soms_inc_ts 混用，
+  // 避免相互污染导致「客户增量漏拉 / 订单游标被客户脏值重置」。
+  // 与 _incCursor 不同：游标丢失时直接返回 ''（由 loadCustomersFromCloud 走一次全量兜底），
+  // 不做本地 max 前推——客户被订单/统计/客户档案广泛引用，宁可偶发一次全量也不冒「漏拉老客户」风险（满足「不丢数据」硬约束）。
+  _custIncCursor(){
+    return this._getCustIncTs() || '';
   },
 
   // 行级脏标记：orders/products 写入时记录「新增/变化」的行 id，供增量上推只 upsert 脏行，
@@ -1895,6 +1905,38 @@ const DB = {
     }
   },
 
+  // 按 id 单条拉取订单（v20260907 降 egress）：点开订单详情/切回详情页只需 1 条订单，
+  // 不再 pullTableAuthoritative('orders') 全表 select(*)(404 行 ~525KB)。改为 eq('id', orderId)
+  // 单条拉（~1.3KB）后，把云端这条用 _mergeById 并入本地全集（只动这一条，不碰其他订单），
+  // 既保证「点开详情立刻看到云端最新」又砍掉 ~99% 流量。不丢数据：其他订单靠 syncIncremental 增量补齐。
+  async pullOrderById(orderId){
+    if(!window._sbpbClient || !orderId) return null;
+    try{
+      const { data, error } = await withTimeout(
+        window._sbpbClient.from('orders').select(this._ORDERS_COLS).eq('id', orderId).maybeSingle(),
+        8000, 'pullOrderById('+orderId+')');
+      if(error) throw error;
+      if(!data) return null;
+      const cloud = this._toCamel([data])[0];
+      const local = this.get('orders', []);
+      const excludeIds = this.get('_deletedOrderIds', []);
+      const isAdmin = typeof currentUser !== 'undefined' && currentUser && currentUser.role === 'admin';
+      const localOne = (local || []).find(function(o){ return o && o.id === orderId; });
+      // 仅针对这一条做合并（与 loadOrdersFromCloud 同源策略），避免重新拉全表/误改其他订单
+      const merged = isAdmin
+        ? this._mergeAdminCloudPriority((localOne ? [localOne] : []), [cloud], excludeIds, 'orders')
+        : this._mergeById((localOne ? [localOne] : []), [cloud], excludeIds, 'orders');
+      const cloudMerged = (merged || [])[0];
+      const next = (local || []).map(function(o){ return (o && o.id === orderId && cloudMerged) ? cloudMerged : o; });
+      if(cloudMerged && !next.some(function(o){ return o && o.id === orderId; })) next.push(cloudMerged);
+      localStorage.setItem('soms_orders', JSON.stringify(next));
+      return cloudMerged || cloud;
+    }catch(e){
+      console.warn('按 id 拉取订单失败 ['+orderId+']:', e.message);
+      return null;
+    }
+  },
+
   // 按 id 合并本地与云端数据：以 updatedAt/createdAt 较新者优先（云端权威、更新覆盖旧本地），
   // 解决多端协作时“一端改动被另一端本地旧版覆盖/订单丢失”的问题。
   // excludeIds：已在本端删除、但云端可能仍残留的订单 id，合并时强制跳过，避免被同步拉回。
@@ -2004,7 +2046,10 @@ const DB = {
         // 且管理员通常在同一设备操作，不影响。后续可通过 statusVersion 字段实现精确传播。
         const _finalRow = map[r.id];
         if(_finalRow && lr){
-          const _rankOf = s => ({pending:0, confirmed:1, shipped:1, feedback:2, feedback_done:3, completed:4}[s] || 0);
+          // v20260907 售后修复：状态等级扩展至售后单语义（pending<processing<resolved<closed），
+          // 使售后状态合并时「只进不退」，根治「点已处理过一会回退成待处理」。
+          // 订单状态等级保持不变；新增的 processing/resolved/closed 仅对售后单生效，不影响订单行为。
+          const _rankOf = s => ({pending:0, confirmed:1, shipped:1, feedback:2, feedback_done:3, completed:4, processing:1, resolved:2, closed:3}[s] || 0);
           // 无条件 items[i].ordered 保护：本地已下单的项，云端不得降级为待下单
           if(Array.isArray(lr.items) && Array.isArray(_finalRow.items)){
             for(let i=0;i<Math.min(lr.items.length, _finalRow.items.length);i++){
@@ -2015,6 +2060,10 @@ const DB = {
             }
           }
           // 无条件整单 status 保护：取本地与云端中 rank 更高的状态
+          // v20260907 售后修复：_rankOf 原先只映射订单状态，售后单的 pending/processing/resolved/closed 全返回 0，
+          // 导致售后状态纯靠时间戳比较（而本地 nowStr 北京时间 vs 云端 updated_at UTC 时区不一致），
+          // 本地刚改的「已处理」会被云端旧状态覆盖回退。现把售后状态等级纳入，
+          // 使「待处理<处理中<已处理<已关闭」与订单一样「只进不退」（详见下方 _rankOf 定义）。
           if(_rankOf(r.status) > _rankOf(_finalRow.status)){
             // 云端状态 rank 更高（如云端 feedback > 本地 confirmed）→ 取云端状态
             _finalRow.status = r.status;
@@ -2804,7 +2853,7 @@ const DB = {
       // 全量兜底（v20260902 降 egress）：订单/商品改走 loadXxxFromCloud（本地缓存存在时自动切增量，
       // 只拉 updated_at 之后的变化行，含删除传播）；小表全量拉（users 无 updated_at 列必须全量；
       // customers/aftersales/payments/commissions 行数小、体积小）；audit_log 为纯本地审计日志，不跨端，不拉取。
-      const tables = ['users','customers','aftersales','payments','commissions'];
+      const tables = ['users','aftersales','payments','commissions'];
       for(let i = 0; i < tables.length; i++){
         try{
           const result = await this._loadTable(tables[i]);
@@ -2813,6 +2862,15 @@ const DB = {
           console.warn('同步表 ['+tables[i]+'] 失败:', e.message);
           hasError = true;
         }
+      }
+      // v20260907 降 egress：客户表改走「独立游标增量」拉取（loadCustomersFromCloud），
+      // 不再每 60min 全量 select(*) 110KB；首拉/游标丢失时自动全量一次保证完整，之后只拉 updated_at 之后的变化行。
+      try{
+        const cRes = await this.loadCustomersFromCloud();
+        if(cRes === null){ hasError = true; }
+      }catch(e){
+        console.warn('同步客户表失败:', e.message);
+        hasError = true;
       }
       // 订单/商品：先推本地未同步数据上云，再拉云端（增量/全量自适应），保证删除传播 + 一致性。
       try{ await this.loadOrdersFromCloud(); }catch(e){
@@ -2984,6 +3042,47 @@ const DB = {
     localStorage.setItem('soms_products', JSON.stringify(merged));
     window._lastCloudProducts = cloud || [];
     return merged;
+  },
+
+  // 客户表增量同步（v20260907 降 egress）：与 orders/products 同源思路，但用【独立】客户游标
+  // soms_cust_inc_ts（不与 soms_inc_ts 共享，见 _custIncCursor 注释），避免互相污染。
+  // 实测 customers.updated_at 随 upsert 自动刷新（存在触发器），故走 updated_at 增量可靠；
+  // 客户表 13 列均为小文本、无大 JSONB，白名单几乎不省流，故保持 select(*) 零丢列风险。
+  // 行为：
+  //  - 本地有缓存且游标存在 → 只拉 updated_at >= 游标的变化行（gte），egress 从 110KB/次 降到「仅变化行」（多数周期 ~0）；
+  //  - 首拉 / 游标丢失 / 本地无缓存 → 全量 select(*) 一次（客户被全业务引用，必须全拿，不做 30 天窗口限制，
+  //    避免新设备漏拉老客户），之后游标建立走增量。
+  // 合并复用 _mergeById（与 _loadTable 一致；ts() 把北京时间 nowStr 与云端 UTC 都归一为 epoch，时区安全）：
+  //  不丢数据——本地新建、尚未推上云的客户由「并集合并」保留；customers 不做删除传播（与既有 _loadTable 行为一致，
+  //  避免误删本地刚建档、云端尚不存在的未上云客户）。
+  async loadCustomersFromCloud(){
+    if(!window._sbpbClient) return null;
+    try{
+      const local = this.get('customers', []);
+      const incCursor = this._custIncCursor();
+      const useInc = !!incCursor && (local || []).length > 0;
+      let query = window._sbpbClient.from('customers').select('*');
+      if(useInc){
+        query = query.gte('updated_at', incCursor);
+      }
+      const { data, error } = await withTimeout(query, 20000, 'loadCustomersFromCloud' + (useInc ? ' inc' : ' full'));
+      if(error) throw error;
+      const cloud = this._toCamel(data || []);
+      // 推进独立客户游标：取云端返回的最大 updated_at（UTC ISO，与云端同格式，保证 gte 比较正确）。
+      // 必须取自云端数据，不能用本地 nowStr()（北京时间）——否则格式不一致会让增量比较失效。
+      let maxTs = this._getCustIncTs() || incCursor || '';
+      (cloud || []).forEach(function(r){
+        if(r && r.updatedAt && (!maxTs || r.updatedAt > maxTs)) maxTs = r.updatedAt;
+      });
+      if(maxTs) this._setCustIncTs(maxTs);
+      // excludeIds=null：客户不按「已删除」过滤（无客户删除传播场景），本地未上云客户由 _mergeById 并集保留。
+      const merged = this._mergeById(local, cloud, null, 'customers');
+      localStorage.setItem('soms_customers', JSON.stringify(merged));
+      return merged;
+    }catch(e){
+      console.warn('客户增量同步失败:', e.message);
+      return null;
+    }
   },
 
   // 同步状态管理
@@ -4457,8 +4556,8 @@ document.addEventListener('visibilitychange', function(){
   const route = typeof currentRoute !== 'undefined' ? currentRoute : '';
   if(route === 'orders' && !(window._currentOrderId && document.getElementById('orderDetailPanel')) && typeof renderOrders === 'function') renderOrders();
   else if(route === 'order-detail' && window._currentOrderId && typeof renderOrderDetail === 'function'){
-    // 从后台切回详情页：拉取云端最新数据后重建详情一次（后台期间可能错过 Realtime 更新）
-    DB.pullTableAuthoritative('orders').then(function(){ try{ renderOrderDetail(); }catch(e){} }).catch(function(){});
+    // 从后台切回详情页：按 id 单条拉当前订单最新数据后重建详情（v20260907 降 egress：不再全表拉 404 行 ~525KB）
+    DB.pullOrderById(window._currentOrderId).then(function(){ try{ renderOrderDetail(); }catch(e){} }).catch(function(){});
   }
   else if(route === 'schedule' && typeof renderSchedule === 'function') renderSchedule();
   else if(route === 'warehouse' && typeof renderWarehouse === 'function') renderWarehouse();
@@ -5895,11 +5994,10 @@ function viewOrder(orderId, forceViewOnly){
   window._orderEditMode = false;
   window._orderForceViewOnly = forceViewOnly === true;
   navigate('order-detail'); // 先用本地缓存渲染，避免网络慢时打开订单卡顿
-  // 修复：打开订单详情后立即从云端全量拉取一次（绕过 Realtime 订阅与 updated_at 增量过滤），
-  // 让管理员/其它设备点开订单就能立即看到销售刚改的客户信息、商品价格等，
-  // 不再依赖「Realtime 没开」或「多设备时钟偏差导致增量漏更新」。
+  // v20260907 降 egress：打开订单详情改为按 id 单条拉（~1.3KB），替代原 pullTableAuthoritative('orders') 全表 select(*)(404 行 ~525KB)。
+  // 既保留「点开立即看到云端最新」语义，又砍掉 ~99% 流量；后续二次单条 fetch 强覆盖逻辑原样保留（成本仅 1.3KB）。
   if(window._sbpbClient){
-    DB.pullTableAuthoritative('orders')
+    DB.pullOrderById(orderId)
       .then(function(){
         // 关键修复（v2026082517）：pullTableAuthoritative 内部 _mergeById 在「云端无 _syncEditAt 编辑戳」时
         // 会走「本地优先」分支，把云端新改的客户姓名/价格回退成旧值（表现为管理员看不到销售改的内容）。
