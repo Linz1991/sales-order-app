@@ -1339,7 +1339,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260928</div>
+          <div class="brand-sub">v20260929</div>
         </div>
       </div>
     </div>
@@ -4695,10 +4695,12 @@ document.addEventListener('visibilitychange', function(){
     // v20260915：取消重建 setInterval（轮询已关闭），只触发一次 autoSyncTick
     // if(!window._autoSyncTimer){ try{ window._autoSyncTimer = setInterval(autoSyncTick, 300000); }catch(e){} }
     // 立即补拉云端最新数据（覆盖 hidden 期间错过的变更）
-    // v20260920 节流：60 秒内已同步过则跳过（频繁切 App 的用户每次回前台都全量拉小表，
-    // 一天几十次 × 98KB 是 egress 大头；隐藏不足 60 秒基本不会有新数据）
+    // v20260929 节流：60s → 10s。原注释担心的「每次回前台都全量拉小表 98KB」已不成立——
+    // 现在 orders/products 走增量（实测一次仅 ~3.5KB），小表全量由 60min 兜底分支控制，
+    // 不会因切前台而触发。缩短到 10s 后，销售微信通知 → 管理员切微信看完再切回，即可立即看到新单，
+    // 且成本可忽略（按一天切回 100 次算仅 ~350KB/天）。自动轮询仍保持关闭（避免固定周期持续开销）。
     var _lastFgSync = window._lastFgSyncAt || 0;
-    if(typeof DB !== 'undefined' && DB.syncFromCloud && (Date.now() - _lastFgSync) > 60000){
+    if(typeof DB !== 'undefined' && DB.syncFromCloud && (Date.now() - _lastFgSync) > 10000){
       window._lastFgSyncAt = Date.now();
       DB.syncFromCloud().then(function(){
         if(typeof schedulePushToCloud === 'function'){ try{ schedulePushToCloud(); }catch(e){} }
