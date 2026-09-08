@@ -1339,7 +1339,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260925</div>
+          <div class="brand-sub">v20260926</div>
         </div>
       </div>
     </div>
@@ -1658,25 +1658,29 @@ const DB = {
           const _localNow = this.get('orders', []);
           const _restored = this._mergeById(_localNow, _cloudAll, this.get('_deletedOrderIds', []), 'orders');
           localStorage.setItem('soms_orders', JSON.stringify(_restored));
-          // 游标重置为全表最大 updatedAt，保证后续仍走增量（并集合并，不会再丢）
-          let _m = '';
-          const _cf = this._cursorCamField('orders');
-          _cloudAll.forEach(function(r){ if(r && r[_cf] && (!_m || r[_cf] > _m)) _m = r[_cf]; });
+          // 游标取云端最大 updatedAt，但封顶为当前时间（v20260926 修复：原写法直接取最大值会落到未来）
+          const _m = this._safeCursorFrom(_cloudAll, this._cursorCamField('orders'));
           if(_m) this._setIncTs(_m);
           console.warn('[v20260923] 订单全量恢复完成：本地', (_localNow||[]).length, '条 →', _restored.length, '条');
         }
       }catch(e){ console.warn('[v20260923] 订单全量恢复失败:', e && e.message); }
       try{ localStorage.setItem('soms_restore_orders_v20260923', '1'); }catch(e){}
     }
+    // v20260926 游标自检（最先执行）：历史版本曾把游标写到未来，导致 gte(updated_at, 未来) 恒空、
+    // 新订单全部同步不到（表现为「订单突然消失」）。这里先把它拉回当前时间，恢复增量能力。
+    try{ this._fixFutureCursor(); }catch(e){ console.warn('[cursor] 自检异常:', e && e.message); }
     // v20260925 订单补洞（可重试）：v20260923 那次恢复「失败也打标记」，使部分设备永久失去
     // 补洞机会（如 daxian 看不到 ORD20260907-dndk5445717）。此处改为版本绑定 key，升级后必跑一次，
     // 且仅在真正成功时才写标记；失败则保留标记位，下次同步继续重试。
-    if(!localStorage.getItem('soms_restore_orders_v20260925')){
+    // v20260926 订单补洞：因 v20260925 会把游标设到未来（云端存在「北京时间被当 UTC 写」的时间戳），
+    // 导致补洞后增量彻底拉空、新订单看不见。本版先修游标（见上方 _fixFutureCursor），再重跑一次
+    // 全量补洞，确保被跳过的订单（如刘佳 ORD20260908-chao3435270）被拉回。可重试：仅成功才写标记。
+    if(!localStorage.getItem('soms_restore_orders_v20260926')){
       let _ok = false;
-      try{ _ok = await this.repairMissingOrders('v20260925'); }
-      catch(e){ console.warn('[v20260925] 订单补洞异常:', e && e.message); }
-      if(_ok){ try{ localStorage.setItem('soms_restore_orders_v20260925', '1'); }catch(e){} }
-      else { console.warn('[v20260925] 订单补洞未成功，保留标记位，下次同步继续重试'); }
+      try{ _ok = await this.repairMissingOrders('v20260926'); }
+      catch(e){ console.warn('[v20260926] 订单补洞异常:', e && e.message); }
+      if(_ok){ try{ localStorage.setItem('soms_restore_orders_v20260926', '1'); }catch(e){} }
+      else { console.warn('[v20260926] 订单补洞未成功，保留标记位，下次同步继续重试'); }
     }
     // v20260925 每日对账：本地订单数明显少于云端时自动补洞，让漏拉自愈（计数查询仅几十字节）
     try{ await this.auditOrderCount(); }catch(e){ console.warn('[audit] 对账异常:', e && e.message); }
@@ -1949,6 +1953,61 @@ const DB = {
     }
   },
 
+  // v20260926 时间解析：把任意格式的时间值按 UTC 归一为时间戳。
+  // 云端同时存在两种写法：带时区（…+00 / …Z）与 naive（无时区，由本地北京时间字符串写入）。
+  // 直接字符串比较会出错（'T'(0x54) > ' '(0x20)，导致带 T 的恒大于带空格的），
+  // 故统一按 UTC 解析：naive 视为 UTC（与 Postgres 解释行为一致），带时区的按其偏移折算。
+  _tsUtc(v){
+    if(!v) return 0;
+    let s = String(v).trim().replace(' ', 'T');
+    // 精确识别「尾部」时区：Z / ±HH:MM / ±HHMM / ±HH
+    // 注意不能简单用 [+-]\d{2} 全串匹配——日期里的 "-09-08" 会被误判成时区。
+    const tz = s.match(/([zZ]|[+-]\d{2}:?\d{2}|[+-]\d{2})$/);
+    if(!tz){
+      s += 'Z';                                   // naive（无时区）→ 按 UTC 解释
+    } else if(/^[+-]\d{2}$/.test(tz[1])){
+      s = s.slice(0, -tz[1].length) + tz[1] + ':00';  // 仅 ±HH（如 +00）→ 补成分，否则 Date.parse 会失败
+    }
+    const t = Date.parse(s);
+    return isNaN(t) ? 0 : t;
+  },
+
+  // v20260926 安全游标：取行集合里 camField 的最大值，但**封顶为当前时间 - 60s**。
+  // 关键：云端存在「本地北京时间被当 UTC 写入」的时间戳，可能落在未来（实测最多超前 ~8h）。
+  // 若游标被设到未来，后续 gte(updated_at, 游标) 将永远返回空 → 新订单全部同步不到（刘佳订单消失即此因）。
+  _safeCursorFrom(rows, camField){
+    let best = '', bestTs = 0;
+    const self = this;
+    (rows || []).forEach(function(r){
+      const v = r && r[camField]; if(!v) return;
+      const t = self._tsUtc(v);
+      if(t > bestTs){ bestTs = t; best = v; }
+    });
+    const cap = Date.now() - 60000;
+    if(bestTs > cap){
+      const capped = new Date(cap).toISOString();
+      console.warn('[cursor] 云端最大', camField, '=', best, '超前于当前时间，游标封顶为', capped);
+      return capped;
+    }
+    return best;
+  },
+
+  // v20260926 游标自检：历史版本可能已把游标写到未来（v20260923 / v20260925 均曾如此），
+  // 检测到就回退到「当前时间 - 60s」，立刻恢复增量同步能力。返回 true 表示已修复。
+  _fixFutureCursor(){
+    const cur = this._getIncTs();
+    if(!cur) return false;
+    const t = this._tsUtc(cur);
+    const cap = Date.now() - 60000;
+    if(t > cap){
+      const capped = new Date(cap).toISOString();
+      console.warn('[cursor] 检测到未来游标', cur, '→ 已回退到', capped);
+      this._setIncTs(capped);
+      return true;
+    }
+    return false;
+  },
+
   // v20260925 全量补洞：拉云端 orders 全表，与本地做「并集合并」（_mergeById 保证本地新增不丢、
   // 云端较新才覆盖），用于修复「某行 updated_at 落后于增量游标 → 该行永远拉不到」的漏拉问题。
   // 返回 true 表示补洞成功；调用方必须仅在成功后才写「已执行」标记，
@@ -1964,10 +2023,9 @@ const DB = {
       const _localNow = this.get('orders', []);
       const _merged = this._mergeById(_localNow, _cloudAll, this.get('_deletedOrderIds', []), 'orders');
       localStorage.setItem('soms_orders', JSON.stringify(_merged));
-      // 游标重置为云端全表最大 updatedAt，保证后续仍走增量（并集合并，不会再丢）
-      let _m = '';
-      const _cf = this._cursorCamField('orders');
-      _cloudAll.forEach(function(r){ if(r && r[_cf] && (!_m || String(r[_cf]) > String(_m))) _m = r[_cf]; });
+      // 游标取云端最大 updatedAt，但封顶为当前时间（v20260926 修复：此前直接用最大值会落到未来，
+      // 导致之后 gte(updated_at, 未来) 恒空 → 新订单同步不到，表现为「订单突然消失」）
+      const _m = this._safeCursorFrom(_cloudAll, this._cursorCamField('orders'));
       if(_m) this._setIncTs(_m);
       console.warn('['+(tag||'repair')+'] 订单补洞完成：本地', (_localNow||[]).length, '条 →', _merged.length, '条');
       return true;
