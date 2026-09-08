@@ -1339,7 +1339,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260927</div>
+          <div class="brand-sub">v20260928</div>
         </div>
       </div>
     </div>
@@ -1986,6 +1986,14 @@ const DB = {
     return true;
   },
 
+  // v20260928 游标字符串：必须与云端 updated_at 的**存储格式一致**（空格分隔、无时区后缀的 UTC 值）。
+  // 实测云端格式分布：空格 naive 82 条 + 「+00」后缀 366 条，**没有任何一条是 T 分隔的 ISO**。
+  // 若游标用 toISOString()（2026-09-08T07:33:55.203Z），与云端格式不一致会让 gte 比较失效，
+  // 实测从「拉到 4 条」变成「拉到 0 条」→ 新订单全部同步不到（v20260926/v20260927 正是死在这里）。
+  _cursorStr(ts){
+    return new Date(ts).toISOString().slice(0, 19).replace('T', ' ');
+  },
+
   // v20260926 安全游标：取行集合里 camField 的最大值，但**封顶为当前时间 - 60s**。
   // 关键：云端存在「本地北京时间被当 UTC 写入」的时间戳，可能落在未来（实测最多超前 ~8h）。
   // 若游标被设到未来，后续 gte(updated_at, 游标) 将永远返回空 → 新订单全部同步不到（刘佳订单消失即此因）。
@@ -1999,24 +2007,29 @@ const DB = {
     });
     const cap = Date.now() - 60000;
     if(bestTs > cap){
-      const capped = new Date(cap).toISOString();
+      const capped = this._cursorStr(cap);
       console.warn('[cursor] 云端最大', camField, '=', best, '超前于当前时间，游标封顶为', capped);
       return capped;
     }
     return best;
   },
 
-  // v20260926 游标自检：历史版本可能已把游标写到未来（v20260923 / v20260925 均曾如此），
-  // 检测到就回退到「当前时间 - 60s」，立刻恢复增量同步能力。返回 true 表示已修复。
+  // v20260928 游标自检：历史版本留下过两类坏游标，都要修 ——
+  // ① 值落在未来（v20260923/v20260925 写入）→ gte(未来) 恒空
+  // ② T 分隔的 ISO 格式（v20260926/v20260927 写入，值并不超前）→ 与云端「空格分隔」格式不一致，
+  //    实测同样导致 gte 拉到 0 条。这类必须靠「格式判断」捕获，只看数值是发现不了的。
+  // 统一重写为「空格分隔 + 当前时间-60s」，恢复增量同步能力。返回 true 表示已修正。
   _fixFutureCursor(){
     const cur = this._getIncTs();
     if(!cur) return false;
-    const t = this._tsUtc(cur);
+    const s = String(cur);
     const cap = Date.now() - 60000;
-    if(t > cap){
-      const capped = new Date(cap).toISOString();
-      console.warn('[cursor] 检测到未来游标', cur, '→ 已回退到', capped);
-      this._setIncTs(capped);
+    const t = this._tsUtc(s);
+    const badFormat = s.indexOf('T') >= 0;   // 云端绝无 T 分隔的值
+    if(badFormat || !t || t > cap){
+      const fixed = this._cursorStr(cap);
+      console.warn('[cursor] 修正游标', s, '→', fixed, badFormat ? '(格式不符：含 T)' : '(值超前)');
+      this._setIncTs(fixed);
       return true;
     }
     return false;
