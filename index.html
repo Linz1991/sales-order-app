@@ -1339,7 +1339,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260926</div>
+          <div class="brand-sub">v20260927</div>
         </div>
       </div>
     </div>
@@ -1972,6 +1972,20 @@ const DB = {
     return isNaN(t) ? 0 : t;
   },
 
+  // v20260927 补洞重试限流：补洞是全表拉取（实测 731KB），不能无限重试。
+  // 若设备网络持续失败，而「失败不打标记」又会让每次 syncFromCloud 都重拉全表，
+  // 一天切几十次前台就能烧掉几百 MB。这里限制为「每台设备每天最多尝试 3 次」。
+  _canRetryRepairToday(){
+    const _today = new Date().toISOString().slice(0,10);
+    let st = {};
+    try{ st = JSON.parse(localStorage.getItem('soms_repair_retry') || '{}') || {}; }catch(e){ st = {}; }
+    if(st.date !== _today) st = { date: _today, count: 0 };
+    if((st.count || 0) >= 3) return false;
+    st.count = (st.count || 0) + 1;
+    try{ localStorage.setItem('soms_repair_retry', JSON.stringify(st)); }catch(e){}
+    return true;
+  },
+
   // v20260926 安全游标：取行集合里 camField 的最大值，但**封顶为当前时间 - 60s**。
   // 关键：云端存在「本地北京时间被当 UTC 写入」的时间戳，可能落在未来（实测最多超前 ~8h）。
   // 若游标被设到未来，后续 gte(updated_at, 游标) 将永远返回空 → 新订单全部同步不到（刘佳订单消失即此因）。
@@ -2014,6 +2028,11 @@ const DB = {
   // 否则失败也会留下标记，该设备将永久失去补洞机会（v20260923 正是败在这里）。
   async repairMissingOrders(tag){
     if(!window._sbpbClient) return false;
+    // 统一限流：所有调用路径（首次补洞 / 每日对账触发）共享「每台设备每天 3 次」配额
+    if(!this._canRetryRepairToday()){
+      console.warn('['+(tag||'repair')+'] 补洞今日已达上限(3次)，跳过以避免重复全表拉取');
+      return false;
+    }
     try{
       const { data: _all, error: _err } = await withTimeout(
         window._sbpbClient.from('orders').select('*').order('created_at', { ascending: true }),
