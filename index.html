@@ -131,6 +131,69 @@ async function adminSyncOrders(){
   }
 }
 
+// v20260933：漏单自检红条。
+// 进订单页时自动比对本机未删订单数 vs 云端未删订单数（云端用 count 轻量接口，只返 header，不拉全表）。
+// 差值 > 0 说明本地增量游标漏拉了某些单，浮层红条提醒 admin/销售点「立即同步补拉」。
+// 节流：30s 内只查一次，避免频繁打云端。会话内点了「知道了」则本会话不再弹。
+let _orderGapLastCheck = 0;
+let _orderGapDismissed = false;
+async function checkOrderSyncGap(){
+  if(!window._sbpbClient) return;
+  if(_orderGapDismissed) return;
+  const _now = Date.now();
+  if(_now - _orderGapLastCheck < 30000) return;   // 30s 节流
+  _orderGapLastCheck = _now;
+  try{
+    const isAdmin = currentUser && currentUser.role === 'admin';
+    const isOperator = currentUser && currentUser.role === 'operator';
+    // 本机未删订单数（销售/操作员只看自己，admin 看全部）
+    const local = (DB.get('orders', []) || []).filter(function(o){
+      if(o && o._deleted) return false;
+      if(!isAdmin && !isOperator && o.salesId !== currentUser.id) return false;
+      return true;
+    }).length;
+    const key = 'sb_publishable_x1lj1wREId-JMCVTqxJG6w_mcBK0j2Q';
+    let url = 'https://mfimcrzewhnlbtkjgqlq.supabase.co/rest/v1/orders?_deleted=eq.false&select=count';
+    if(!isAdmin && !isOperator) url += '&sales_id=eq.' + encodeURIComponent(currentUser.id);
+    const r = await fetch(url, {
+      headers: { 'apikey': key, 'Authorization': 'Bearer ' + key, 'x-app-secret': 'soms_2025_secure_access_key_8f3k9q2m', 'Prefer': 'count=exact' }
+    });
+    const range = r.headers.get('content-range');
+    const cloud = range ? parseInt(range.split('/')[1], 10) : null;
+    if(cloud === null) return;
+    const gap = cloud - local;
+    const banner = document.getElementById('orderGapBanner');
+    if(!banner) return;
+    if(gap > 0){
+      document.getElementById('orderGapCount').textContent = gap;
+      banner.style.display = 'block';
+    } else {
+      banner.style.display = 'none';
+    }
+  }catch(e){
+    console.warn('[orderGap] 比对异常:', (e && e.message) || e);
+  }
+}
+function dismissOrderGapBanner(){
+  const banner = document.getElementById('orderGapBanner');
+  if(banner) banner.style.display = 'none';
+  _orderGapDismissed = true;   // 本会话忽略
+}
+async function orderGapSyncNow(){
+  const banner = document.getElementById('orderGapBanner');
+  if(banner) banner.style.display = 'none';
+  try{
+    if(currentUser && currentUser.role === 'admin'){
+      await adminSyncOrders();
+    } else {
+      await DB.repairMissingOrders('manual');
+    }
+  }catch(e){
+    showToast('补拉失败：' + ((e && e.message) || e), 'error');
+  }
+  setTimeout(checkOrderSyncGap, 2500);   // 同步后重新比对一次
+}
+
 // v20260931：admin 同步结果诊断卡（5s 自动消失）。
 // showToast 不支持 duration 参数，自己实现一个 5s 长 toast：复用同款样式 + 延迟移除。
 function showAdminSyncResult(before, after, delta, remaining){
@@ -1412,7 +1475,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260932</div>
+          <div class="brand-sub">v20260933</div>
         </div>
       </div>
     </div>
@@ -1460,6 +1523,12 @@ html{scroll-behavior:smooth}
         <span style="font-size:13px;color:var(--text-muted)" id="headerDate"></span>
       </div>
     </header>
+    <!-- v20260933 漏单自检红条：进订单页自动比对本机 vs 云端订单数，不一致则浮层提醒 -->
+    <div id="orderGapBanner" style="display:none;position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:9999;background:#fff1f0;border:1px solid #ffa39e;color:#cf1322;padding:9px 16px;border-radius:0 0 10px 10px;font-size:13px;line-height:1.5;box-shadow:0 4px 14px rgba(207,19,34,.18);max-width:94vw;text-align:center">
+      ⚠️ 本机订单比云端少 <b id="orderGapCount" style="font-size:15px">0</b> 单，可能存在漏单（增量同步未拉全）。
+      <a href="javascript:void(0)" onclick="dismissOrderGapBanner()" style="margin-left:10px;color:#cf1322;text-decoration:underline">知道了</a>
+      <a href="javascript:void(0)" onclick="orderGapSyncNow()" style="margin-left:8px;color:#fff;background:#cf1322;text-decoration:none;font-weight:bold;padding:3px 12px;border-radius:6px;display:inline-block">立即同步补拉</a>
+    </div>
     <main class="main-content" id="mainContent"></main>
   </div>
 </div>
@@ -5333,6 +5402,7 @@ async function navigate(route){
         if(currentRoute === route){
           const _renderer = (window._routeRenderers && window._routeRenderers[route]) || fn;
           try{ _renderer(); }catch(e){}
+          if(route === 'orders') checkOrderSyncGap();   // 数据已最新，比对本机 vs 云端最准
         }
       })
       .catch(function(e){
@@ -5342,6 +5412,8 @@ async function navigate(route){
         }
       });
     if(hasLocalCache) fn();
+    if(route === 'orders'){ checkOrderSyncGap(); }
+    else { const _b = document.getElementById('orderGapBanner'); if(_b) _b.style.display = 'none'; }
   } else {
     fn();
   }
