@@ -1480,7 +1480,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260934</div>
+          <div class="brand-sub">v20260935</div>
         </div>
       </div>
     </div>
@@ -7066,7 +7066,7 @@ let _searchSelected = new Set(); // 多选商品ID集合
 function searchProducts(keyword){
   const results = document.getElementById('searchResults');
   if(!keyword.trim()){ _searchSelected.clear(); results.style.display='none'; return; }
-  const products = DB.get('products').filter(p => p.status !== 'off');
+  const products = DB.get('products').filter(p => p.status === 'on');
   const kw = keyword.toLowerCase();
   const matched = products.filter(p => p.name.toLowerCase().includes(kw) ||
                                        (p.category && p.category.toLowerCase().includes(kw)));
@@ -9120,7 +9120,7 @@ var _editSearchSelected = new Set();
 function searchEditProducts(keyword){
   const results = document.getElementById('editSearchResults');
   if(!keyword.trim()){ _editSearchSelected.clear(); results.style.display='none'; return; }
-  const products = DB.get('products').filter(p => p.status !== 'off');
+  const products = DB.get('products').filter(p => p.status === 'on');
   const kw = keyword.toLowerCase();
   // 排除已在订单中的商品
   const orderId = window._currentOrderId;
@@ -11161,7 +11161,7 @@ function productMatchesKeyword(p, keyword){
 function _productVisibleFilter(list){
   if(!Array.isArray(list)) return list || [];
   if(window._showDelistedProducts) return list;
-  return list.filter(p => (p && p.status) !== 'off');
+  return list.filter(p => !!(p && p.status === 'on'));
 }
 function toggleShowDelisted(){
   window._showDelistedProducts = !window._showDelistedProducts;
