@@ -1300,21 +1300,26 @@ tbody tr:hover{background:#f0f5f4}
   width:100%;border-collapse:collapse;font-size:12px;
   margin:4px 0 8px 0;table-layout:fixed;
 }
-/* 子表固定列宽：商品名称30% | 数量6% | 售价10% | 成本10% | 损耗10% | 利润10% | 操作列(下单/物流)24% */
-.order-items-sub-table col:nth-child(1){width:30%}
-.order-items-sub-table col:nth-child(2){width:6%}
-.order-items-sub-table col:nth-child(3){width:10%}
-.order-items-sub-table col:nth-child(4){width:10%}
-.order-items-sub-table col:nth-child(5){width:10%}
-.order-items-sub-table col:nth-child(6){width:10%}
-.order-items-sub-table col:nth-child(7){width:24%}
+/* v20260934：子表列宽改成固定像素 + 数字列右对齐 + 紧凑 padding。
+   旧百分比（数量6%/售价10%等）相对子表100%算，父表"商品明细"列较宽时绝对值太小（30-50px），
+   内容"1"/"¥6,500" 居中后两侧留大量空白。改 px 限定 + 右对齐，单元格内不再稀拉。 */
+.order-items-sub-table col:nth-child(1){width:auto; min-width:180px}   /* 商品名称：占满剩余 */
+.order-items-sub-table col:nth-child(2){width:56px}                    /* 数量 */
+.order-items-sub-table col:nth-child(3){width:92px}                    /* 售价 */
+.order-items-sub-table col:nth-child(4){width:80px}                    /* 成本 */
+.order-items-sub-table col:nth-child(5){width:80px}                    /* 损耗 */
+.order-items-sub-table col:nth-child(6){width:92px}                    /* 利润 */
+.order-items-sub-table col:nth-child(7){width:auto}
 .order-items-sub-table thead th{
-  background:#f3f4f6;padding:6px 8px;font-weight:600;color:var(--text-muted);
-  border:1px solid var(--border);font-size:12px;
+  background:#f3f4f6;padding:5px 6px;font-weight:600;color:var(--text-muted);
+  border:1px solid var(--border);font-size:12px;white-space:nowrap;
 }
 .order-items-sub-table tbody td{
-  padding:6px 8px;border:1px solid var(--border);font-size:12px;
+  padding:5px 6px;border:1px solid var(--border);font-size:12px;
 }
+/* 数字/价格列右对齐 + 不换行，避免单元格内大量左右留白 */
+.order-items-sub-table thead th:nth-child(n+2){text-align:right}
+.order-items-sub-table tbody td:nth-child(n+2){text-align:right;white-space:nowrap}
 .order-items-sub-table tbody tr:nth-child(even){background:#fafafa}
 .order-items-sub-table input[type="number"]{
   width:70px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:12px;
@@ -1475,7 +1480,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260933</div>
+          <div class="brand-sub">v20260934</div>
         </div>
       </div>
     </div>
@@ -1955,7 +1960,8 @@ const DB = {
               name: c.name != null ? c.name : r.name,
               role: c.role != null ? c.role : r.role,
               phone: c.phone != null ? c.phone : r.phone,
-              disabled: c.disabled != null ? c.disabled : r.disabled
+              disabled: c.disabled != null ? c.disabled : r.disabled,
+              password: c.password != null ? c.password : r.password
             }));
           } else { mergedArr.push(r); }
           seen.add(r.id);
@@ -4683,7 +4689,7 @@ async function handleLogin(){
   cleanupDuplicateUsers();
   // 清理重复客户：避免多次下单/录入手机号不一致产生重复客户
   cleanupDuplicateCustomers();
-  const users = DB.get('users');
+  const users = await DB._loadTable('users'); // 用云端拉取结果（含 password，未被 _scrubUserPasswords 擦除），避免本地缓存密码被擦导致比对失败
   const target = users.find(u => u.username === user && !u.disabled);
   if(!target){ showToast('用户名或密码错误','error'); return; }
   if(target.disabled){ showToast('该账号已被禁用，无法登录','error'); return; }
@@ -6261,8 +6267,39 @@ async function renderOrders(){
         html += '<tr><td colspan="5"><div class="sales-empty"><div class="empty-icon">📦</div><div class="empty-text">'+(keyword||status||salesDateStart||salesDateEnd ? '暂无符合条件的订单' : '还没有订单')+'</div>'+(keyword||status||salesDateStart||salesDateEnd || currentUser.role === 'operator' ? '' : '<button class="btn btn-primary" onclick="navigate(\'order-new\')">➕ 去新建订单</button>')+'</div></td></tr>';
       }
       html += '</tbody></table></div>';
+    } else if(status === 'pending'){
+      // 销售端「待下单」桌面端：展开商品明细（客户 | 商品名称 | 数量 | 售价 | 订单备注 | 编辑）
+      // v20260935: 参考 admin 页面风格，把待下单从「客户/电话/状态/备注/发货日期/操作」改为 6 列展开明细。
+      // 硬性要求：销售端严禁出现成本/利润/损耗；本块商品子表只读 it.name / it.qty / it.price。
+      html += '<div class="table-wrap"><table><thead>';
+      html += '<tr><th rowspan="2">客户</th><th colspan="3" style="text-align:center">商品明细</th><th rowspan="2">订单备注</th><th rowspan="2">操作</th></tr>';
+      html += '<tr><th>商品名称</th><th style="text-align:center">数量</th><th style="text-align:right">售价</th></tr>';
+      html += '</thead><tbody>';
+      if(filtered.length){
+        filtered.forEach(function(o){
+          const canEdit = (isAdmin || o.salesId === currentUser.id) && !isOrderLockedByOther(o);
+          const hasOrderedItem = (o.items||[]).some(it => it.ordered === true);
+          const opBtn = (canEdit && !hasOrderedItem)
+            ? '<button class="btn btn-primary btn-sm" onclick="editOrder(\''+o.id+'\')">编辑</button>'
+            : '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>';
+          html += '<tr>';
+          html += '<td style="vertical-align:top">'+orderIdCell(o.id, {clickView:true})+'<br>'+escapeHtml(o.customerName||'-')+'</td>';
+          html += '<td colspan="3" style="padding:0;vertical-align:top"><table class="order-items-sub-table"><tbody>';
+          (o.items||[]).forEach(function(it){
+            // 销售端：商品子表只读 name / qty / price；严禁渲染 cost / waste / profit
+            html += '<tr><td>'+escapeHtml(it.name||'-')+'</td><td style="text-align:center">'+it.qty+'</td><td style="text-align:right">'+money(it.price)+'</td></tr>';
+          });
+          html += '</tbody></table></td>';
+          const remark = o.remark ? '<span title="'+(o.remark||'').replace(/"/g,"'")+'" style="display:inline-block;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">'+escapeHtml(o.remark)+'</span>' : '<span style="color:var(--text-muted)">-</span>';
+          html += '<td style="vertical-align:top;font-size:12px;text-align:center">'+remark+'</td>';
+          html += '<td style="text-align:center;vertical-align:top">'+opBtn+'</td></tr>';
+        });
+      } else {
+        html += '<tr><td colspan="6"><div class="sales-empty"><div class="empty-icon">📦</div><div class="empty-text">'+(keyword||status||salesDateStart||salesDateEnd ? '暂无符合条件的订单' : '还没有订单')+'</div>'+(keyword||status||salesDateStart||salesDateEnd || currentUser.role === 'operator' ? '' : '<button class="btn btn-primary" onclick="navigate(\'order-new\')">➕ 去新建订单</button>')+'</div></td></tr>';
+      }
+      html += '</tbody></table></div>';
     } else {
-      // 桌面端：表格布局（字段：客户/电话/状态/备注/创建时间/操作）
+      // 桌面端：其他状态（全部/已完成/默认）表格布局（字段：客户/电话/状态/备注/发货日期/操作）
       html += `
       <div class="table-wrap">
         <table>
