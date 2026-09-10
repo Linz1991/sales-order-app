@@ -1480,7 +1480,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260938</div>
+          <div class="brand-sub">v20260939</div>
         </div>
       </div>
     </div>
@@ -13948,13 +13948,16 @@ function changeUserRole(userId, role){
 
 /* ============ 利润结算辅助函数 ============ */
 function getProfitDate(order){
+  // 统一返回纯日期 YYYY-MM-DD（截断 ISO 时间部分），避免云端拉回的
+  // created_at/completionDate 等带 'T' 时间导致字符串比较时被日期范围过滤器漏掉
+  function toPlain(d){ if(!d) return ''; var s = String(d); return s.slice(0,10); }
   // 留仓/上门订单以完成日期为准
   if((order.type === 'warehouse' || order.type === 'door') && order.completionDate){
-    return order.completionDate;
+    return toPlain(order.completionDate);
   }
   // 常规订单以履约日期为准
-  if(order.fulfillmentDate) return order.fulfillmentDate;
-  return order.orderDate || order.createdAt || '';
+  if(order.fulfillmentDate) return toPlain(order.fulfillmentDate);
+  return toPlain(order.orderDate) || toPlain(order.createdAt) || '';
 }
 /* ============ 人员管理 ============ */
 function renderUsers(){
