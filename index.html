@@ -1480,7 +1480,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260935</div>
+          <div class="brand-sub">v20260936</div>
         </div>
       </div>
     </div>
@@ -3446,6 +3446,9 @@ const DB = {
     this._syncStatus = status;
     const el = document.getElementById('syncStatusBadge');
     const btn = document.getElementById('syncBtn');
+    // v20260910：销售端不显示红色(同步失败)提示，仅 admin 可见；非 admin 的 error 降级为绿色"已同步"不报警
+    const _isAdmin = (typeof currentUser !== 'undefined' && currentUser && currentUser.role === 'admin');
+    if(!_isAdmin && status === 'error'){ status = 'synced'; }
     if(el){
       if(status === 'syncing'){
         el.textContent = '同步中...';
@@ -4749,6 +4752,8 @@ function showApp(){
   }
   // 启动后台自动同步（拉取云端最新数据），让管理员/其他端提交的订单能实时可见
   startAutoSync();
+  // v20260910：登录后检查上门/留仓订单到期提醒（本地遍历，不联网）
+  if(typeof checkDueDateReminders === 'function'){ setTimeout(function(){ try{ checkDueDateReminders(); }catch(e){} }, 800); }
 }
 
 // 后台自动同步：每 15 秒从云端拉取全表，仅在停留的列表页对应数据变化时才刷新，不打断详情/编辑页
@@ -4907,6 +4912,7 @@ document.addEventListener('visibilitychange', function(){
       window._lastFgSyncAt = Date.now();
       DB.syncFromCloud().then(function(){
         if(typeof schedulePushToCloud === 'function'){ try{ schedulePushToCloud(); }catch(e){} }
+        if(typeof checkDueDateReminders === 'function'){ try{ checkDueDateReminders(); }catch(e){} }
         if(window._routeRenderers && currentRoute && window._routeRenderers[currentRoute]){
           try{ window._routeRenderers[currentRoute](); }catch(e){}
         }
@@ -13641,13 +13647,17 @@ async function renderSchedule(){
       var dayOrders = orderMap[dateStr] || [];
       var isToday = dateStr === todayStr();
       var clickFn = dayOrders.length ? 'showScheduleDayOrders(\''+dateStr+'\')' : '';
-      html += '<div onclick="'+clickFn+'" style="min-height:60px;padding:4px;border:1px solid '+(isToday?'var(--primary)':'var(--border)')+';border-radius:4px;cursor:'+(dayOrders.length?'pointer':'default')+';background:'+(isToday?'var(--primary-light)':'#fff')+'">';
+      html += '<div onclick="'+clickFn+'" style="min-height:80px;padding:4px;border:1px solid '+(isToday?'var(--primary)':'var(--border)')+';border-radius:4px;cursor:'+(dayOrders.length?'pointer':'default')+';background:'+(isToday?'var(--primary-light)':'#fff')+'">';
       html += '<div style="font-size:12px;font-weight:'+(isToday?'700':'400')+'">'+d+'</div>';
       if(dayOrders.length){
         html += '<div style="margin-top:2px"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--primary)"></span>';
         if(dayOrders.length <= 3){
           dayOrders.forEach(function(o){
-            html += '<div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(o.customerName||'')+'</div>';
+            html += '<div style="font-size:10px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.5">';
+            html += '<span style="font-weight:600">'+escapeHtml(o.customerName||'')+'</span>';
+            if(o.city) html += ' <span style="color:var(--text-muted)">'+escapeHtml(o.city)+'</span>';
+            if(o.finalPayment > 0) html += ' <span style="color:var(--danger)">尾款'+money(o.finalPayment)+'</span>';
+            html += '</div>';
           });
         } else {
           html += '<div style="font-size:10px;color:var(--primary);margin-top:2px">'+dayOrders.length+'个订单</div>';
@@ -14434,8 +14444,9 @@ function renderProfitReport(){
         <div class="stat-card"><div class="stat-label">总营业额</div><div class="stat-value">${money(totalRevenue)}</div></div>
         ${isAdmin ? '<div class="stat-card"><div class="stat-label">总成本</div><div class="stat-value">'+money(totalCost)+'</div></div>' : ''}
         <div class="stat-card"><div class="stat-label">总损耗</div><div class="stat-value" style="color:var(--danger)">${money(totalLoss)}</div></div>
-        <div class="stat-card"><div class="stat-label">净利润</div><div class="stat-value" style="color:var(--success)">${money(totalProfit)}</div></div>
+        <div class="stat-card"><div class="stat-label">总利润</div><div class="stat-value" style="color:var(--success)">${money(totalProfit)}</div></div>
         <div class="stat-card"><div class="stat-label">总提成</div><div class="stat-value" style="color:var(--primary)">${money(totalCommission)}</div></div>
+        <div class="stat-card"><div class="stat-label">净利润</div><div class="stat-value" style="color:#0ea5e9">${money(totalProfit - totalCommission)}</div></div>
       </div>
       <div class="card">
         <div class="table-wrap">
@@ -14447,7 +14458,7 @@ function renderProfitReport(){
                 <th>营业额</th>
                 ${isAdmin ? '<th>成本</th>' : ''}
                 <th>损耗</th>
-                <th>净利润</th>
+                <th>利润</th>
                 <th>提成</th>
               </tr>
             </thead>
@@ -14499,7 +14510,7 @@ function renderProfitReport(){
       }
     });
 
-    var totalQty = 0, totalRev2 = 0, totalCost2 = 0, totalProfit2 = 0;
+    var totalQty = 0, totalRev2 = 0, totalCost2 = 0, totalProfit2 = 0, totalCommission2 = 0;
     Object.keys(productMap).forEach(function(k){
       var p = productMap[k];
       totalQty += p.qty;
@@ -14507,6 +14518,7 @@ function renderProfitReport(){
       totalCost2 += p.cost;
       totalProfit2 += p.profit;
     });
+    filteredOrders.forEach(function(o){ var _u = users.find(function(x){ return x.id === o.salesId; }); var _r = (_u && _u.commission_rate != null) ? _u.commission_rate : 9; totalCommission2 += calcCommission(o, _r); });
 
     window._prDrillDownKeys = [];
     var sortedProducts = Object.keys(productMap).map(function(k){ var p = productMap[k]; p.pkey = k; return p; }).sort(function(a,b){ return b.profit - a.profit; });
@@ -14528,6 +14540,8 @@ function renderProfitReport(){
         <div class="stat-card"><div class="stat-label">总营业额</div><div class="stat-value">${money(totalRev2)}</div></div>
         ${isAdmin ? '<div class="stat-card"><div class="stat-label">总成本</div><div class="stat-value">'+money(totalCost2)+'</div></div>' : ''}
         <div class="stat-card"><div class="stat-label">总利润</div><div class="stat-value" style="color:var(--success)">${money(totalProfit2)}</div></div>
+        ${isAdmin ? '<div class="stat-card"><div class="stat-label">总提成</div><div class="stat-value" style="color:var(--primary)">'+money(totalCommission2)+'</div></div>' : ''}
+        <div class="stat-card"><div class="stat-label">净利润</div><div class="stat-value" style="color:#0ea5e9">${money(totalProfit2 - totalCommission2)}</div></div>
       </div>
       <div class="card">
         <div class="table-wrap">
@@ -14574,11 +14588,12 @@ function renderProfitReport(){
 
     sortedDates = Object.keys(dateMap).map(function(k){ return dateMap[k]; }).sort(function(a,b){ return a.date.localeCompare(b.date); });
 
-    var totalRev3 = 0, totalProfit3 = 0;
+    var totalRev3 = 0, totalProfit3 = 0, totalCommission3 = 0;
     sortedDates.forEach(function(d){
       totalRev3 += d.revenue;
       totalProfit3 += d.profit;
     });
+    filteredOrders.forEach(function(o){ var _u = users.find(function(x){ return x.id === o.salesId; }); var _r = (_u && _u.commission_rate != null) ? _u.commission_rate : 9; totalCommission3 += calcCommission(o, _r); });
 
     window._prDrillDownKeys = [];
     var dateRowsHtml = sortedDates.map(function(d){
@@ -14597,6 +14612,8 @@ function renderProfitReport(){
       <div class="stat-grid" style="margin-bottom:16px">
         <div class="stat-card"><div class="stat-label">总营业额</div><div class="stat-value">${money(totalRev3)}</div></div>
         <div class="stat-card"><div class="stat-label">总利润</div><div class="stat-value" style="color:var(--success)">${money(totalProfit3)}</div></div>
+        ${isAdmin ? '<div class="stat-card"><div class="stat-label">总提成</div><div class="stat-value" style="color:var(--primary)">'+money(totalCommission3)+'</div></div>' : ''}
+        <div class="stat-card"><div class="stat-label">净利润</div><div class="stat-value" style="color:#0ea5e9">${money(totalProfit3 - totalCommission3)}</div></div>
       </div>
       <div class="card" style="margin-bottom:16px;padding:16px">
         <h4 style="margin-bottom:12px;font-size:14px">利润趋势</h4>
@@ -15621,6 +15638,53 @@ function autoShowCachedLogistics(order){
   }
 }
 
+/* ============ 上门/留仓订单到期提醒 ============ */
+// v20260910：上门订单备货日期、留仓订单发货日期到期时，给 admin 和订单提交者(销售)弹窗提示(带确定按钮)。
+// 仅本地遍历 orders，不联网，egress=0；localStorage 记录已确认订单避免重复弹。
+function checkDueDateReminders(){
+  if(typeof currentUser === 'undefined' || !currentUser) return;
+  if(!window._sbpbClient) return;
+  var orders = DB.get('orders') || [];
+  var today = todayStr();
+  var notified = {};
+  try{ notified = JSON.parse(localStorage.getItem('soms_dueDateNotified') || '{}'); }catch(e){ notified = {}; }
+  var queue = [];
+  orders.forEach(function(o){
+    if(o._deleted) return;
+    if(o.type !== 'door' && o.type !== 'warehouse') return;
+    var d = o.orderDate || '';
+    if(!d) return;
+    if(d > today) return;
+    if(notified[o.id]) return;
+    if(currentUser.role !== 'admin' && currentUser.id !== o.salesId) return;
+    queue.push(o);
+  });
+  if(!queue.length) return;
+  var i = 0;
+  function showNext(){
+    if(i >= queue.length) return;
+    var o = queue[i++];
+    var isDoor = (o.type === 'door');
+    var label = isDoor ? '备货日期' : '发货日期';
+    var title = isDoor ? '上门订单备货提醒' : '留仓订单发货提醒';
+    var html = ''
+      + '<div class="modal-mask" style="z-index:9999" onclick="if(event.target===this)closeModal()">'
+      +   '<div class="modal" style="max-width:420px">'
+      +     '<div class="modal-header"><h3>⏰ ' + title + '</h3><button class="modal-close" onclick="closeModal()">×</button></div>'
+      +     '<div class="modal-body"><p style="margin:0;line-height:1.6">订单 <b>' + escapeHtml(o.id) + '</b>（' + escapeHtml(o.customerName || o.contact || '-') + '）的' + label + ' <b>' + formatOrderDate(o.orderDate) + '</b> 已到期，请及时处理相关事宜。</p></div>'
+      +     '<div class="modal-footer"><button class="btn btn-primary" onclick="__ackDueDate(\'' + o.id + '\')">确定</button></div>'
+      +   '</div>'
+      + '</div>';
+    openModal(html);
+  }
+  window.__ackDueDate = function(id){
+    try{ var n = JSON.parse(localStorage.getItem('soms_dueDateNotified') || '{}'); n[id] = true; localStorage.setItem('soms_dueDateNotified', JSON.stringify(n)); }catch(e){}
+    closeModal();
+    showNext();
+  };
+  showNext();
+}
+
 /* ============ 启动 ============ */
 window.onload = async function(){
   // 显示加载指示器
@@ -15706,6 +15770,8 @@ window.onload = async function(){
   document.getElementById('loginUser').addEventListener('keydown', e => {
     if(e.key === 'Enter') document.getElementById('loginPass').focus();
   });
+  // v20260910：每 60s 本地检查上门/留仓订单到期提醒（纯本地遍历，不联网，egress=0）
+  if(typeof checkDueDateReminders === 'function'){ setInterval(function(){ try{ checkDueDateReminders(); }catch(e){} }, 60000); }
 };
 
 /* ===================== 订单草稿自动保存 ===================== */
