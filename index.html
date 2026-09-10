@@ -1480,7 +1480,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260937</div>
+          <div class="brand-sub">v20260938</div>
         </div>
       </div>
     </div>
@@ -4045,6 +4045,17 @@ function formatOrderAddress(order){
     return [order.province, order.city, order.district, order.address].filter(Boolean).join(' ');
   }
   return [order.region, order.address].filter(Boolean).join(' ');
+}
+
+// 取订单城市用于日历展示：优先 o.city；旧订单 city 为空时从 region/address 解析兜底
+function orderCityOf(order){
+  if(!order) return '';
+  if(order.city) return order.city;
+  var text = [order.province, order.region, order.address].filter(Boolean).join(' ');
+  if(text && typeof parseAddress === 'function'){
+    try { var p = parseAddress(text); if(p && p.city) return p.city; } catch(e){}
+  }
+  return '';
 }
 
 /* ============ 订单文本一键识别解析（三块结构化拆分） ============ */
@@ -13655,7 +13666,8 @@ async function renderSchedule(){
           dayOrders.forEach(function(o){
             html += '<div style="font-size:10px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.45">';
             html += escapeHtml(o.customerName||'');
-            if(o.city) html += '<br>'+escapeHtml(o.city);
+            var _city = orderCityOf(o);
+            if(_city) html += '<br>'+escapeHtml(_city);
             if(o.finalPayment > 0) html += '<br>尾款'+money(o.finalPayment);
             html += '</div>';
           });
