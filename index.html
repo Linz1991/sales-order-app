@@ -1480,7 +1480,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260939</div>
+          <div class="brand-sub">v20260940</div>
         </div>
       </div>
     </div>
@@ -2219,27 +2219,69 @@ const DB = {
   // 云端较新才覆盖），用于修复「某行 updated_at 落后于增量游标 → 该行永远拉不到」的漏拉问题。
   // 返回 true 表示补洞成功；调用方必须仅在成功后才写「已执行」标记，
   // 否则失败也会留下标记，该设备将永久失去补洞机会（v20260923 正是败在这里）。
+  // v20260911 两阶段压缩：阶段一仅拉 id+updated_at（约几十KB，无 items 重字段），本地比对出
+  // 真正缺失/有更新的单，阶段二再只全量拉这几单（select('*')）。正常运行缺口极少 → 单次 ~20KB，
+  // 不再每次无脑全表 809KB，避免多设备高频补洞打爆免费版 egress。
   async repairMissingOrders(tag){
     if(!window._sbpbClient) return false;
-    // 统一限流：所有调用路径（首次补洞 / 每日对账触发）共享「每台设备每天 3 次」配额
+    // 统一限流：所有调用路径（首次补洞 / 每日对账触发）共享「每台设备每天 10 次」配额
     if(!this._canRetryRepairToday()){
-      console.warn('['+(tag||'repair')+'] 补洞今日已达上限(3次)，跳过以避免重复全表拉取');
+      console.warn('['+(tag||'repair')+'] 补洞今日已达上限，跳过以避免重复全表拉取');
       return false;
     }
     try{
-      const { data: _all, error: _err } = await withTimeout(
-        window._sbpbClient.from('orders').select('*').order('created_at', { ascending: true }),
-        30000, 'repairMissingOrders');
-      if(_err || !Array.isArray(_all) || !_all.length) return false;
-      const _cloudAll = this._toCamel(_all);
-      const _localNow = this.get('orders', []);
-      const _merged = this._mergeById(_localNow, _cloudAll, this.get('_deletedOrderIds', []), 'orders');
+      // 阶段一：仅取 id + updated_at（无 items 等重字段），用于本地比对与游标计算（egress 极小）
+      const { data: _idx, error: _idxErr } = await withTimeout(
+        window._sbpbClient.from('orders').select('id, updated_at').order('created_at', { ascending: true }),
+        30000, 'repairMissingOrdersIdx');
+      if(_idxErr || !Array.isArray(_idx)) return false;
+
+      const _localNow = this.get('orders', []) || [];
+      const _exclude = new Set(this.get('_deletedOrderIds', []) || []);
+      // 本地 id -> 最大时间戳（与 _mergeById 同口径：updatedAt/createdAt/orderDate/payDate 取较新）
+      const _localTs = {};
+      _localNow.forEach((o) => {
+        if(!o || o.id == null || _exclude.has(o.id)) return;
+        const t = o.updatedAt || o.createdAt || o.orderDate || o.payDate || '';
+        _localTs[o.id] = this._tsUtc(t);
+      });
+
+      // 比对：云端有、本地缺失、或云端更新时间更新 → 需全量补拉；同时收集全域 updatedAt 供游标
+      const _needIds = [];
+      const _cursorRows = [];
+      _idx.forEach((r) => {
+        if(!r || r.id == null) return;
+        _cursorRows.push({ updatedAt: r.updated_at });
+        const ct = this._tsUtc(r.updated_at);
+        const lt = _localTs[r.id] || 0;
+        if(ct > lt) _needIds.push(r.id);
+      });
+
+      // 阶段二：只拉缺口单的全量数据；缺口过大（全新安装/长期离线）退化为全表，避免 in() 超长 URL
+      let _gapFilled = [];
+      if(_needIds.length){
+        if(_needIds.length > 300){
+          const { data: _all, error: _err } = await withTimeout(
+            window._sbpbClient.from('orders').select('*').order('created_at', { ascending: true }),
+            30000, 'repairMissingOrders');
+          if(_err || !Array.isArray(_all) || !_all.length) return false;
+          _gapFilled = this._toCamel(_all);
+        } else {
+          const { data: _gap, error: _err } = await withTimeout(
+            window._sbpbClient.from('orders').select('*').in('id', _needIds),
+            30000, 'repairMissingOrdersGap');
+          if(_err || !Array.isArray(_gap)) return false;
+          _gapFilled = this._toCamel(_gap);
+        }
+      }
+
+      const _merged = this._mergeById(_localNow, _gapFilled, this.get('_deletedOrderIds', []), 'orders');
       localStorage.setItem('soms_orders', JSON.stringify(_merged));
-      // 游标取云端最大 updatedAt，但封顶为当前时间（v20260926 修复：此前直接用最大值会落到未来，
+      // 游标取云端全域最大 updatedAt，但封顶为当前时间-60s（v20260926 修复：此前直接用最大值会落到未来，
       // 导致之后 gte(updated_at, 未来) 恒空 → 新订单同步不到，表现为「订单突然消失」）
-      const _m = this._safeCursorFrom(_cloudAll, this._cursorCamField('orders'));
+      const _m = this._safeCursorFrom(_cursorRows, 'updatedAt');
       if(_m) this._setIncTs(_m);
-      console.warn('['+(tag||'repair')+'] 订单补洞完成：本地', (_localNow||[]).length, '条 →', _merged.length, '条');
+      console.warn('['+(tag||'repair')+'] 订单补洞完成：本地', (_localNow||[]).length, '条 →', _merged.length, '条（补拉', _needIds.length, '单）');
       return true;
     }catch(e){
       console.warn('['+(tag||'repair')+'] 订单补洞失败:', e && e.message);
@@ -3196,6 +3238,9 @@ const DB = {
     // 恢复被脏游标跳过的订单（如 ORD20260908-dndk6491026）。
     try{ this._fixFutureCursor(); }catch(e){ console.warn('[cursor] 前置自检异常:', e && e.message); }
     try{ await this._maybeBackfillOrders('v20260930'); }catch(e){ console.warn('[backfill] 异常:', e && e.message); }
+    // v20260911 一次性全量对齐：所有设备（含大仙/李超/邢勇/测试等各销售）下次打开时强制全量重拉订单并重建增量游标，
+    // 根治「多端游标被毒化 → admin 已下单却仍显示待下单」的漏单。每台设备仅跑一次（tag 未消费才执行）。
+    try{ await this._maybeBackfillOrders('v20260911-heal-all'); }catch(e){ console.warn('[backfill-heal] 异常:', e && e.message); }
     // 启动/每次全量同步前，先尝试补传之前因网络/超时导致未上云的订单（v2026081607 修复「提交成功但云端没记录」）
     try{ await retryPendingOrderSyncs(); }catch(e){ console.warn('补传待重试订单失败:', e.message); }
     this._setSyncStatus('syncing');
@@ -5807,24 +5852,43 @@ function formatOrderDate(d){
   return d;
 }
 // 订单创建时间统一格式：2026-08-02 19:30（YYYY-MM-DD HH:mm，两位、无秒）
+// v20260911 时区修复（彻底、零回退）：
+//  - 2026-09-09 起 nowStr 改为写【真 UTC】，云端 created_at 是带时区的绝对时刻 → 需用 Intl 按北京时间(Asia/Shanghai) 渲染；
+//  - 此前老单 created_at 的数字本身即北京时间（历史 nowStr 写北京时间裸串、被当 UTC 存，相当于存储多 8h）→ 直接显示数字才对。
+//  以创建日期 2026-09-09 为分界分别处理，新老订单时间都正确，且不会因为改显示把老单整体带偏。
 function formatOrderDateTime(d){
   if(!d) return '-';
-  let s = ('' + d).trim().replace('T', ' ').replace(/\+.*$/, '');
-  // 去掉秒
-  s = s.replace(/:\d{1,2}$/, '');
-  const parts = s.split(' ');
-  let datePart = parts[0] || '';
-  let timePart = parts[1] || '';
-  const dp = datePart.split('-');
-  if(dp.length === 3){
-    datePart = dp[0] + '-' + String(parseInt(dp[1],10)||0).padStart(2,'0') + '-' + String(parseInt(dp[2],10)||0).padStart(2,'0');
+  const s = ('' + d).trim();
+  const isLegacy = s.slice(0,10) < '2026-09-09';   // 老单：数字即北京时间
+  if(isLegacy){
+    // 老单：沿用原逻辑——去 T、去时区后缀、取日期+时分数字（不做时区换算）
+    let t = s.replace('T', ' ').replace(/\+.*$/, '');
+    t = t.replace(/:\d{1,2}$/, '');
+    const parts = t.split(' ');
+    let datePart = parts[0] || '';
+    let timePart = parts[1] || '';
+    const dp = datePart.split('-');
+    if(dp.length === 3){
+      datePart = dp[0] + '-' + String(parseInt(dp[1],10)||0).padStart(2,'0') + '-' + String(parseInt(dp[2],10)||0).padStart(2,'0');
+    }
+    if(timePart){
+      const tp = timePart.split(':');
+      timePart = String(parseInt(tp[0],10)||0).padStart(2,'0') + ':' + String(parseInt(tp[1],10)||0).padStart(2,'0');
+    }
+    const out = timePart ? (datePart + ' ' + timePart) : datePart;
+    return out || s;
   }
-  if(timePart){
-    const tp = timePart.split(':');
-    timePart = String(parseInt(tp[0],10)||0).padStart(2,'0') + ':' + String(parseInt(tp[1],10)||0).padStart(2,'0');
+  // 新单：按北京时间渲染绝对时刻
+  const date = new Date(d);
+  if(isNaN(date.getTime())) return s;
+  try{
+    const p = new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(date);
+    const map={}; p.forEach(x=>map[x.type]=x.value);
+    return (map.year||'')+'-'+(map.month||'')+'-'+(map.day||'')+' '+(map.hour||'')+':'+(map.minute||'');
+  }catch(e){
+    const pad=n=>String(n).padStart(2,'0');
+    return date.getFullYear()+'-'+pad(date.getMonth()+1)+'-'+pad(date.getDate())+' '+pad(date.getHours())+':'+pad(date.getMinutes());
   }
-  const out = timePart ? (datePart + ' ' + timePart) : datePart;
-  return out || ('' + d);
 }
 // 点击"搜索"按钮触发搜索（姓名/电话/商品）
 function doOrderSearch(){
@@ -8604,26 +8668,39 @@ function copyFullOrderInfo(orderId){
 // 导出用日期格式化：2026/8/1 19:07:00（斜杠分隔，无前导零，含秒）
 function fmtExportDateTime(dtStr){
   if(!dtStr) return '';
-  // 约定：createdAt 语义为「北京时间墙钟」字符串（nowStr 生成 / 云端同步回来带 Z 的 ISO，其数字即北京时刻）。
-  // 直接提取 Y-M-D H:M:S 数字分量格式化，不依赖 new Date 的时区解释——
-  // 否则带 Z 的 ISO 会被当 UTC 再叠加本地 +8h，使 14:25 显示成 22:25（导出时间对不上）。
-  // 与详情页 formatOrderDateTime 同一处理思路：去 T、去时区后缀后取数字。
-  var s = ('' + dtStr).trim().replace('T', ' ').replace(/[Zz]$/, '').replace(/[+\-]\d{2}:?\d{2}.*$/, '');
-  var m = s.match(/(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/);
-  if(m){
-    var Y=+m[1], Mo=+m[2], D=+m[3], H=+m[4], Mi=+m[5], S=(m[6]!==undefined?+m[6]:0);
-    return Y + '/' + Mo + '/' + D + ' ' +
-      String(H).padStart(2,'0') + ':' + String(Mi).padStart(2,'0') + ':' + String(S).padStart(2,'0');
+  // v20260911 时区修复：2026-09-09 起 nowStr 改为写【真 UTC】，createdAt 是带时区的绝对时刻 → 按北京时间(Asia/Shanghai) 渲染；
+  // 此前老单数字本身即北京时间（历史 nowStr 写北京时间裸串、被当 UTC 存，存储多 8h）→ 直接显示数字才对。以 2026-09-09 分界。
+  var s = ('' + dtStr).trim();
+  var isLegacy = s.slice(0,10) < '2026-09-09';
+  if(isLegacy){
+    // 老单：去 T、去时区后缀后取数字（Y/M/D H:M:S），不做时区换算
+    var t = s.replace('T', ' ').replace(/[Zz]$/, '').replace(/[+\-]\d{2}:?\d{2}.*$/, '');
+    var m = t.match(/(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/);
+    if(m){
+      var Y=+m[1], Mo=+m[2], D=+m[3], H=+m[4], Mi=+m[5], S=(m[6]!==undefined?+m[6]:0);
+      return Y + '/' + Mo + '/' + D + ' ' +
+        String(H).padStart(2,'0') + ':' + String(Mi).padStart(2,'0') + ':' + String(S).padStart(2,'0');
+    }
+  } else {
+    // 新单：按北京时间渲染绝对时刻（含秒）
+    var d = new Date(dtStr);
+    if(!isNaN(d.getTime())){
+      try{
+        var p = new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).formatToParts(d);
+        var map={}; p.forEach(function(x){ map[x.type]=x.value; });
+        return (map.year||'')+'/'+(map.month||'')+'/'+(map.day||'')+' '+(map.hour||'')+':'+(map.minute||'')+':'+(map.second||'');
+      }catch(e){}
+    }
   }
-  // 兜底：无法匹配标准格式时，按北京时间格式化（避免极端脏数据直接显示 raw 串）
-  var d = new Date(dtStr);
-  if(isNaN(d.getTime())) return ('' + dtStr);
+  // 兜底：按北京时间格式化（避免极端脏数据直接显示 raw 串）
+  var d2 = new Date(dtStr);
+  if(isNaN(d2.getTime())) return s;
   try{
-    var p = new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).formatToParts(d);
-    var map={}; p.forEach(function(x){ map[x.type]=x.value; });
-    return (map.year||'')+'/'+(map.month||'')+'/'+(map.day||'')+' '+(map.hour||'')+':'+(map.minute||'')+':'+(map.second||'');
+    var p2 = new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).formatToParts(d2);
+    var map2={}; p2.forEach(function(x){ map2[x.type]=x.value; });
+    return (map2.year||'')+'/'+(map2.month||'')+'/'+(map2.day||'')+' '+(map2.hour||'')+':'+(map2.minute||'')+':'+(map2.second||'');
   }catch(e){
-    return d.getFullYear()+'/'+(d.getMonth()+1)+'/'+d.getDate()+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
+    return d2.getFullYear()+'/'+(d2.getMonth()+1)+'/'+d2.getDate()+' '+String(d2.getHours()).padStart(2,'0')+':'+String(d2.getMinutes()).padStart(2,'0')+':'+String(d2.getSeconds()).padStart(2,'0');
   }
 }
 
