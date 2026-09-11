@@ -1480,7 +1480,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260940</div>
+          <div class="brand-sub">v20260941</div>
         </div>
       </div>
     </div>
@@ -3171,6 +3171,27 @@ const DB = {
         });
         return f;
       });
+    }
+    // v20260911 推送侧状态保护（镜像 pull 侧 _mergeById 的 rank 保护）：
+    // 推送脏行前批量取云端 status，若本地 status 等级低于云端则改用云端 status，
+    // 杜绝「本地陈旧 feedback 副本把云端已完成覆盖回待反馈」（多端反馈无效根因，见 2431 行注释）。
+    if(key === 'orders' && snakeData && snakeData.length){
+      try{
+        const _ids = snakeData.map(function(o){ return o.id; }).filter(Boolean);
+        if(_ids.length){
+          const { data: _cr } = await withTimeout(
+            window._sbpbClient.from('orders').select('id, status').in('id', _ids),
+            8000, '_pushDirtyRows status-guard'
+          );
+          const _cloudSt = {};
+          (_cr||[]).forEach(function(r){ if(r && r.id) _cloudSt[r.id] = r.status; });
+          const _rk = function(s){ return ({pending:0,confirmed:1,shipped:1,feedback:2,feedback_done:3,completed:4}[s]||0); };
+          snakeData.forEach(function(o){
+            const _cs = _cloudSt[o.id];
+            if(_cs != null && _rk(o.status) < _rk(_cs)){ o.status = _cs; }
+          });
+        }
+      }catch(e){ console.warn('[status-guard] 跳过:', e && e.message); }
     }
     // orders 走通用 snakeData（含 updated_at，云端 trg_orders_updated_at 触发器会再刷新为 now()）。
     try{
