@@ -1480,7 +1480,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260943</div>
+          <div class="brand-sub">v20260944</div>
         </div>
       </div>
     </div>
@@ -12285,15 +12285,21 @@ function _productRowToSnake(p){
   // 推送必须只包含云端存在的列，否则 PostgREST 报 PGRST204「列不存在」导致整批 400 失败，
   // 表现为“销售新增/编辑的商品推不上云、管理员在商品管理查不到”（这是比成本漏写更底层的同步 bug）。
   // 合并时间戳（_mergeById）对云端商品回退用 created_at，本地商品用 updatedAt（毫秒，本地优先），编辑仍能跨端收敛。
-  return {
+  const row = {
     id: p.id,
     name: p.name,
     price: p.price,
     cost: p.cost,
     status: p.status || 'on',
-    category: p.category || '',
-    created_at: p.createdAt || p.created_at || new Date().toISOString().slice(0,19).replace('T',' ')
+    category: p.category || ''
   };
+  // 2026-09-13 修复：绝不回退 new Date() 写 created_at。
+  // 只有商品自身带创建时间（本地 createdAt 或 云端 created_at）才写入；
+  // 否则 upsert 时不传该列——PostgreSQL 对已存在行不做更新，从而保留云端真实 created_at，
+  // 避免批量/单条上推把全库 created_at 洗成当前时间（曾导致 73 个商品成本连带失真）。
+  const _ca = p.createdAt || p.created_at;
+  if(_ca) row.created_at = _ca;
+  return row;
 }
 async function pushSingleProductToCloud(product){
   if(!product || !window._sbpbClient) return;
