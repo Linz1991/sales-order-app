@@ -1480,7 +1480,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260945</div>
+          <div class="brand-sub">v20260946</div>
         </div>
       </div>
     </div>
@@ -3135,6 +3135,32 @@ const DB = {
       snakeData = snakeData.map(function(o){ const f={}; Object.keys(o).forEach(function(k){ if(orderCols.has(k)) f[k]=o[k]; }); return f; });
       // 确保 updated_at 非空，与 syncTable 一致
       snakeData.forEach(function(o){ if(o.updated_at == null || o.updated_at === ''){ o.updated_at = (typeof window.nowStr === 'function' ? window.nowStr().slice(0,19) : ''); } });
+      // v20260946：补齐 NOT NULL 列默认值。_pushDirtyRows 走白名单过滤，旧单/新单可能缺 _deleted 等 NOT NULL 字段，
+      // 缺失时传 null 会触发 "null value in column _deleted" 导致整批 upsert 失败 → 订单永久卡本地。
+      const _orderColDefaults = {
+        id:'', customer_id:'', customer_name:'', contact:'', phone:'', region:'', address:'',
+        sales_id:'', sales_name:'', items:'[]', total:0, status:'pending', type:'normal',
+        order_date:'', remark:'', created_at:null, shipped_at:null, feedback_at:null,
+        synced_at:null, updated_at:null,
+        _deleted:false, _deleted_at:null, _deleted_by:'',
+        province:'', city:'', district:'', completion_date:'', images:'[]',
+        payment_method:'', collected_amount:0, full_payment:0, deposit:0, final_payment:0,
+        locked_by:'', locked_at:null, after_sale_loss:0, after_sale_loss_synced_at:'',
+        completed_at:null, confirmed_at:null,
+        no_tracking:false, tracking_no:'', express_company:'', undo_at:null
+      };
+      snakeData = snakeData.map(function(o){
+        const f = {};
+        Object.keys(_orderColDefaults).forEach(function(k){
+          var v = o.hasOwnProperty(k) ? o[k] : _orderColDefaults[k];
+          if(k === 'created_at' && (v == null || v === '')) v = new Date().toISOString();
+          if(k === '_deleted' && (v == null || v === '')) v = false;
+          if(k === 'no_tracking' && (v == null || v === '')) v = false;
+          if(k === 'total' && (v == null || v === '')) v = 0;
+          f[k] = v;
+        });
+        return f;
+      });
     }
     // v20260907：小表（customers/aftersales/payments/commissions）脏行上推也加列白名单，
     // 与 syncTable 保持一致，避免把本地多余字段（gender/status/stage 等）推上云导致 PGRST204 整批失败。
@@ -3144,7 +3170,9 @@ const DB = {
       snakeData.forEach(function(o){ if(o.created_at == null || o.created_at === ''){ o.created_at = (typeof window.nowStr === 'function' ? window.nowStr().slice(0,19) : ''); } });
     }
     if(key === 'aftersales'){
-      const asCols = new Set(['id','order_id','customer_name','phone','sales_id','sales_name','items','reason','images','status','remark','tracking_no','updated_at']);
+      // v20260946：tracking_no 不在云端 aftersales 实际列中，推上去会报 schema cache 错误；
+      // 该字段已通过 items[0]._afterMeta 塞进 items JSONB 随行同步，这里不推顶层列。
+      const asCols = new Set(['id','order_id','customer_name','phone','sales_id','sales_name','items','reason','images','status','remark','updated_at']);
       snakeData = snakeData.map(function(o){ const f={}; Object.keys(o).forEach(function(k){ if(asCols.has(k)) f[k]=o[k]; }); return f; });
       snakeData.forEach(function(o){ if(o.updated_at == null || o.updated_at === ''){ o.updated_at = (typeof window.nowStr === 'function' ? window.nowStr().slice(0,19) : ''); } });
     }
@@ -7754,7 +7782,8 @@ function submitOrder(){
     completionDate: (newOrderType==='warehouse'||newOrderType==='door') ? (document.getElementById('newCompletionDate') ? document.getElementById('newCompletionDate').value.trim() : '') : '',
     remark,
     images: newOrderImages,
-    createdAt: nowStr()
+    createdAt: nowStr(),
+    _deleted: false
   };
 
   // 核对订单金额 + 收款方式
