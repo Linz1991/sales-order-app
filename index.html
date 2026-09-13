@@ -1480,7 +1480,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260944</div>
+          <div class="brand-sub">v20260945</div>
         </div>
       </div>
     </div>
@@ -4961,6 +4961,18 @@ function startAutoSync(){
     }
   });
   window.addEventListener('offline', function(){ if(typeof updateSyncBadge === 'function') updateSyncBadge('offline'); });
+  // 周期兜底重试「待同步订单」：队列为空时不发任何网络请求（零 egress），仅当存在未同步订单时才补推。
+  // v20260915 关闭了全局轮询，但「提交失败→待重试队列」必须有人兜底重试，否则订单会永久卡在本地。
+  // 此定时器每 30 分钟兜底一次（轻量版只 upsert 脏订单、不拉全表，流量可忽略）。
+  // 真正的高频救单不靠它：用户切回提交设备（visibilitychange 触发 syncFromCloud 立即重试）+ 成功页/红条的「立即重试」按钮
+  // 才是主力；半小时间隔仅作最后兜底，兼顾省流量与不漏单。
+  if(!window._pendingRetryTimer){
+    try{
+      window._pendingRetryTimer = setInterval(function(){
+        try{ if(window._sbpbClient) retryPendingOrdersLight(); }catch(e){}
+      }, 1800000);
+    }catch(e){}
+  }
 }
 
 // 页面从后台切回前台时，若正停留在首页/订单/留仓/上门/商品列表，强制刷新一次云端数据
@@ -7797,9 +7809,11 @@ function submitOrder(){
   // 修复「提交订单成功但云端没记录、其他设备看不到」重大 bug：旧逻辑只 fire-and-forget，
   // 失败被吞、本地有、云端无，订单在管理员/其他销售端永远不可见。
   pushNewOrderToCloudWithRetry(orderId, 3).then(function(result){
+    try{ refreshUnsyncedBanner(); }catch(e){}
     if(result && result.ok){
       // 推送成功：记录本次提交时间，作为后续「_lastSubmitSucceededAt」调试信号
       window._lastSubmitSucceededAt = Date.now();
+      if(typeof showToast === 'function') showToast('订单已同步到云端', 'success', 3000);
     } else {
       // 3 次仍失败：把订单 id 写入待重试队列，下次 syncTable 自动补传；同时给用户明确提示
       try {
@@ -7808,12 +7822,14 @@ function submitOrder(){
         localStorage.setItem('soms__pendingOrderSyncIds', JSON.stringify(q));
       } catch(e){ /* 忽略 */ }
       if(typeof showToast === 'function'){
-        showToast('订单已生成但云端同步失败（已加入重试队列），请勿关闭页面，5 秒后将自动重试', 'error', 6000);
+        showToast('订单已生成但云端同步失败（已加入重试队列），请勿关闭页面，稍后将自动重试', 'error', 6000);
       }
+      try{ refreshUnsyncedBanner(); }catch(e){}
       // 5 秒后再尝试一次（兜底）
       setTimeout(function(){
         if(window._sbpbClient){
           DB.syncTable('orders').catch(function(){});
+          try{ refreshUnsyncedBanner(); }catch(e){}
         }
       }, 5000);
     }
@@ -7857,21 +7873,116 @@ async function pushNewOrderToCloudWithRetry(orderId, maxRetries){
   return { ok: false, attempts: maxRetries };
 }
 
+// 未同步订单红条：销售提交后若云端同步失败，持续在页面顶部红色提示，并随重试进度自动消失。
+// 目的：杜绝「提交成功页已显示、但订单其实没进云端、用户误以为完成而切设备」的静默漏单。
+function refreshUnsyncedBanner(){
+  try{
+    let q = [];
+    try{ q = JSON.parse(localStorage.getItem('soms__pendingOrderSyncIds') || '[]'); }catch(e){ q = []; }
+    q = Array.isArray(q) ? q : [];
+    let bar = document.getElementById('somsUnsyncedBar');
+    if(q.length === 0){
+      if(bar) bar.style.display = 'none';
+      return;
+    }
+    if(!bar){
+      bar = document.createElement('div');
+      bar.id = 'somsUnsyncedBar';
+      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#dc2626;color:#fff;font-size:13px;line-height:1.5;padding:8px 12px;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.25);font-weight:600';
+      document.body.appendChild(bar);
+    }
+    bar.style.display = 'block';
+    bar.textContent = '⚠ 有 ' + q.length + ' 笔订单尚未同步到云端（管理员/其他设备看不到），正在自动重试，请勿关闭本页面或切换设备';
+  }catch(e){}
+}
+
 // 启动时 + 每次 syncTable 之前：取待重试订单 id 列表并优先补传
 async function retryPendingOrderSyncs(){
   if(!window._sbpbClient) return;
   let q;
   try{ q = JSON.parse(localStorage.getItem('soms__pendingOrderSyncIds') || '[]'); }catch(e){ q = []; }
-  if(!Array.isArray(q) || q.length === 0) return;
+  if(!Array.isArray(q) || q.length === 0){ try{ refreshUnsyncedBanner(); }catch(e){} return; }
   const remain = [];
   for(const id of q){
     const r = await pushNewOrderToCloudWithRetry(id, 2);
     if(!r.ok) remain.push(id);
+    else if(typeof showToast === 'function') showToast('订单 ' + id + ' 已成功同步到云端', 'success');
   }
   try{ localStorage.setItem('soms__pendingOrderSyncIds', JSON.stringify(remain)); }catch(e){}
+  try{ refreshUnsyncedBanner(); }catch(e){}
+}
+
+// 轻量兜底重试（专供 30 分钟周期定时器调用）：只上推脏订单，不拉全表增量。
+// 区别于 retryPendingOrderSyncs（走 syncTable 会先拉全表），本函数每轮只产生「upsert 脏订单 + 每笔一条 select 验证」的极小流量（<2KB），
+// 即使存在漏单且提交设备常开 24h，极限也仅 ~0.1MB/天，远低于 Supabase 免费版 35MB/天 的安全线，杜绝 egress 超标。
+// 队列为空时本函数直接 return，零请求、零流量。
+async function retryPendingOrdersLight(){
+  if(!window._sbpbClient) return;
+  let q;
+  try{ q = JSON.parse(localStorage.getItem('soms__pendingOrderSyncIds') || '[]'); }catch(e){ q = []; }
+  if(!Array.isArray(q) || q.length === 0){ try{ refreshUnsyncedBanner(); }catch(e){} return; }
+  // 确保这些待重试订单被标记为脏（即便之前 dirty 被清过，也能重新上推，避免漏推）
+  try{ DB._addDirty('orders', q); }catch(e){}
+  // 只上推脏订单：_pushDirtyRows 内部只 upsert 脏行，不拉全表增量
+  try{ await DB._pushDirtyRows('orders'); }catch(e){ console.warn('轻量补推失败:', e && e.message); }
+  // 单笔验证这些订单是否已真正上云（请求极小：每笔一条 select id）
+  const remain = [];
+  for(const id of q){
+    try{
+      const { data, error } = await window._sbpbClient.from('orders').select('id').eq('id', id).maybeSingle();
+      if(data && !error && data.id === id){
+        if(typeof showToast === 'function') showToast('订单 ' + id + ' 已成功同步到云端', 'success');
+      } else { remain.push(id); }
+    }catch(e){ remain.push(id); }
+  }
+  try{ localStorage.setItem('soms__pendingOrderSyncIds', JSON.stringify(remain)); }catch(e){}
+  try{ refreshUnsyncedBanner(); }catch(e){}
 }
 
 /* ============ 提交订单成功页 ============ */
+// 成功页顶部「云端同步状态」展示：订单是否已进入云端（否则管理员/其他设备看不到）
+function orderSyncStateHtml(orderId){
+  let q = [];
+  try{ q = JSON.parse(localStorage.getItem('soms__pendingOrderSyncIds') || '[]'); }catch(e){ q = []; }
+  const pending = Array.isArray(q) && q.indexOf(orderId) >= 0;
+  if(pending){
+    return '<div id="orderSyncStateBox" data-pending="1" style="margin:10px auto 0;max-width:560px;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;border-radius:10px;padding:10px 14px;font-size:13px;line-height:1.5">'
+      + '⚠ <b>订单尚未同步到云端</b>（管理员/其他设备暂时看不到）。正在自动重试，请保持本页面打开、不要切换设备。'
+      + '<button onclick="retryThisOrder(\'' + orderId + '\')" style="margin-left:8px;padding:4px 10px;border:1px solid #fdba74;background:#fff;color:#9a3412;border-radius:6px;cursor:pointer;font-size:12px">立即重试</button>'
+      + '<span id="orderSyncRetryMsg" style="margin-left:8px"></span></div>';
+  }
+  return '<div id="orderSyncStateBox" data-pending="0" style="margin:10px auto 0;max-width:560px;background:#ecfdf5;border:1px solid #6ee7b7;color:#065f46;border-radius:10px;padding:10px 14px;font-size:13px">✅ 已同步到云端，管理员和其他设备可正常查看</div>';
+}
+// 成功页期间每 2 秒自检一次同步状态，状态翻转时更新提示框（不重建整页，避免闪烁）
+function startOrderSyncWatch(orderId){
+  try{ if(window._orderSyncWatch) clearInterval(window._orderSyncWatch); }catch(e){}
+  window._orderSyncWatch = setInterval(function(){
+    const box = document.getElementById('orderSyncStateBox');
+    if(!box){ try{ clearInterval(window._orderSyncWatch); }catch(e){} return; }
+    let q = [];
+    try{ q = JSON.parse(localStorage.getItem('soms__pendingOrderSyncIds') || '[]'); }catch(e){ q = []; }
+    const pending = Array.isArray(q) && q.indexOf(orderId) >= 0;
+    if(pending !== (box.getAttribute('data-pending') === '1')){
+      const tmp = document.createElement('div'); tmp.innerHTML = orderSyncStateHtml(orderId);
+      const nb = tmp.firstChild;
+      if(nb){ nb.setAttribute('data-pending', pending ? '1' : '0'); box.replaceWith(nb); }
+    }
+  }, 2000);
+}
+// 成功页「立即重试」按钮：手动再推一次，并把结果回写到待重试队列与红条
+function retryThisOrder(orderId){
+  const msg = document.getElementById('orderSyncRetryMsg');
+  if(msg) msg.textContent = '重试中…';
+  pushNewOrderToCloudWithRetry(orderId, 3).then(function(r){
+    if(r && r.ok){
+      try{ const q = (JSON.parse(localStorage.getItem('soms__pendingOrderSyncIds')||'[]')).filter(function(x){ return x !== orderId; }); localStorage.setItem('soms__pendingOrderSyncIds', JSON.stringify(q)); }catch(e){}
+      if(msg) msg.textContent = '已同步';
+      try{ refreshUnsyncedBanner(); }catch(e){}
+    } else {
+      if(msg) msg.textContent = '仍失败，请保持页面打开稍后自动重试';
+    }
+  });
+}
 function renderOrderSuccess(saved){
   const orderId = window._currentOrderId;
   const order = (DB.get('orders') || []).find(o => o.id === orderId);
@@ -7901,6 +8012,7 @@ function renderOrderSuccess(saved){
     <div class="order-success-wrap">
       <div class="order-success-title">${successTitle}</div>
       <div class="order-success-subtitle">订单号：${order.id}</div>
+      ${orderSyncStateHtml(order.id)}
 
       <div class="order-success-card">
         <h5>📋 订单信息</h5>
@@ -7950,6 +8062,7 @@ function renderOrderSuccess(saved){
       <button class="order-success-btn" onclick="window._orderStatus='pending';window._orderTab='pending';navigate('orders')">查看订单</button>
     </div>
   `;
+  try{ startOrderSyncWatch(order.id); }catch(e){}
 }
 
 function renderOrderSavedSuccess(){
