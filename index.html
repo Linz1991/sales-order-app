@@ -1480,7 +1480,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260941</div>
+          <div class="brand-sub">v20260943</div>
         </div>
       </div>
     </div>
@@ -6342,8 +6342,8 @@ async function renderOrders(){
     if(status === 'confirmed' || status === 'feedback'){
       // 销售端「已下单/待反馈」：展开商品明细（客户 | 商品名称 | 数量 | 售价 | 操作），普通/留仓/上门统一
       html += '<div class="table-wrap"><table><thead>';
-      html += '<tr><th rowspan="2">客户</th><th colspan="3" style="text-align:center">商品明细</th><th rowspan="2">操作</th></tr>';
-      html += '<tr><th>商品名称</th><th style="text-align:center">数量</th><th style="text-align:right">售价</th></tr>';
+      html += '<tr><th rowspan="2">客户</th><th colspan="3" style="text-align:center">商品明细</th><th rowspan="2" style="width:210px;text-align:center">操作</th></tr>';
+      html += '<tr><th>商品名称</th><th style="width:50px;text-align:center">数量</th><th style="width:80px;text-align:right">售价</th></tr>';
       html += '</thead><tbody>';
       if(filtered.length){
         filtered.forEach(function(o){
@@ -6357,8 +6357,10 @@ async function renderOrders(){
           html += '</tbody></table></td>';
           let _opCell = '<td style="text-align:center;vertical-align:top">';
           if(o.status === 'feedback' && currentUser.role !== 'operator'){
-            _opCell += '<div style="display:flex;gap:4px;justify-content:center;margin-bottom:4px"><button class="btn btn-warning btn-sm" onclick="markOrderFeedbackDone(\''+o.id+'\')">反馈</button></div>';
+            _opCell += '<div style="display:flex;gap:6px;justify-content:center;flex-wrap:wrap">';
+            _opCell += '<button class="btn btn-warning btn-sm" onclick="markOrderFeedbackDone(\''+o.id+'\')">反馈</button>';
             _opCell += '<button class="btn btn-default btn-sm" title="一键复制物流信息" onclick="copyLogisticsInfo(\''+o.id+'\')">一键复制物流信息</button>';
+            _opCell += '</div>';
           } else {
             _opCell += '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>';
           }
@@ -7285,8 +7287,29 @@ function confirmManualAddProduct(){
   const price = parseInt(document.getElementById('manualProdPrice').value) || 0;
   if(!name){ showToast('请输入商品名称','error'); return; }
   if(price <= 0){ showToast('请输入销售价','error'); return; }
-  // 创建商品记录到商品库（成本默认等于售价，并标记为销售自动新增，待管理员校准真实采购成本）
+  // 2026-09-12：手动添加前按名称查重——已下架的同名商品禁止销售端添加（防止下架商品以重复记录变相重新上架）；在售同名商品直接复用，避免重复记录
   const products = DB.get('products');
+  const dupByName = products.find(p => p && p.name && p.name.trim() === name);
+  if(dupByName && dupByName.status === 'off'){
+    showToast('「'+dupByName.name+'」已被下架，销售端无法添加；如需恢复上架请联系管理员','error');
+    return;
+  }
+  if(dupByName){
+    // 商品库已有同名在售商品：直接按库内价格加购，不再新建重复记录
+    const existing = cart.find(c => c.productId === dupByName.id);
+    if(existing){
+      existing.qty += 1;
+      existing.subtotal = existing.price * existing.qty;
+    }else{
+      cart.push({ productId: dupByName.id, name: dupByName.name, price: dupByName.price, cost: dupByName.cost, qty: 1, subtotal: dupByName.price, stock: '否' });
+    }
+    renderCart();
+    document.getElementById('productSearch').value = '';
+    document.getElementById('searchResults').style.display = 'none';
+    showToast('商品库已有「'+dupByName.name+'」，已按库内售价直接添加','success');
+    return;
+  }
+  // 创建商品记录到商品库（成本默认等于售价，并标记为销售自动新增，待管理员校准真实采购成本）
   const newProdId = DB.uid('p_');
   const newProd = {
     id: newProdId,
@@ -9321,6 +9344,29 @@ function confirmManualAddToOrder(){
   if(!name){ showToast('请输入商品名称','error'); return; }
   if(price <= 0){ showToast('请输入销售价','error'); return; }
   const products = DB.get('products');
+  // 2026-09-12：手动添加前按名称查重——已下架的同名商品禁止销售端添加；在售同名商品直接复用，避免重复记录
+  const dupByName = products.find(p => p && p.name && p.name.trim() === name);
+  if(dupByName && dupByName.status === 'off'){
+    showToast('「'+dupByName.name+'」已被下架，销售端无法添加；如需恢复上架请联系管理员','error');
+    return;
+  }
+  if(dupByName){
+    // 商品库已有同名在售商品：直接按库内价格加入订单，不再新建重复记录
+    const orderId0 = window._currentOrderId;
+    const orders0 = DB.get('orders');
+    const idx0 = orders0.findIndex(o => o.id === orderId0);
+    if(idx0 >= 0){
+      orders0[idx0].items.push({ productId: dupByName.id, name: dupByName.name, price: dupByName.price, cost: dupByName.cost, qty: 1, subtotal: dupByName.price, stock: '否' });
+      orders0[idx0].total += dupByName.price;
+      orders0[idx0].updatedAt = nowStr();
+      DB.set('orders', orders0);
+      if(typeof schedulePushToCloud === 'function') schedulePushToCloud(); // 立即同步上云，保证多端一致
+    }
+    window._orderEditMode = true;
+    renderOrderDetail();
+    showToast('商品库已有「'+dupByName.name+'」，已按库内售价直接添加','success');
+    return;
+  }
   const newProdId = DB.uid('p_');
   const newProd = { id: newProdId, name: name, category: '自定义', price: price, cost: price, status: 'on', createdBy: currentUser.id, auto_added: true, createdAt: nowStr() };
   products.push(newProd);
