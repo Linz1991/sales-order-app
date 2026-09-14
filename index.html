@@ -1480,7 +1480,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260947</div>
+          <div class="brand-sub">v20260948</div>
         </div>
       </div>
     </div>
@@ -3416,6 +3416,9 @@ const DB = {
     const { data, error } = await withTimeout(query, 20000, 'loadOrdersFromCloud' + (useInc ? ' inc' : ' full'));
     if(error) throw error;
     const cloud = this._toCamel(data || []);
+    // v20260947 防护：items 可能是 JSON 字符串（如 ORD20260913-verifytest01 的 '[]'），
+    // 导致渲染时 (o.items||[]).some() 炸「some is not a function」。统一归一化为数组。
+    (cloud || []).forEach(function(o){ if(o){ if(typeof o.items === 'string'){ try{ o.items = JSON.parse(o.items); }catch(e){ o.items = []; } } if(!Array.isArray(o.items)){ o.items = []; } } });
     let maxTs = this._getIncTs() || incCursor || '';
     // v20260910：maxTs 按表配置字段取值
     const _cfOrdersCam = this._cursorCamField('orders');
