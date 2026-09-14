@@ -1480,7 +1480,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260946</div>
+          <div class="brand-sub">v20260947</div>
         </div>
       </div>
     </div>
@@ -3633,171 +3633,13 @@ function initData(){
     ]);
   }
 
-  // 商品数据（从商品目录表导入，158条）
-  // 仅在本地与云端都没有商品时才写入种子，避免覆盖用户新增/改价的商品，也避免污染云端
-  const existingProducts = DB.get('products', null);
-  if(!existingProducts){
-    DB.set('products', [
-      {id:'p_001', name:'宫尾 单盖 3l', price:950, cost:690, status:'on', category:'其他'},
-      {id:'p_002', name:'宫尾双盖 D285xH240      5L', price:1050, cost:850, status:'on', category:'其他'},
-      {id:'p_003', name:'马歇尔stanmore3', price:2999, cost:2600, status:'on', category:'音响'},
-      {id:'p_004', name:'清闲椅子oc1pro白48cm加长版', price:5999, cost:4200, status:'on', category:'座椅'},
-      {id:'p_005', name:'ITO HIO2 TRUNK 平原灰30英寸', price:1499, cost:1299, status:'on', category:'其他'},
-      {id:'p_006', name:'追觅 x60pro  超薄上下水 版本', price:1399, cost:1180, status:'on', category:'清洁电器'},
-      {id:'p_007', name:'小度添添闺蜜机 pro4k max', price:3099, cost:2200, status:'on', category:'其他'},
-      {id:'p_008', name:'绝影自发电迷你椭圆机XJ-XE30B1', price:2399, cost:1999, status:'on', category:'健康电器'},
-      {id:'p_009', name:'唯米乐 14cm 珐琅铸铁经典款', price:3499, cost:2800, status:'on', category:'其他'},
-      {id:'p_010', name:'骑士桶(WESCO)垃圾桶 12L', price:1999, cost:1599, status:'on', category:'收纳'},
-      {id:'p_011', name:'俄皇餐具 star 2 人 10 件', price:580, cost:390, status:'on', category:'餐具'},
-      {id:'p_012', name:'三头鹰28cm蒸锅', price:899, cost:690, status:'on', category:'锅具'},
-      {id:'p_013', name:'碧云泉 N5PRO', price:1099, cost:799, status:'on', category:'净水设备'},
-      {id:'p_014', name:'添可科学家 M9PRO', price:1399, cost:1099, status:'on', category:'清洁电器'},
-      {id:'p_015', name:'三头鹰 钛勺子（五双装）', price:1999, cost:1599, status:'on', category:'餐具'},
-      {id:'p_016', name:'唯宝 玻璃杯 4个', price:199, cost:159, status:'on', category:'餐具'},
-      {id:'p_017', name:'唯宝 香槟杯 2个', price:399, cost:299, status:'on', category:'餐具'},
-      {id:'p_018', name:'北鼎 电磁炉+28火锅+36烤肉锅（浅杉绿）', price:2999, cost:2199, status:'on', category:'锅具'},
-      {id:'p_019', name:'博朗 NEVO11700C', price:650, cost:460, status:'on', category:'个护'},
-      {id:'p_020', name:'俄皇4人20 头餐具', price:2000, cost:2000, status:'on', category:'餐具'},
-      {id:'p_021', name:'德龙d9max', price:6800, cost:5600, status:'on', category:'咖啡器具'},
-      {id:'p_022', name:'东芝大白梨 TSC1200', price:2300, cost:1700, status:'on', category:'厨房电器'},
-      {id:'p_023', name:'摩飞 9288 多功能锅', price:750, cost:650, status:'on', category:'锅具'},
-      {id:'p_024', name:'莱克 F7pro 风扇', price:1400, cost:1180, status:'on', category:'风扇'},
-      {id:'p_025', name:'kimscook 5.5L 高压锅', price:2999, cost:2200, status:'on', category:'电饭煲'},
-      {id:'p_026', name:'kimscook 透明盖子', price:400, cost:340, status:'on', category:'电饭煲'},
-      {id:'p_027', name:'kimscook  7L  高压锅', price:30, cost:25, status:'on', category:'电饭煲'},
-      {id:'p_028', name:'哈士奇SC-130RBA-S(U)(奶茶色冰吧)', price:450, cost:380, status:'on', category:'制冷设备'},
-      {id:'p_029', name:'北鼎F51/002 空炸', price:1850, cost:1599, status:'on', category:'厨房电器'},
-      {id:'p_030', name:'三头鹰MTiW32-E', price:750, cost:659, status:'on', category:'锅具'},
-      {id:'p_031', name:'三头鹰MTiW30-E', price:700, cost:490, status:'on', category:'锅具'},
-      {id:'p_032', name:'三头鹰MTiF28C-E', price:600, cost:470, status:'on', category:'锅具'},
-      {id:'p_033', name:'三头鹰MTiS24-1', price:600, cost:440, status:'on', category:'锅具'},
-      {id:'p_034', name:'三头鹰MTiS24-1（的蒸笼）', price:600, cost:440, status:'on', category:'锅具'},
-      {id:'p_035', name:'三头鹰MTiM18', price:100, cost:75, status:'on', category:'锅具'},
-      {id:'p_036', name:'三头鹰MTiM18（的蒸笼）', price:360, cost:230, status:'on', category:'锅具'},
-      {id:'p_037', name:'三头鹰钛铲', price:40, cost:25, status:'on', category:'餐具'},
-      {id:'p_038', name:'三头鹰钛勺', price:150, cost:120, status:'on', category:'餐具'},
-      {id:'p_039', name:'三头鹰钛筷', price:150, cost:120, status:'on', category:'餐具'},
-      {id:'p_040', name:'三头鹰钛筷（两双装）', price:330, cost:240, status:'on', category:'餐具'},
-      {id:'p_041', name:'三头鹰钛勺（两双装）', price:180, cost:135, status:'on', category:'餐具'},
-      {id:'p_042', name:'三头鹰实心钛筷', price:0, cost:145, status:'on', category:'餐具'},
-      {id:'p_043', name:'三头鹰高压锅4.5L', price:480, cost:380, status:'on', category:'锅具'},
-      {id:'p_044', name:'三头鹰高压锅6L', price:700, cost:550, status:'on', category:'锅具'},
-      {id:'p_045', name:'赫曼米勒 sayl', price:750, cost:590, status:'on', category:'座椅'},
-      {id:'p_046', name:'碧云泉 T5MAX', price:3100, cost:2800, status:'on', category:'净水设备'},
-      {id:'p_047', name:'OOU大白熊刀具套装', price:2800, cost:2100, status:'on', category:'餐具'},
-      {id:'p_048', name:'OOU 花梨木砧板', price:1400, cost:1080, status:'on', category:'餐具'},
-      {id:'p_049', name:'OOU 鲸钛七件套', price:400, cost:310, status:'on', category:'餐具'},
-      {id:'p_050', name:'霍尼韦尔空气炸锅', price:850, cost:650, status:'on', category:'厨房电器'},
-      {id:'p_051', name:'霍尼韦尔 H mate', price:850, cost:730, status:'on', category:'厨房电器'},
-      {id:'p_052', name:'添可艺术家70s', price:6500, cost:5585, status:'on', category:'清洁电器'},
-      {id:'p_053', name:'福库小白贝 5L(CRP-CHP105OFW）', price:2600, cost:1880, status:'on', category:'电饭煲'},
-      {id:'p_054', name:'科沃斯 x12pro上下水', price:2300, cost:1900, status:'on', category:'清洁电器'},
-      {id:'p_055', name:'卓力 G511  挂烫机', price:4750, cost:4300, status:'on', category:'厨房电器'},
-      {id:'p_056', name:'咖啡机咖博士 H3 黑', price:2100, cost:1780, status:'on', category:'咖啡器具'},
-      {id:'p_057', name:'永丰源紫金华彩对杯', price:4650, cost:4150, status:'on', category:'餐具'},
-      {id:'p_058', name:'追觅x60pro  上下水', price:400, cost:300, status:'on', category:'清洁电器'},
-      {id:'p_059', name:'贝克巴斯Emax', price:4800, cost:4800, status:'on', category:'厨房电器'},
-      {id:'p_060', name:'咖啡自由 sp1 max', price:2000, cost:2000, status:'on', category:'咖啡器具'},
-      {id:'p_061', name:'追觅 x50pro 超薄上下', price:6200, cost:6200, status:'on', category:'清洁电器'},
-      {id:'p_062', name:'戴森吸尘器  v16', price:3900, cost:3900, status:'on', category:'清洁电器'},
-      {id:'p_063', name:'德龙630咖啡机', price:5400, cost:5250, status:'on', category:'咖啡器具'},
-      {id:'p_064', name:'CRP-LHTR1011FW', price:12000, cost:10400, status:'on', category:'电饭煲'},
-      {id:'p_065', name:'霍尼韦尔化妆镜 02j01', price:3100, cost:2530, status:'on', category:'灯具/镜'},
-      {id:'p_066', name:'碧云泉冰沙组件', price:750, cost:700, status:'on', category:'净水设备'},
-      {id:'p_067', name:'添可洗地机艺术家80', price:1400, cost:1200, status:'on', category:'清洁电器'},
-      {id:'p_068', name:'追觅 z40station', price:3300, cost:2350, status:'on', category:'清洁电器'},
-      {id:'p_069', name:'德龙 450.86 咖啡机', price:2850, cost:2500, status:'on', category:'咖啡器具'},
-      {id:'p_070', name:'劳拉之星 izzi plus', price:6900, cost:6600, status:'on', category:'清洁电器'},
-      {id:'p_071', name:'科沃斯 x12pro 钛银水箱', price:6900, cost:6100, status:'on', category:'清洁电器'},
-      {id:'p_072', name:'R1 音响', price:4500, cost:3600, status:'on', category:'音响'},
-      {id:'p_073', name:'正负零 CQS K530 风扇白色', price:5700, cost:5200, status:'on', category:'风扇'},
-      {id:'p_074', name:'戴森 V16 吸尘器滤网', price:700, cost:600, status:'on', category:'清洁电器'},
-      {id:'p_075', name:'霍尼韦尔 speed  pro', price:290, cost:250, status:'on', category:'厨房电器'},
-      {id:'p_076', name:'3004 香薰 922L 金色', price:4300, cost:3800, status:'on', category:'香薰'},
-      {id:'p_077', name:'福库小白贝 3L CRP-DHP0650', price:1800, cost:1240, status:'on', category:'电饭煲'},
-      {id:'p_078', name:'科沃斯擦窗机  w3', price:2000, cost:1550, status:'on', category:'清洁电器'},
-      {id:'p_079', name:'福库CRP-JHTS1011FS', price:2050, cost:1750, status:'on', category:'电饭煲'},
-      {id:'p_080', name:'戴森 HD19 晶耀紫', price:3100, cost:2460, status:'on', category:'厨房电器'},
-      {id:'p_081', name:'海上明珠 9 头茶具', price:2900, cost:2780, status:'on', category:'餐具'},
-      {id:'p_082', name:'九阳豆浆机k7pro紫火版', price:1280, cost:1070, status:'on', category:'厨房电器'},
-      {id:'p_083', name:'咖啡自由sf1max', price:1500, cost:1410, status:'on', category:'咖啡器具'},
-      {id:'p_084', name:'飞利浦9系ultra 剃须刀', price:3100, cost:2650, status:'on', category:'个护'},
-      {id:'p_085', name:'戴森HD16落日玫瑰', price:3000, cost:2850, status:'on', category:'厨房电器'},
-      {id:'p_086', name:'西昊二代 c500 尊享', price:2800, cost:2600, status:'on', category:'座椅'},
-      {id:'p_087', name:'黑白调 E3 ULTRA5 代 AI 曜石黑', price:2950, cost:2630, status:'on', category:'座椅'},
-      {id:'p_088', name:'霍尼韦尔化妆镜  02j 01', price:3000, cost:2700, status:'on', category:'灯具/镜'},
-      {id:'p_089', name:'东芝小白茶 7232 pro', price:750, cost:680, status:'on', category:'厨房电器'},
-      {id:'p_090', name:'吉米莱克 m7plus 除螨', price:2700, cost:2400, status:'on', category:'健康电器'},
-      {id:'p_091', name:'霍尼韦尔 hspeed pro', price:680, cost:550, status:'on', category:'厨房电器'},
-      {id:'p_092', name:'哈曼卡顿琉璃 5 黑色', price:4300, cost:3850, status:'on', category:'音响'},
-      {id:'p_093', name:'添可洗地机 m9pro', price:1950, cost:1850, status:'on', category:'清洁电器'},
-      {id:'p_094', name:'追觅 z20station 旋锋', price:3300, cost:2510, status:'on', category:'清洁电器'},
-      {id:'p_095', name:'艾泊斯 ai600', price:2200, cost:1750, status:'on', category:'空气净化'},
-      {id:'p_096', name:'碧云泉 T5MAX 气泡水', price:7100, cost:6100, status:'on', category:'净水设备'},
-      {id:'p_097', name:'戴森吸尘器 V12', price:3800, cost:2950, status:'on', category:'清洁电器'},
-      {id:'p_098', name:'飞剑星空蓝 390ml 常规款', price:3450, cost:3230, status:'on', category:'其他'},
-      {id:'p_099', name:'膳美师榨汁机', price:850, cost:850, status:'on', category:'厨房电器'},
-      {id:'p_100', name:'巴慕达微波炉烤箱k09d', price:800, cost:690, status:'on', category:'厨房电器'},
-      {id:'p_101', name:'Smeg  2 片面包机', price:3600, cost:3300, status:'on', category:'厨房电器'},
-      {id:'p_102', name:'Smeg1.7L 水壶', price:1250, cost:1150, status:'on', category:'厨房电器'},
-      {id:'p_103', name:'黑白调G6', price:1200, cost:1100, status:'on', category:'座椅'},
-      {id:'p_104', name:'筷子 5 双', price:1150, cost:1000, status:'on', category:'餐具'},
-      {id:'p_105', name:'R1', price:330, cost:245, status:'on', category:'音响'},
-      {id:'p_106', name:'HD16 落日玫瑰', price:5700, cost:5200, status:'on', category:'厨房电器'},
-      {id:'p_107', name:'石头 g30spro 铂金版上下水', price:2850, cost:2600, status:'on', category:'清洁电器'},
-      {id:'p_108', name:'柏宾士 11+23 香槟色', price:4800, cost:4800, status:'on', category:'音响'},
-      {id:'p_109', name:'宝丽来 GO 第三代', price:2200, cost:2200, status:'on', category:'数码'},
-      {id:'p_110', name:'凯诗捷 k7  泡脚桶', price:799, cost:734, status:'on', category:'健康电器'},
-      {id:'p_111', name:'3004  900L 香薰机', price:650, cost:455, status:'on', category:'香薰'},
-      {id:'p_112', name:'哈士奇 sc-130RBA-S(U)  奶茶色', price:1200, cost:930, status:'on', category:'制冷设备'},
-      {id:'p_113', name:'戴森空气净化冷暖PH12 黑金', price:1850, cost:1599, status:'on', category:'空气净化'},
-      {id:'p_114', name:'戴森吸尘器 v16 piston animal', price:5250, cost:4880, status:'on', category:'清洁电器'},
-      {id:'p_115', name:'巴慕达三角风扇', price:5500, cost:5220, status:'on', category:'风扇'},
-      {id:'p_116', name:'西屋便携饮水机 WFH-M2', price:3100, cost:2850, status:'on', category:'净水设备'},
-      {id:'p_117', name:'亚朵床笠（1.8米的床）', price:270, cost:200, status:'on', category:'家纺'},
-      {id:'p_118', name:'追觅 H60ULTRA', price:430, cost:430, status:'on', category:'清洁电器'},
-      {id:'p_119', name:'IAM  M9', price:3150, cost:2700, status:'on', category:'空气净化'},
-      {id:'p_120', name:'北鼎fk571', price:3500, cost:2950, status:'on', category:'厨房电器'},
-      {id:'p_121', name:'卓力挂烫机 g2 2.0', price:0, cost:489, status:'on', category:'厨房电器'},
-      {id:'p_122', name:'麦桶桶感感应垃圾桶', price:880, cost:620, status:'on', category:'收纳'},
-      {id:'p_123', name:'CRP-LHTR0611FW', price:520, cost:515, status:'on', category:'电饭煲'},
-      {id:'p_124', name:'唯宝匠心岩餐具 8 人位 20 头', price:2800, cost:2136, status:'on', category:'餐具'},
-      {id:'p_125', name:'除湿机 德业 sc60', price:3500, cost:2900, status:'on', category:'除湿设备'},
-      {id:'p_126', name:'添可矿湃 i5', price:1950, cost:1650, status:'on', category:'清洁电器'},
-      {id:'p_127', name:'霍尼韦尔H-cat-hub', price:3700, cost:2900, status:'on', category:'厨房电器'},
-      {id:'p_128', name:'赫曼米勒 aeron2  灰色钢脚，中号 无码', price:3300, cost:2750, status:'on', category:'座椅'},
-      {id:'p_129', name:'博朗剃须刀 9719s', price:5900, cost:5200, status:'on', category:'个护'},
-      {id:'p_130', name:'东芝 XD7001 水波炉', price:1800, cost:1550, status:'on', category:'厨房电器'},
-      {id:'p_131', name:'松下 NF-M1-N', price:4800, cost:3600, status:'on', category:'厨房电器'},
-      {id:'p_132', name:'莱克空气循环扇 F502', price:1200, cost:1050, status:'on', category:'风扇'},
-      {id:'p_133', name:'虎牌JPM 5L', price:900, cost:720, status:'on', category:'电饭煲'},
-      {id:'p_134', name:'斯泰得乐 lukas 除湿机', price:3150, cost:2780, status:'on', category:'除湿设备'},
-      {id:'p_135', name:'有色 mini5pro', price:3000, cost:2600, status:'on', category:'数码'},
-      {id:'p_136', name:'永丰源紫金华彩', price:440, cost:350, status:'on', category:'餐具'},
-      {id:'p_137', name:'柚木砧板', price:400, cost:300, status:'on', category:'餐具'},
-      {id:'p_138', name:'iio  i3 香薰', price:300, cost:200, status:'on', category:'香薰'},
-      {id:'p_139', name:'追觅 z30station 尊享', price:600, cost:500, status:'on', category:'清洁电器'},
-      {id:'p_140', name:'科沃斯x12pro 上下水银灰色', price:2350, cost:1800, status:'on', category:'清洁电器'},
-      {id:'p_141', name:'九阳 y8 豆浆机', price:4400, cost:3950, status:'on', category:'厨房电器'},
-      {id:'p_142', name:'马歇尔stanmore3', price:2000, cost:1650, status:'on', category:'音响'},
-      {id:'p_143', name:'碧云泉T5MAX', price:2850, cost:2650, status:'on', category:'净水设备'},
-      {id:'p_144', name:'福库电饭煲 JHTS0611FS', price:0, cost:0, status:'on', category:'电饭煲'},
-      {id:'p_145', name:'S0611', price:2800, cost:2080, status:'on', category:'电饭煲'},
-      {id:'p_146', name:'永丰源博士白 26 头', price:0, cost:0, status:'on', category:'餐具'},
-      {id:'p_147', name:'科大讯飞 T90PRO 学习机', price:2300, cost:1850, status:'on', category:'教育'},
-      {id:'p_148', name:'香薰机聚普森 i7', price:9100, cost:8200, status:'on', category:'香薰'},
-      {id:'p_149', name:'ito 26', price:950, cost:850, status:'on', category:'其他'},
-      {id:'p_150', name:'北鼎 G45', price:1500, cost:1300, status:'on', category:'厨房电器'},
-      {id:'p_151', name:'宫尾双盖 D253xH200       3L', price:950, cost:700, status:'on', category:'其他'},
-      {id:'p_152', name:'黄小姐x12pro上下水', price:950, cost:580, status:'on', category:'清洁电器'},
-      {id:'p_153', name:'唯宝红酒杯4个', price:4500, cost:3950, status:'on', category:'餐具'},
-      {id:'p_154', name:'Braun德国博朗NEVO17700C含充电盒鼻毛修剪', price:480, cost:460, status:'on', category:'个护'},
-      {id:'p_155', name:'明基台灯 MindDuo 2plus', price:3000, cost:2700, status:'on', category:'灯具/镜'},
-      {id:'p_156', name:'马歇尔 acton3', price:1450, cost:1260, status:'on', category:'音响'},
-      {id:'p_157', name:'德施主曼 R9臻享 2.0', price:1950, cost:1800, status:'on', category:'数码'},
-      {id:'p_158', name:'德施曼 q60f', price:2500, cost:2000, status:'on', category:'数码'}
-    ]);
-  }
+  // 商品数据：不再内置种子。
+  // 原因：原 158 条种子写死售价/成本，且 initData 只在“本地为空”时写入；
+  // 一旦某设备清了缓存/换浏览器→本地为空→写入错误种子→再“以本机为准同步”会把污染价覆盖到云端
+  // （9/13 事故即由此产生：155 个商品售价被种子值冲掉）。
+  // 现在商品一律以云端为准：启动 syncFromCloud 已把云端商品拉到本地；
+  // 全新安装的空库由管理员用 Excel/订单导入，不再依赖任何写死的价格。
+  // 因此这里不再 DB.set('products', ...)，避免任何设备把错误价灌进云端。
 
   // 订单数据
   const orders = DB.get('orders', null);
@@ -11505,7 +11347,7 @@ async function renderProducts(){
           ${isAdmin ? '<button class="btn btn-secondary btn-sm" onclick="downloadProductTemplate()">⬇️ 下载模板</button>' : ''}
           ${isAdmin ? '<button class="btn btn-secondary btn-sm" onclick="batchImportProducts()">📋 粘贴导入</button>' : ''}
           ${isAdmin ? '<button class="btn btn-secondary btn-sm" onclick="alignProductsWithCloud()">🔄 对齐云端</button>' : ''}
-          ${isAdmin ? '<button class="btn btn-warning btn-sm" onclick="reconcileProductsToCloud()" title="以本机当前商品数量为准覆盖云端，用于修复多设备数量不一致">🔄 以本机为准同步</button>' : ''}
+          ${isAdmin ? '<button class="btn btn-warning btn-sm" onclick="reconcileProductsToCloud()" title="只把云端没有的本机商品补上去，绝不覆盖任何已有商品的价格/成本">🔄 补齐缺失商品</button>' : ''}
           ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="batchDeleteProducts()">${batchMode?'取消批量删除':'🗑️ 批量删除'}</button>` : ''}
           ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="batchExportProducts()">${exportMode?'取消导出':'📤 批量导出'}</button>` : ''}
         </div>
@@ -12341,28 +12183,29 @@ async function reconcileProductsToCloud(){
   if(!window._sbpbClient){ showToast('离线，无法同步','error'); return; }
   const local = (window._preSyncLocalProducts && window._preSyncLocalProducts.length) ? window._preSyncLocalProducts : DB.get('products', []);
   if(!local.length){ showToast('本机没有商品数据，无法同步','error'); return; }
-  if(!confirm('将以本机当前的 '+local.length+' 个商品为准，覆盖云端商品库。\n\n请确认您是在「显示正确数量的网页版」上操作，不要在手机上点！\n点确定后，所有设备都会变成这 '+local.length+' 个商品。')) return;
+  // 安全策略：本按钮只“补齐云端缺失的商品”，绝不覆盖云端已有商品的售价/成本。
+  // 9/13 事故即因旧版“以本机为准 upsert 覆盖云端”把某台设备上的种子错误价写进了云端。
+  if(!confirm('将把本机中【云端还没有】的商品补充到云端。\n\n⚠️ 安全说明：本操作只新增缺失商品，不会修改云端任何已有商品的售价/成本，也不会删除云端已有商品。\n点确定继续。')) return;
   try{
-    showToast('正在同步到云端...','info');
+    showToast('正在比对云端...','info');
     const { data, error } = await withTimeout(window._sbpbClient.from('products').select('id'), 5000, 'reconcileProductsToCloud');
     if(error){ showToast('拉取云端失败：'+error.message,'error'); return; }
-    const cloudIds = (data||[]).map(r=>r.id);
-    const localIds = new Set(local.map(p=>p.id));
-    const toDelete = cloudIds.filter(id=>!localIds.has(id));
-    if(toDelete.length){
-      for(let i=0;i<toDelete.length;i+=100){
-        const batch = toDelete.slice(i,i+100);
-        await window._sbpbClient.from('products').delete().in('id', batch);
-      }
+    const cloudIds = new Set((data||[]).map(r=>r.id));
+    const missing = local.filter(p => p && p.id && !cloudIds.has(p.id));
+    if(!missing.length){
+      showToast('云端已包含本机全部 '+local.length+' 个商品，无需补充','success');
+      await DB.loadProductsFromCloud();
+      renderProducts();
+      renderSidebar();
+      return;
     }
-    // 把本机商品写回云端（含新增/修改），保证云端与本机完全一致（只传商品表合法列）
-    const snake = local.map(_productRowToSnake);
+    // 仅 insert 云端缺失的商品，不 upsert / 不覆盖已有商品，避免任何价格被污染值冲掉
+    const snake = missing.map(_productRowToSnake);
     for(let i=0;i<snake.length;i+=100){
       const batch = snake.slice(i,i+100);
-      await window._sbpbClient.from('products').upsert(batch, { onConflict: 'id' });
+      await window._sbpbClient.from('products').insert(batch);
     }
-    localStorage.setItem('soms__deletedProductIds','[]');
-    showToast('已同步，云端商品数='+local.length+'，请在其它设备刷新','success');
+    showToast('已补充 '+missing.length+' 个云端缺失商品（未改动任何已有商品），请在其它设备刷新','success');
     await DB.loadProductsFromCloud();
     renderProducts();
     renderSidebar();
