@@ -1480,7 +1480,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v20260948</div>
+          <div class="brand-sub">v20260949</div>
         </div>
       </div>
     </div>
@@ -5459,6 +5459,10 @@ function toggleSidebar(){
 /* ============ 首页仪表板 ============ */
 // 按日期自动流转订单状态：留仓/上门订单到期自动改为待下单
 function checkOrderAutoFlow(){
+  // [2026-09-15] 按用户要求彻底禁用订单状态自动流转：任何订单（含上门/留仓）状态一律只能由人工在界面操作修改，
+  // 不再依据 completionDate / orderDate 自动置 completed 或 pending，避免"订单状态突然变化"。
+  // 如需恢复此自动流转，删除下面这一行 return 即可。
+  return;
   const orders = DB.get('orders');
   const today = todayStr();
   let changed = false;
