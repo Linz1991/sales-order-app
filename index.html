@@ -1497,7 +1497,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026091703</div>
+          <div class="brand-sub">v2026091704</div>
         </div>
       </div>
     </div>
@@ -11501,10 +11501,6 @@ async function renderProducts(){
       ${needCostAlert ? `<div style="margin:10px 0;padding:10px 14px;background:#fff7ed;border:1px solid #fed7aa;border-left:4px solid #ea580c;border-radius:6px;font-size:13px;color:#9a3412;display:flex;align-items:center;gap:10px;cursor:pointer" onclick="gotoProductPage(1)">
         <span style="font-size:18px">🔶</span>
         <div>有 <b>${calibProducts.length}</b> 个商品由销售新增，<b>售价与成本待你校准</b>（已置顶在列表最上方）。请点击「编辑」补全真实采购成本并核对售价后保存，保存后自动移出本区。</div>
-      </div>` : ''}
-      ${!isAdmin ? `<div style="margin:10px 0;padding:10px 14px;background:#eff6ff;border:1px solid #bfdbfe;border-left:4px solid #2563eb;border-radius:6px;font-size:13px;color:#1e40af;display:flex;align-items:center;gap:10px">
-        <span style="font-size:16px">👀</span>
-        <div>商品库对销售为<b>只读</b>：这里只能查看商品名称与售价，<b>不能新增 / 改价 / 上下架</b>。开单时遇到库里没有的商品，请直接在<b>订单里手动添加</b>，系统会自动入库并提醒管理员校准成本。</div>
       </div>` : ''}
       ${(isAdmin && window._prodHasCalibCol === false) ? `<div style="margin:10px 0;padding:10px 14px;background:#f1f5f9;border:1px solid #cbd5e1;border-left:4px solid #64748b;border-radius:6px;font-size:13px;color:#334155">
         <div>⚙️ <b>数据库小升级（仅需一次）</b>：销售新增商品的「待校准」提醒要在<b>任意设备</b>都能看到，需在 Supabase 执行一次 SQL。未执行时不影响下单、加购、同步，只是换设备后看不到待校准提醒。</div>
