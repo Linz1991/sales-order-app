@@ -36,6 +36,10 @@ function _initSupabase(){
     window.addEventListener('DOMContentLoaded', function(){
       setTimeout(function(){ try{ if(typeof detectProductCalibColumn === 'function') detectProductCalibColumn(); }catch(e){} }, 1200);
     });
+    // v2026091705：启动自愈历史脏数据（orders/aftersales 的 items 若被存成字符串则归一化为数组）
+    window.addEventListener('DOMContentLoaded', function(){
+      setTimeout(function(){ try{ if(typeof healJsonArrayFields === 'function') healJsonArrayFields(); }catch(e){ console.warn('[heal] 初始化失败：', (e && e.message) || e); } }, 600);
+    });
     return;
   }
   window._sbpbClient = null;
@@ -1497,7 +1501,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026091704</div>
+          <div class="brand-sub">v2026091705</div>
         </div>
       </div>
     </div>
@@ -12462,6 +12466,27 @@ async function pushSingleProductToCloud(product){
   }
 }
 
+// v2026091705：历史脏数据自愈——某些订单/售后单的 items 字段被存成了 JSON 字符串
+// （如 '[]'），导致 (o.items||[]).forEach / .some 抛「is not a function」，进而中断保存或渲染。
+// 启动时把本地（以及随之推回云端）的 items 统一归一化为数组。幂等，无脏数据时不产生任何写入。
+function healJsonArrayFields(){
+  let total = 0;
+  ['orders','aftersales'].forEach(function(key){
+    try{
+      const arr = DB.get(key, []);
+      if(!Array.isArray(arr)) return;
+      let changed = false;
+      arr.forEach(function(r){
+        if(!r) return;
+        if(typeof r.items === 'string'){ try{ r.items = JSON.parse(r.items); }catch(e){ r.items = []; } changed = true; }
+        if(!Array.isArray(r.items)){ r.items = []; changed = true; }
+      });
+      if(changed){ DB.set(key, arr); total += arr.length ? 1 : 0; console.warn('[heal] '+key+' 的 items 已归一化为数组并回写'); }
+    }catch(e){ console.warn('[heal] '+key+' 失败：', (e && e.message) || e); }
+  });
+  return total;
+}
+
 async function saveProduct(){
   // v20260917：全程 try/catch + 明确的保存/同步反馈。
   // 此前只要中间任一步抛异常（清除订单待校准标记、推送云端等），函数就静默中断，
@@ -12524,7 +12549,12 @@ async function saveProduct(){
     const _ords = DB.get('orders') || [];
     let _ordChanged = false;
     _ords.forEach(o => {
-      (o.items || []).forEach(it => {
+      if(!o) return;
+      // v2026091705：某些订单的 items 可能是 JSON 字符串/非数组（历史数据或未归一化），
+      // 直接 (o.items||[]).forEach 会炸「forEach is not a function」并中断整个保存流程。先归一化再遍历。
+      if(typeof o.items === 'string'){ try{ o.items = JSON.parse(o.items); }catch(e){ o.items = []; } }
+      if(!Array.isArray(o.items)) o.items = [];
+      o.items.forEach(it => {
         if(it && it.productId === savedProduct.id && it.auto_added === true){
           delete it.auto_added;          // 清掉快照标记，订单详情不再显示「待校准」
           o.updatedAt = window.nowStr(); // 刷新时间戳，保证推上云后各端合并时本版胜出
