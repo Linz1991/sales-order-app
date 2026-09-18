@@ -1501,7 +1501,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026091801</div>
+          <div class="brand-sub">v2026091802</div>
         </div>
       </div>
     </div>
@@ -11257,7 +11257,7 @@ function exportScheduleOrders(){
     var s = String(cell == null ? '' : cell).replace(/"/g,'""');
     return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
   };
-  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','利润','订单日期','创建时间'];
+  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','利润','上门日期','创建时间'];
   var rows = [];
   filtered.forEach(function(o){
     var afterSaleLoss = o.afterSaleLoss || 0;
@@ -11279,7 +11279,7 @@ function exportScheduleOrders(){
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), Math.round(price*qty),
         Math.round(o.total||0), itemCost, itemWaste, showAfterSaleLoss, itemProfit,
-        o.orderDate||'', fmtExportDateTime(o.createdAt)
+        doorDateOf(o), fmtExportDateTime(o.createdAt)
       ]);
     });
   });
