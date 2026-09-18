@@ -1501,7 +1501,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026091705</div>
+          <div class="brand-sub">v2026091801</div>
         </div>
       </div>
     </div>
@@ -11228,6 +11228,8 @@ function exportScheduleOrders(){
     'completed': ['completed']
   };
 
+  // 上门日期取值（与 renderSchedule 的 doorDateOf 一致：优先 completionDate 即上门日期，回退备货日期/创建日期）
+  var doorDateOf = function(o){ return o.completionDate || o.orderDate || (o.createdAt||'').slice(0,10); };
   var filtered = allDoorOrders;
   if(statusKey && doorStatusMap[statusKey]){
     filtered = filtered.filter(function(o){ return doorStatusMap[statusKey].indexOf(o.status) >= 0; });
@@ -11241,10 +11243,10 @@ function exportScheduleOrders(){
     });
   }
   if(schDateStart){
-    filtered = filtered.filter(function(o){ var d = o.orderDate || (o.createdAt||'').slice(0,10); return d >= schDateStart; });
+    filtered = filtered.filter(function(o){ return doorDateOf(o) >= schDateStart; });
   }
   if(schDateEnd){
-    filtered = filtered.filter(function(o){ var d = o.orderDate || (o.createdAt||'').slice(0,10); return d <= schDateEnd; });
+    filtered = filtered.filter(function(o){ return doorDateOf(o) <= schDateEnd; });
   }
 
   if(!filtered.length){ showToast('当前筛选无上门订单可导出','error'); return; }
