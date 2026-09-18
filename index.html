@@ -1501,7 +1501,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026091802</div>
+          <div class="brand-sub">v2026091803</div>
         </div>
       </div>
     </div>
@@ -16452,6 +16452,9 @@ function applyVirtualScroll(id){
   document.addEventListener('DOMContentLoaded', function(){
     window.checkNewVersion();
   });
+  // v2026091803：周期检查新版本（每 60s 调一次，内部 5min 节流控制真实请求频率）
+  // 保证常驻前台/后台、从不切换前后台的设备也能在部署后强制拉到最新版
+  setInterval(function(){ try{ if(typeof window.checkNewVersion==='function') window.checkNewVersion(); }catch(e){} }, 60000);
 })();
 </script>
 </body>
