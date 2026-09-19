@@ -1501,7 +1501,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026091803</div>
+          <div class="brand-sub">v2026091902</div>
         </div>
       </div>
     </div>
@@ -1736,8 +1736,11 @@ const DB = {
   _fullPullTables: ['customers','aftersales','payments','commissions'],
   _fullSyncIntervalMs: 60 * 60 * 1000, // v20260920：15min → 60min。9/5 实测全天 26.7MB 仍偏高，月底前需压到 15MB/天以下。小表全量 ~98KB，15min 一次 ≈ 9.4MB/天/台；改 60min 后 ≈ 2.4MB/天/台。跨端小表变化最迟 1 小时可见（orders/products 增量不受影响，实时性由手动同步/新建订单触发保证）
 
-  _getIncTs(){ try{ return localStorage.getItem('soms_inc_ts') || ''; }catch(e){ return ''; } },
-  _setIncTs(ts){ try{ if(ts) localStorage.setItem('soms_inc_ts', ts); }catch(e){} },
+  // v20260934 修复：products 用独立游标键 soms_inc_ts_products，不再与 orders 共享 soms_inc_ts，
+  // 杜绝「订单高频写入把 shared 游标推高 → gte(products.updated_at, 高游标) 把老商品过滤掉」的毒化漏单。
+  // 其余表（orders/customers 等）仍走 soms_inc_ts，行为不变（无 t 参数时默认 orders 语义，向后兼容历史调用）。
+  _getIncTs(t){ const _k = (t === 'products') ? 'soms_inc_ts_products' : 'soms_inc_ts'; try{ return localStorage.getItem(_k) || ''; }catch(e){ return ''; } },
+  _setIncTs(t, ts){ const _k = (t === 'products') ? 'soms_inc_ts_products' : 'soms_inc_ts'; try{ if(ts) localStorage.setItem(_k, ts); }catch(e){} },
   // 客户表增量游标：独立键，不与 orders/products 共享 soms_inc_ts（避免相互污染导致增量漏拉/重拉）
   _getCustIncTs(){ try{ return localStorage.getItem('soms_cust_inc_ts') || ''; }catch(e){ return ''; } },
   _setCustIncTs(ts){ try{ if(ts) localStorage.setItem('soms_cust_inc_ts', ts); }catch(e){} },
@@ -1773,13 +1776,16 @@ const DB = {
     // 会让 gte(created_at/updated_at, 坏游标) 恒空，导致新订单全部同步不到。持久游标与本地兜底游标都封顶。
     const cap = Date.now() - 60000;
     const capStr = this._cursorStr(cap);
-    const persist = this._getIncTs();
+    const persist = this._getIncTs(t);
     if(persist){
       const tp = this._tsUtc(persist);
       // 坏游标（未来值 / 无法解析 / T 格式）→ 用封顶值兜底，恢复增量能力
       if(!tp || tp > cap || String(persist).indexOf('T') >= 0) return capStr;
       return persist;
     }
+    // v20260934：products 无持久游标时强制全量首拉（返回 ''），不走「本地 max 兜底」——
+    // 否则本地已有部分商品的设备会取本地 max 前推 60s 作游标，把比它更早的老商品（如 3004 精油银河澳门）永远漏掉。
+    if(t === 'products') return '';
     const localMax = this._localMaxUpdatedAt(t);
     if(!localMax) return '';                     // 本地无缓存：首拉全量（唯一合法全量场景）
     try{                                          // 游标丢失兜底：本地 max 前推 60s 并封顶
@@ -1875,7 +1881,6 @@ const DB = {
     }
     // v20260925 每日对账：本地订单数明显少于云端时自动补洞，让漏拉自愈（计数查询仅几十字节）
     try{ await this.auditOrderCount(); }catch(e){ console.warn('[audit] 对账异常:', e && e.message); }
-    let maxTs = this._getIncTs();
     let hasError = false;
     // 增量表（含 updated_at）：仅拉 updated_at>=lastTs 的变化行。
     // v2026082405：_fullPullTables 不再日常全量拉—— customers/aftersales/payments/commissions 改回由 syncFromCloud 的
@@ -1884,6 +1889,9 @@ const DB = {
     const _allTables = _incTables;
     for(let i=0;i<_allTables.length;i++){
       const t = _allTables[i];
+      // v20260934：maxTs 改为「按表独立」——每个表用自己的游标键（products 走 soms_inc_ts_products），
+      // 各自计算、各自写回，彻底杜绝 orders 把 shared 游标推高后污染 products 的毒化漏单。
+      let maxTs = this._getIncTs(t);
       // v20260902 关键修复（egress 防全量退化）：游标丢失时用本地缓存最大 updated_at 兜底（前推 60s），
       // 保证增量查询永不全量拉 orders（550KB）/products（72KB）——此前游标丢失时每 2min 全量拉 → 每天 100MB+。
       const incCursor = this._incCursor(t);
@@ -1903,10 +1911,13 @@ const DB = {
             query = query.gte(_cursorField, incCursor);
           }
         } else {
-          // v20260910 首拉窗口保护：useInc=false 时（首拉/游标丢失/本地缓存空）限定最近 30 天，
-          // 避免一次性全量拉 orders(617KB)+products(76KB)（防 9/3 设备集中重连事件）
-          const _since = new Date(Date.now() - this._initialSyncWindowDays*24*60*60*1000).toISOString();
-          query = query.gte('created_at', _since);
+          // v20260934：products 首拉去掉 30 天窗口改为全量（老商品必须能拉到）；其余表保留窗口控 egress。
+          if(t !== 'products'){
+            // v20260910 首拉窗口保护：useInc=false 时（首拉/游标丢失/本地缓存空）限定最近 30 天，
+            // 避免一次性全量拉 orders(617KB)（防 9/3 设备集中重连事件）
+            const _since = new Date(Date.now() - this._initialSyncWindowDays*24*60*60*1000).toISOString();
+            query = query.gte('created_at', _since);
+          }
         }
         const { data, error } = await withTimeout(query, 5000, 'syncIncremental('+t+(_useInc?' inc':' full')+')');
         if(error) throw error;
@@ -1946,13 +1957,13 @@ const DB = {
         // v20260910：游标 maxTs 按表配置字段取值（products.created_at / orders.updated_at）
         const _cursorFieldCam = this._cursorCamField(t);
         (cloud||[]).forEach(function(r){ if(r && r[_cursorFieldCam] && (!maxTs || r[_cursorFieldCam] > maxTs)) maxTs = r[_cursorFieldCam]; });
+        // v20260934：按表独立写回游标（products → soms_inc_ts_products，其余 → soms_inc_ts），互不污染
+        if(maxTs) this._setIncTs(t, maxTs);
       }catch(e){
         console.warn('增量拉取 ['+t+'] 失败:', e.message);
         hasError = true;
       }
     }
-    // v20260902：游标每次有返回值即写回（原「!== lastTs」在游标丢失时永不写，导致游标无法自愈）
-    if(maxTs) this._setIncTs(maxTs);
     return !hasError;
   },
 
@@ -3492,18 +3503,16 @@ const DB = {
       // v20260912：products 表游标字段 updated_at（云端已补齐，335 行 0 null）
       query = query.gte((this._incrementalCursorFields && this._incrementalCursorFields.products) || 'updated_at', incCursor);
     } else {
-      // v20260910 首拉窗口保护：限定最近 30 天，避免一次性拉全表（防 9/3 设备集中重连事件）
-      const _since = new Date(Date.now() - this._initialSyncWindowDays*24*60*60*1000).toISOString();
-      query = query.gte('created_at', _since);
+      // v20260934：products 首拉去窗口改为全量（老商品必须能拉到），不套 30 天 gte('created_at')
     }
     const { data, error } = await withTimeout(query, 20000, 'loadProductsFromCloud' + (useInc ? ' inc' : ' full'));
     if(error) throw error;
     const cloud = this._toCamel(data || []);
-    let maxTs = this._getIncTs() || incCursor || '';
+    let maxTs = this._getIncTs('products') || incCursor || '';
     // v20260910：maxTs 按表配置字段取值
     const _cfProductsCam = this._cursorCamField('products');
     (cloud || []).forEach(function(r){ if(r && r[_cfProductsCam] && (!maxTs || r[_cfProductsCam] > maxTs)) maxTs = r[_cfProductsCam]; });
-    if(maxTs) this._setIncTs(maxTs);
+    if(maxTs) this._setIncTs('products', maxTs);
     let merged;
     if(useInc){
       merged = this._mergeById(local, cloud, this.get('_deletedProductIds', []), 'products');
@@ -5833,10 +5842,30 @@ function doOrderSearch(){
 
 // 2026-0817 修复：订单列表搜索框 oninput 会触发 renderOrders() 整页重渲染，
 // 输入框被销毁重建后焦点丢失 → 输入中断、无法继续打字。本函数记录光标位置并在重渲染后恢复焦点。
+// 2026091902 修复：中文输入法组字期间每次按键重渲染会掐断拼音（输入框 DOM 被销毁）→
+// 组字中只记录关键词不重渲染；组字结束后（compositionend）再渲染。另加 250ms 防抖减少逐键重渲染。
 function onOrderSearchInput(el){
   window._orderSearchSel = (typeof el.selectionStart === 'number') ? el.selectionStart : (el.value ? el.value.length : 0);
   window._orderFilter = el.value;
-  renderOrders();
+  if(window._orderSearchComposing) return;   // 组字中：不重渲染，避免打断输入法
+  clearTimeout(window._orderSearchDebounce);
+  window._orderSearchDebounce = setTimeout(function(){ renderOrders(); }, 250);
+}
+function onOrderSearchComposed(el){
+  window._orderSearchComposing = false;
+  onOrderSearchInput(el);
+}
+// 通用搜索框防抖渲染（仓库/回款等页）：组字中不重渲染，结束后渲染并恢复焦点/光标
+function _debouncedSearchRender(fnName, inputId, delay){
+  clearTimeout(window._debouncedSearchRenderTimer);
+  window._debouncedSearchRenderTimer = setTimeout(function(){
+    var f = window[fnName];
+    if(typeof f === 'function') f();
+    if(inputId){
+      var inp = document.getElementById(inputId);
+      if(inp){ inp.focus(); try{ inp.setSelectionRange(inp.value.length, inp.value.length); }catch(e){} }
+    }
+  }, delay || 250);
 }
 // 重渲染后恢复订单搜索框焦点（仅当本次渲染由搜索输入触发时）
 function restoreOrderSearchFocus(){
@@ -5980,7 +6009,7 @@ async function renderOrders(){
       <button class="df-clear" onclick="clearExportDateFilter()">清除</button>
     </div>`;
     // Search bar
-    html += `<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="orderSearchInput" placeholder="搜索订单号/客户/电话" value="${keyword}" oninput="onOrderSearchInput(this)"></div></div>`;
+    html += `<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="orderSearchInput" placeholder="搜索订单号/客户/电话" value="${keyword}" oninput="onOrderSearchInput(this)" oncompositionstart="window._orderSearchComposing=true" oncompositionend="onOrderSearchComposed(this)"></div></div>`;
 
     // ===== 订单Tab内容 =====
     if(isMobile){
@@ -6209,7 +6238,7 @@ async function renderOrders(){
         <input type="date" class="df-input" value="${window._salesDateEnd||''}" onchange="window._salesDateEnd=this.value;renderOrders()">
         <button class="df-clear" onclick="window._salesDateStart='';window._salesDateEnd='';renderOrders()">清除</button>
       </div>
-      <div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="orderSearchInput" placeholder="搜索姓名/电话/商品" value="${keyword}" onkeydown="if(event.key==='Enter')doOrderSearch()" oninput="onOrderSearchInput(this)"></div><button class="btn btn-primary btn-sm" onclick="doOrderSearch()">搜索</button></div>`;
+      <div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="orderSearchInput" placeholder="搜索姓名/电话/商品" value="${keyword}" onkeydown="if(event.key==='Enter')doOrderSearch()" oninput="onOrderSearchInput(this)" oncompositionstart="window._orderSearchComposing=true" oncompositionend="onOrderSearchComposed(this)"></div><button class="btn btn-primary btn-sm" onclick="doOrderSearch()">搜索</button></div>`;
 
   if(isMobile){
     // 移动端：卡片布局（字段：客户/电话/状态/备注/创建时间/操作）
@@ -7083,6 +7112,12 @@ let _searchSelected = new Set(); // 多选商品ID集合
 function searchProducts(keyword){
   const results = document.getElementById('searchResults');
   if(!keyword.trim()){ _searchSelected.clear(); results.style.display='none'; return; }
+  // v20260934：本地商品缓存为空时，后台补一次增量同步（不阻塞搜索、不每次按键打云端），
+  // 让刚装/清缓存的设备打开新建订单也能补齐商品。一次性 guardian，避免重复触发。
+  if((DB.get('products')||[]).length === 0 && !window._productsSyncKicked){
+    window._productsSyncKicked = true;
+    try{ DB.syncIncremental(); }catch(e){}
+  }
   const products = DB.get('products').filter(p => p.status === 'on');
   const matched = products.filter(p => productMatchesKeyword(p, keyword)); // 统一大小写不敏感匹配
   let html = `<div style="padding:8px 14px;border-bottom:1px solid var(--border)"><button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();showManualAddProduct()" style="width:100%">+ 手动添加新商品</button></div>`;
@@ -14162,7 +14197,7 @@ async function renderWarehouse(){
   html += '<button class="df-clear" onclick="window._whDateStart=\'\';window._whDateEnd=\'\';renderWarehouse()">清除</button>';
   html += '</div>';
   // 检索栏
-  html += '<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="搜索订单号/客户/电话/商品" value="'+keyword+'" oninput="window._warehouseFilter=this.value;renderWarehouse()"></div></div>';
+  html += '<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="warehouseSearchInput" placeholder="搜索订单号/客户/电话/商品" value="'+keyword+'" oninput="window._warehouseFilter=this.value;if(!window._orderSearchComposing)_debouncedSearchRender(\'renderWarehouse\',\'warehouseSearchInput\')" oncompositionstart="window._orderSearchComposing=true" oncompositionend="window._orderSearchComposing=false;window._warehouseFilter=this.value;_debouncedSearchRender(\'renderWarehouse\',\'warehouseSearchInput\',0)"></div></div>';
 
   const products = DB.get('products') || [];
   if(filtered.length){
@@ -14232,7 +14267,7 @@ function renderCollectBalance(){
 
   var html = '<div class="card"><div class="card-title"><span class="title-text">💵 待收尾款</span>';
   html += '<span style="margin-left:auto;font-size:13px;color:var(--text-muted)">待收尾款合计 <b style="color:var(--warning);font-size:15px">'+money(totalBalance)+'</b></span></div>';
-  html += '<div class="filter-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="搜索订单号/客户/电话" value="'+keyword+'" oninput="window._balanceKeyword=this.value;renderCollectBalance()"></div></div>';
+  html += '<div class="filter-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="balanceSearchInput" placeholder="搜索订单号/客户/电话" value="'+keyword+'" oninput="window._balanceKeyword=this.value;if(!window._orderSearchComposing)_debouncedSearchRender(\'renderCollectBalance\',\'balanceSearchInput\')" oncompositionstart="window._orderSearchComposing=true" oncompositionend="window._orderSearchComposing=false;window._balanceKeyword=this.value;_debouncedSearchRender(\'renderCollectBalance\',\'balanceSearchInput\',0)"></div></div>';
 
   if(list.length){
     html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>订单金额</th><th>已收</th><th>尾款余额</th><th>操作</th></tr></thead><tbody>';
