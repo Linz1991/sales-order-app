@@ -108,18 +108,18 @@ async function adminSyncOrders(){
   if(!window._sbpbClient){ showToast('未连接云端，无法同步','error'); return; }
 
   const _btn = document.getElementById('adminSyncOrdersBtn');
-  const _originalText = _btn ? _btn.textContent : '';
   if(_btn){ _btn.disabled = true; _btn.textContent = '⏳ 补拉中…'; }
   const _before = (DB.get('orders', []) || []).filter(function(o){ return !(o && o._deleted); }).length;
   const _st = (() => { try { return JSON.parse(localStorage.getItem('soms_repair_retry') || '{}'); } catch(e){ return {}; } })();
-  const _remaining = Math.max(0, 10 - ((_st && _st.count) || 0));
+  const _limit = DB._repairRetryLimit();
+  const _remaining = Math.max(0, _limit - ((_st && _st.count) || 0));
 
   try{
     const ok = await DB.repairMissingOrders('admin-manual');
     if(!ok){
       // ok=false 通常意味着今日已达上限、或者云端拉取失败
       if(_remaining <= 0){
-        showToast('今日已达上限（10 次），明天再试；或打开 devtools → Application → Local Storage 删除 soms_repair_retry 临时解锁', 'error');
+        showToast('今日已达上限（'+_limit+' 次），明天再试；或打开 devtools → Application → Local Storage 删除 soms_repair_retry 临时解锁', 'error');
       } else {
         showToast('补拉失败：云端拉取超时/异常。可重试或打开 devtools 调 DB.repairMissingOrders("admin-manual") 看 console', 'error');
       }
@@ -132,10 +132,17 @@ async function adminSyncOrders(){
     if(typeof renderSidebar === 'function'){ try{ renderSidebar(); }catch(e){} }
     // 弹一个结果卡片，让 admin 看清楚「拉回多少、还剩多少配额」，避免「以为没恢复」反复点。
     showAdminSyncResult(_before, _after, _delta, _remaining - 1);
+    // v20260938：补拉后若仍有缺失，直接提示具体单号，方便定位 RLS/游标等深层问题。
+    try{
+      const _stillMissing = await findOrderGapIds();
+      if(_stillMissing && _stillMissing.length){
+        showToast('仍有 '+_stillMissing.length+' 单未拉取：'+_stillMissing.join(', ')+'。可尝试「立即同步补拉」或清缓存重登。', 'warning', 8000);
+      }
+    }catch(_e){}
   }catch(e){
     showToast('补拉异常：' + ((e && e.message) || e), 'error');
   }finally{
-    if(_btn){ _btn.disabled = false; _btn.textContent = _originalText || '🔄 同步订单'; }
+    if(_btn){ _btn.disabled = false; refreshAdminSyncBtnLabel(); }
   }
 }
 
@@ -145,6 +152,47 @@ async function adminSyncOrders(){
 // 节流：30s 内只查一次，避免频繁打云端。会话内点了「知道了」则本会话不再弹。
 let _orderGapLastCheck = 0;
 let _orderGapDismissed = false;
+// v20260938：查出具體缺失订单 id，避免用户只看到"少2单"却不知道是哪单。
+async function findOrderGapIds(){
+  if(!window._sbpbClient) return [];
+  const isAdmin = currentUser && currentUser.role === 'admin';
+  const isOperator = currentUser && currentUser.role === 'operator';
+  try{
+    let query = window._sbpbClient.from('orders').select('id').eq('_deleted', false);
+    if(!isAdmin && !isOperator) query = query.eq('sales_id', currentUser.id);
+    const { data, error } = await withTimeout(query.order('created_at', { ascending: true }), 15000, 'findOrderGapIds');
+    if(error || !Array.isArray(data)) return [];
+    const cloudIds = new Set(data.map(function(r){ return r && r.id; }).filter(Boolean));
+    const local = (DB.get('orders', []) || []).filter(function(o){
+      if(o && o._deleted) return false;
+      if(!isAdmin && !isOperator && o.salesId !== currentUser.id) return false;
+      return true;
+    });
+    const localIds = new Set();
+    local.forEach(function(o){ if(o && o.id != null) localIds.add(o.id); });
+    return Array.from(cloudIds).filter(function(id){ return !localIds.has(id); });
+  }catch(e){
+    console.warn('[findOrderGapIds] 异常:', (e && e.message) || e);
+    return [];
+  }
+}
+function showOrderGapDetails(missingIds){
+  const banner = document.getElementById('orderGapBanner');
+  if(!banner) return;
+  let el = document.getElementById('orderGapDetails');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'orderGapDetails';
+    el.style.cssText = 'margin-top:8px;padding:8px 12px;background:#fff1f0;border:1px solid #ffccc7;border-radius:6px;font-size:12px;color:#820014;line-height:1.7';
+    banner.appendChild(el);
+  }
+  if(missingIds && missingIds.length){
+    el.innerHTML = '缺失订单（'+missingIds.length+'单）：' + missingIds.map(function(id){ return '<code style="background:#fff;padding:1px 4px;border-radius:3px;margin-right:6px;white-space:nowrap;">'+escapeHtml(id)+'</code>'; }).join('');
+    el.style.display = 'block';
+  } else {
+    el.style.display = 'none';
+  }
+}
 async function checkOrderSyncGap(){
   if(!window._sbpbClient) return;
   if(_orderGapDismissed) return;
@@ -175,8 +223,11 @@ async function checkOrderSyncGap(){
     if(gap > 0){
       document.getElementById('orderGapCount').textContent = gap;
       banner.style.display = 'block';
+      // 异步查出具體缺失单号，方便用户定位
+      findOrderGapIds().then(function(ids){ showOrderGapDetails(ids); });
     } else {
       banner.style.display = 'none';
+      showOrderGapDetails([]);
     }
   }catch(e){
     console.warn('[orderGap] 比对异常:', (e && e.message) || e);
@@ -199,7 +250,16 @@ async function orderGapSyncNow(){
   }catch(e){
     showToast('补拉失败：' + ((e && e.message) || e), 'error');
   }
-  setTimeout(checkOrderSyncGap, 2500);   // 同步后重新比对一次
+  await new Promise(function(r){ setTimeout(r, 1500); });
+  const stillMissing = await findOrderGapIds();
+  if(stillMissing && stillMissing.length){
+    showToast('仍有 '+stillMissing.length+' 单未拉取，请展开红条查看单号', 'warning', 6000);
+    showOrderGapDetails(stillMissing);
+    if(banner){ banner.style.display = 'block'; document.getElementById('orderGapCount').textContent = stillMissing.length; }
+  } else {
+    showToast('补拉完成，订单已对齐', 'success');
+    if(banner) banner.style.display = 'none';
+  }
 }
 
 // v20260931：admin 同步结果诊断卡（5s 自动消失）。
@@ -224,12 +284,28 @@ function showAdminSyncResult(before, after, delta, remaining){
   }, 5000);
 }
 
+// v2026092802：根据当前角色刷新「同步订单」按钮文字，附带今日剩余补洞次数。
+// admin 50 次 / 普通用户 10 次（见 DB._repairRetryLimit）。达上限时改提示「今日已用完」。
+function refreshAdminSyncBtnLabel(){
+  const _btn = document.getElementById('adminSyncOrdersBtn');
+  if(!_btn) return;
+  const _isAdmin = !!(currentUser && currentUser.role === 'admin');
+  if(!_isAdmin){ _btn.textContent = '🔄 同步订单'; return; }
+  let st = {};
+  try{ st = JSON.parse(localStorage.getItem('soms_repair_retry') || '{}') || {}; }catch(e){ st = {}; }
+  const _limit = DB._repairRetryLimit();
+  const _used = (st.date === new Date().toISOString().slice(0,10)) ? (st.count || 0) : 0;
+  const _left = Math.max(0, _limit - _used);
+  _btn.textContent = _left > 0 ? ('🔄 同步订单（今日剩 '+_left+' 次）') : '🔄 同步订单（今日已用完）';
+}
+
 // v20260931：根据当前用户角色显示/隐藏 admin 同步订单按钮。登录后由 login() 调用一次。
 function refreshAdminButtons(){
   const _btn = document.getElementById('adminSyncOrdersBtn');
   if(!_btn) return;
   const _isAdmin = currentUser && currentUser.role === 'admin';
   _btn.style.display = _isAdmin ? '' : 'none';
+  refreshAdminSyncBtnLabel();
 }
 
 // 多端实时一致性所需的订阅表（orders 已从 Realtime publication 移除——其 Egress 原占 76%，
@@ -1504,7 +1580,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026092301</div>
+          <div class="brand-sub">v2026092802</div>
         </div>
       </div>
     </div>
@@ -2189,13 +2265,20 @@ const DB = {
   // 一天切几十次前台就能烧掉几百 MB。
   // v20260931 调整：阈值 3 → 10。原因是 admin 经常一天内排查多个销售漏单，每次手动补洞会消耗 1 次；
   // 阈值太低会让 admin 在下午就触发「补洞今日已达上限」的告警，没法继续自助排查。
-  // 10 次仍远低于「失控打爆 egress」的下限（实测失控场景一天 100+ 次），安全余量充足。
+  // v2026092802 调整：阈值改为按角色区分——admin 50 次 / 普通用户(销售·操作员)10 次。
+  // admin 一天内多次排查不同销售漏单，50 次仍远低于「失控打爆 egress」的下限（实测失控场景一天 100+ 次），
+  // 安全余量充足；普通用户保持 10 次，避免日常误触/弱网重试烧流量。
+  _repairRetryLimit(){
+    const _isAdmin = !!(currentUser && currentUser.role === 'admin');
+    return _isAdmin ? 50 : 10;
+  },
   _canRetryRepairToday(){
     const _today = new Date().toISOString().slice(0,10);
     let st = {};
     try{ st = JSON.parse(localStorage.getItem('soms_repair_retry') || '{}') || {}; }catch(e){ st = {}; }
     if(st.date !== _today) st = { date: _today, count: 0 };
-    if((st.count || 0) >= 10) return false;
+    const _limit = this._repairRetryLimit();
+    if((st.count || 0) >= _limit) return false;
     st.count = (st.count || 0) + 1;
     try{ localStorage.setItem('soms_repair_retry', JSON.stringify(st)); }catch(e){}
     return true;
@@ -8516,7 +8599,7 @@ function renderOrderDetail(){
   if(isAdminDoorDetail){
     // 上门订单详情：保存修改仅针对商品「是否备货」（含损耗/日期回存），收款信息只读
     html += `<button class="btn btn-success" onclick="saveDoorDetail('${order.id}')">保存修改</button>`;
-    // v2026092301：一键导出订单信息为 PDF（仅管理员可见）
+    // v2026092802：一键导出订单信息为 PDF（仅管理员可见）
     html += `<button class="btn btn-info" id="btnExportDoorPdf" onclick="exportDoorOrderPdf('${order.id}')">📄 导出订单</button>`;
     // 收尾款：上门订单有定金且未结清时，提供收款入口（详情页收款信息只读，原无收款按钮）
     if((parseInt(order.deposit) || 0) > 0 && getOrderRemaining(order) > 0){
@@ -10430,7 +10513,7 @@ function saveItemStock(orderId, itemIndex, value) {
   showToast(flowed ? '全部商品已备货，订单已自动转为「已下单」' : '备货状态已更新', 'success');
 }
 
-/* ============ 上门订单一键导出 PDF（v2026092301） ============ */
+/* ============ 上门订单一键导出 PDF（v2026092802） ============ */
 // jsPDF 自带字体不含中文，故走「浏览器渲染 DOM → html2canvas 截图 → 贴入 PDF」路线：
 // 中文由系统字体渲染，不会乱码；代价是 PDF 内文字为位图（不可搜索、放大略糊）。
 var _pdfLibPromise = null;
