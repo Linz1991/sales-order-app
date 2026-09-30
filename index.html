@@ -1658,7 +1658,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026092908</div>
+          <div class="brand-sub">v2026092911</div>
         </div>
       </div>
     </div>
@@ -8441,6 +8441,7 @@ function renderOrderDetail(){
       </div>
       ` : ''}
       <div class="table-wrap">
+        ${!isDoor ? `
         <table>
           <thead><tr>
             ${isAdminDoorDetail ? `
@@ -8457,7 +8458,7 @@ function renderOrderDetail(){
               <th>数量</th>
               <th>售价</th>
               ${isAdmin ? '<th>成本</th><th>损耗</th><th>利润</th>' : ''}
-              ${isDoor ? '<th>货到店</th>' : ''}
+              ${isDoor ? '<th>货到店</th><th>货到客户</th>' : ''}
               ${(isAdmin || isOperator) && (order.status==='pending' || order.items && order.items.some(it=>it.ordered)) ? '<th>下单</th>' : ''}
               ${isAdmin && order.type==='warehouse' && !hideInlineTracking ? '<th>物流单号</th>' : ''}
               ${editMode ? '<th>操作</th>' : ''}
@@ -8470,7 +8471,7 @@ function renderOrderDetail(){
               const waste = it.waste || 0;
               const itemProfit = (it.price || 0) * (it.qty || 0) - cost * (it.qty || 0) - waste;
               return `
-              <tr>
+              <tr style="background:${isDoor ? ((it.stock==='有' || it.stock==='是') ? '#e8f5e9' : '#fff1f2') : ''}">
                 ${isAdminDoorDetail ? `
                   <td>${escapeHtml(it.name)}${isAdmin && itemIsUncalibrated(it) ? '<span style="background:#f59e0b;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;margin-left:6px;font-weight:500;vertical-align:middle;white-space:nowrap">🔶 待校准</span>' : ''}${it.itemRemark ? '<div style="font-size:11px;color:#b45309;margin-top:2px;white-space:pre-wrap">商品备注：'+escapeHtml(it.itemRemark)+'</div>' : ''}</td>
                   <td>${it.qty}</td>
@@ -8490,6 +8491,7 @@ function renderOrderDetail(){
                   ${((isAdmin || isOperator) && (order.status==='pending' || order.items && order.items.some(it=>it.ordered))) ? `<td>${it.ordered ? '<button class="btn btn-sm" title="双击撤回下单" ondblclick="markItemUnordered(\''+order.id+'\','+i+')" style="background:#3b82f6;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer">已下单</button>' : '<button class="btn btn-success btn-sm" onclick="markItemOrdered(\''+order.id+'\','+i+')">下单</button>'}</td>` : ''}
                   ${(isAdmin && order.type==='warehouse' && !hideInlineTracking) ? `<td><input type="text" class="form-control" id="whTrackItem_${i}" value="${escapeHtml(it.trackingNo) || ''}" placeholder="输入运单号" style="padding:6px 10px;min-width:150px">${it.trackingNo ? `<a class="btn-link" style="margin-left:6px;white-space:nowrap" onclick="queryLogistics(escapeJsStr(order.id), ${i}, document.getElementById('whTrackItem_${i}').value)">查询</a>` : ''}</td>` : ''}
                   ${isDoor ? `<td>${editMode ? `<select class="form-control" id="editItemStock_${i}" style="padding:6px 10px;width:70px"><option value="无" ${(it.stock!=='有' && it.stock!=='是')?'selected':''}>无</option><option value="有" ${(it.stock==='有' || it.stock==='是')?'selected':''}>有</option></select>` : ((isAdmin || currentUser.role==='sales') ? `<select class="form-control" onchange="saveItemStock('${order.id}',${i},this.value)" style="padding:6px 10px;width:70px"><option value="无" ${(it.stock!=='有' && it.stock!=='是')?'selected':''}>无</option><option value="有" ${(it.stock==='有' || it.stock==='是')?'selected':''}>有</option></select>` : (it.stock==='有' || it.stock==='是'?'<span class="tag tag-completed">有</span>':'<span class="tag tag-pending">无</span>'))}</td>` : ''}
+                  ${isDoor ? `<td>${escapeHtml(it.customerArrival || '')}</td>` : ''}
                   ${editMode ? `<td><button class="btn-link danger" onclick="removeEditItem(${i})">删除</button></td>` : ''}
                 `}
               </tr>
@@ -8514,6 +8516,55 @@ function renderOrderDetail(){
             `}
           </tbody>
         </table>
+        ` : ''}
+        ${isDoor ? `
+        ${order.items.map((it,i) => {
+          const cost = effectiveItemCost(order, it);
+          const waste = it.waste || 0;
+          const itemProfit = (it.price||0)*(it.qty||0) - cost*(it.qty||0) - waste;
+          const isArrived = (it.stock==='有' || it.stock==='是');
+          const rowBg = isArrived ? '#e8f5e9' : '#fff1f2';
+          const nameHtml = escapeHtml(it.name)
+            + (isAdmin && itemIsUncalibrated(it) ? '<span style="background:#f59e0b;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;margin-left:6px;font-weight:500;vertical-align:middle;white-space:nowrap">🔶 待校准</span>' : '')
+            + (it.itemRemark ? '<div style="font-size:11px;color:#b45309;margin-top:2px;white-space:pre-wrap">商品备注：'+escapeHtml(it.itemRemark)+'</div>' : '');
+          const nameCell = editMode ? '<input type="text" class="form-control" id="editItemName_'+i+'" value="'+escapeHtml(it.name)+'" style="padding:6px 10px">' : nameHtml;
+          const qtyCell = editMode ? '<input type="number" class="form-control" id="editItemQty_'+i+'" value="'+it.qty+'" min="1" style="padding:6px 10px;width:64px" onchange="recalcEditItem('+i+')">' : ('× '+it.qty);
+          const priceCell = editMode ? '<input type="number" class="form-control" id="editItemPrice_'+i+'" value="'+it.price+'" min="0" style="padding:6px 10px;width:84px" onchange="recalcEditItem('+i+')">' : money(it.price);
+          let stockCell;
+          if(editMode){
+            stockCell = '<select class="form-control" id="editItemStock_'+i+'" style="padding:6px 10px;width:72px"><option value="无" '+((it.stock!=='有'&&it.stock!=='是')?'selected':'')+'>无</option><option value="有" '+((it.stock==='有'||it.stock==='是')?'selected':'')+'>有</option></select>';
+          } else if(isAdmin || currentUser.role==='sales'){
+            stockCell = '<select class="form-control" onchange="saveItemStock(\''+order.id+'\','+i+',this.value)" style="padding:6px 10px;width:72px"><option value="无" '+((it.stock!=='有'&&it.stock!=='是')?'selected':'')+'>无</option><option value="有" '+((it.stock==='有'||it.stock==='是')?'selected':'')+'>有</option></select>';
+          } else {
+            stockCell = isArrived ? '<span class="tag tag-completed">有</span>' : '<span class="tag tag-pending">无</span>';
+          }
+          const arrivalCell = (isAdmin && !editMode)
+            ? '<input type="text" class="form-control" id="doorArrivalItem_'+i+'" value="'+escapeHtml(it.customerArrival||'')+'" placeholder="" style="padding:6px 10px;width:130px" onchange="saveItemArrival(\''+order.id+'\','+i+',this.value)">'
+            : '<span style="font-size:13px;color:#333">'+(escapeHtml(it.customerArrival||'') || '<span style="color:#bbb">—</span>')+'</span>';
+          return `
+            <div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;background:${rowBg}">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px">
+                <div style="flex:1;min-width:0;font-size:15px;font-weight:600">${nameCell}</div>
+                <div style="font-size:14px;color:#666;white-space:nowrap;font-weight:600">${qtyCell}</div>
+              </div>
+              ${isAdmin ? `<div style="display:flex;flex-wrap:wrap;gap:10px 22px;margin-top:10px;padding-top:10px;border-top:1px dashed #d8e6da;font-size:13px;color:#555">
+                <span>售价 <b style="color:#222">${money(it.price)}</b></span>
+                <span>成本 <b style="color:#222">${money(cost)}</b></span>
+                <span>损耗 <input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:64px;color:var(--danger);font-weight:600" id="wasteItem_${i}" oninput="saveItemWaste('${order.id}',${i},this.value)" onchange="saveItemWaste('${order.id}',${i},this.value)"></span>
+                <span>利润 <b style="color:${itemProfit>=0?'var(--success)':'var(--danger)'}">${money(itemProfit)}</b></span>
+              </div>` : (editMode ? `<div style="margin-top:8px;font-size:13px;color:#555">售价 <b style="color:#222">${priceCell}</b></div>` : '')}
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px 22px;margin-top:12px">
+                <div style="display:flex;align-items:center;gap:8px"><span style="font-size:13px;color:#555">货到店</span>${stockCell}</div>
+                <div style="display:flex;align-items:center;gap:8px"><span style="font-size:13px;color:#555">货到客户</span>${arrivalCell}</div>
+                ${editMode ? `<button class="btn-link danger" style="margin-left:auto" onclick="removeEditItem(${i})">删除</button>` : ''}
+              </div>
+            </div>`;
+        }).join('')}
+        <div style="display:flex;flex-wrap:wrap;gap:10px 24px;justify-content:flex-end;margin-top:6px;padding-top:10px;border-top:1px solid var(--border);font-weight:700">
+          <span>商品总金额：<span style="color:var(--primary)" id="editTotalCell">${money(order.total)}</span></span>
+          ${isAdmin ? `<span>订单利润：<span style="color:${calcOrderProfit(order)>=0?'var(--success)':'var(--danger)'}" id="adminProfitCell">${money(calcOrderProfit(order))}</span></span>` : ''}
+        </div>
+        ` : ''}
       </div>
       ${(editMode && !isPending) ? `
         <div style="margin-top:12px">
