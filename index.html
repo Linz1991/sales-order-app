@@ -1658,7 +1658,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026092901</div>
+          <div class="brand-sub">v2026092906</div>
         </div>
       </div>
     </div>
@@ -2724,7 +2724,7 @@ const DB = {
             // 商品基础字段(按 index 兜底匹配，顺序稳定)：编辑戳优先（无戳时退回只补不删）
             // itemRemark（商品备注）：v20260917 纳入编辑戳优先合并，随 saveItemRemark 打的
             // _syncEditAt 跨端生效（含清空），未纳入前会被对方旧副本的整行 LWW 丢掉。
-            const ITEM_FIELDS = ['name','price','qty','stock','subtotal','itemRemark'];
+            const ITEM_FIELDS = ['name','price','qty','stock','subtotal','itemRemark','customerArrival'];
             _finalRow.items.forEach(function(t, i){
               if(!t) return;
               const l = lr.items[i], rr = r.items[i];
@@ -8450,7 +8450,8 @@ function renderOrderDetail(){
               <th>成本</th>
               <th>损耗</th>
               <th>利润</th>
-              <th>是否备货</th>
+              <th>货到店</th>
+              <th>货到客户</th>
             ` : `
               <th>商品名称</th>
               <th>数量</th>
@@ -8478,6 +8479,7 @@ function renderOrderDetail(){
                   <td><input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px;color:var(--danger);font-weight:600" id="wasteItem_${i}" oninput="saveItemWaste('${order.id}',${i},this.value)" onchange="saveItemWaste('${order.id}',${i},this.value)"></td>
                   <td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}" id="adminItemProfit_${i}">${money(itemProfit)}</td>
                   <td><select class="form-control" id="doorStockItem_${i}" style="padding:6px 10px;width:70px" onchange="saveItemStock('${order.id}',${i},this.value)"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select></td>
+                  <td><input type="text" class="form-control" id="doorArrivalItem_${i}" value="${escapeHtml(it.customerArrival||'')}" placeholder="序列号" style="padding:6px 10px;width:120px" onchange="saveItemArrival('${order.id}',${i},this.value)"></td>
                 ` : `
                   <td>${editMode ? `<input type="text" class="form-control" id="editItemName_${i}" value="${escapeHtml(it.name)}" style="padding:6px 10px">` : escapeHtml(it.name)}${isAdmin && itemIsUncalibrated(it) ? '<span style="background:#f59e0b;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;margin-left:6px;font-weight:500;vertical-align:middle;white-space:nowrap">🔶 待校准</span>' : ''}${it.itemRemark ? '<div style="font-size:11px;color:#b45309;margin-top:2px;white-space:pre-wrap">商品备注：'+escapeHtml(it.itemRemark)+'</div>' : ''}</td>
                   <td>${editMode ? `<input type="number" class="form-control" id="editItemQty_${i}" value="${it.qty}" min="1" style="padding:6px 10px;width:60px" onchange="recalcEditItem(${i})">` : it.qty}</td>
@@ -8494,10 +8496,10 @@ function renderOrderDetail(){
             `;}).join('')}
             ${isAdminDoorDetail ? `
             <tr style="background:#f9fafb;font-weight:700">
-              <td colspan="7" style="text-align:right">商品总金额：<span style="color:var(--primary)" id="editTotalCell">${money(order.total)}</span></td>
+              <td colspan="8" style="text-align:right">商品总金额：<span style="color:var(--primary)" id="editTotalCell">${money(order.total)}</span></td>
             </tr>
             <tr style="background:#f9fafb;font-weight:700">
-              <td colspan="7" style="text-align:right">订单利润（商品售价-成本-损耗）：<span style="color:${calcOrderProfit(order)>=0?'var(--success)':'var(--danger)'}" id="adminProfitCell">${money(calcOrderProfit(order))}</span></td>
+              <td colspan="8" style="text-align:right">订单利润（商品售价-成本-损耗）：<span style="color:${calcOrderProfit(order)>=0?'var(--success)':'var(--danger)'}" id="adminProfitCell">${money(calcOrderProfit(order))}</span></td>
             </tr>
             ` : `
             <tr style="background:#f8f9fa;font-weight:700">
@@ -10591,6 +10593,25 @@ function saveItemStock(orderId, itemIndex, value) {
   showToast(flowed ? '全部商品已备货，订单已自动转为「已下单」' : '备货状态已更新', 'success');
 }
 
+// 上门订单：填写商品「货到客户」序列号（仅管理员可编辑），即时保存并同步
+function saveItemArrival(orderId, itemIndex, value) {
+  if (currentUser.role !== 'admin') {
+    showToast('仅管理员可填写货到客户序列号', 'error');
+    return;
+  }
+  const orders = DB.get('orders');
+  const idx = orders.findIndex(o => o.id === orderId);
+  if (idx < 0) return;
+  orders[idx].items[itemIndex].customerArrival = (value || '').trim();
+  orders[idx].updatedAt = nowStr();
+  DB.set('orders', orders);
+  _pinWriteLock(orderId); // 写入窗口锁：防止同步/重拉期间被旧云端数据覆盖
+  // 立即同步订单表到云端，避免防抖/切页期间改动丢失
+  syncOrdersNow().catch(function(){});
+  renderOrderDetail();
+  showToast('货到客户序列号已更新', 'success');
+}
+
 /* ============ 上门订单一键导出 PDF（v2026092802） ============ */
 // jsPDF 自带字体不含中文，故走「浏览器渲染 DOM → html2canvas 截图 → 贴入 PDF」路线：
 // 中文由系统字体渲染，不会乱码；代价是 PDF 内文字为位图（不可搜索、放大略糊）。
@@ -10637,13 +10658,24 @@ function splitPdfItemPages(items){
   return pages;
 }
 
-// 生成单页 A4 单据 DOM（794×1123px ≈ 210×297mm）
+// 生成单页 A4 单据 DOM（794px 宽 ≈ 210mm；高度由内容决定，由 exportDoorOrderPdf 迭代自适应撑满 297mm）
 // 样式全部内联且不用 CSS 变量、不用 flex：html2canvas 对 var()/flex 支持不稳定，table 布局最可靠
-function buildDoorOrderSheet(order, items, pageNo, pageTotal){
+// factor：纵向自适应系数（>1 更宽松、<1 更紧凑）。所有纵向间距/字号随它缩放，横向宽度固定 794 不变形。
+function buildDoorOrderSheet(order, items, factor){
+  factor = (typeof factor === 'number' && isFinite(factor) && factor > 0) ? factor : 1;
+  // 纵向间距/内边距：随 factor 线性缩放（factor 已被限幅，这里不再二次 clamp）
+  function padV(base){ return (base * factor).toFixed(1) + 'px'; }
+  function padH(base){ return (base * factor).toFixed(1) + 'px'; }
+  // 字号：随 factor 缩放，但做安全限幅，避免过大糊字或过小难读
+  function fs(base){ return Math.min(Math.max(base * factor, base * 0.80), base * 1.22).toFixed(1) + 'px'; }
   var FONT = "-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif";
   var contact = escapeHtml(order.contact || order.customerName || '-');
   var phone = escapeHtml(order.phone || '-');
   var addr = escapeHtml(formatOrderAddress(order) || '-');
+  // 客户栏显示「城市 + 姓名」：优先取结构化 city，旧订单回退 region/address 解析；去掉"市"后缀（如 深圳市→深圳）
+  var _rawCity = (typeof orderCityOf === 'function') ? orderCityOf(order) : (order.city || '');
+  var _cityShort = (_rawCity || '').replace(/市$/, '');
+  var cityName = escapeHtml((_cityShort + ' ' + (order.contact || order.customerName || '')).replace(/\s+/g, ' ').trim() || '客户');
   var doorDate = escapeHtml(order.completionDate || order.orderDate || '-');
   var total = order.total || 0;
   var deposit, finalPay;
@@ -10655,52 +10687,54 @@ function buildDoorOrderSheet(order, items, pageNo, pageTotal){
   }
   var rows = (items || []).map(function(it){
     return '<tr>'
-      + '<td style="padding:9px 10px;border:1px solid #333;font-size:15px;line-height:1.5;word-break:break-all">' + escapeHtml(it.name || '') + '</td>'
-      + '<td style="padding:9px 6px;border:1px solid #333;font-size:15px;text-align:center">' + (it.qty || 0) + '</td>'
-      + '<td style="padding:9px 10px;border:1px solid #333;font-size:15px;text-align:right;white-space:nowrap">' + money(it.price || 0) + '</td>'
-      + '<td style="padding:9px 6px;border:1px solid #333"></td>'
+      + '<td style="padding:' + padV(9) + ' ' + padH(10) + ';border:1px solid #333;font-size:' + fs(15) + ';line-height:1.5;word-break:break-all">' + escapeHtml(it.name || '') + '</td>'
+      + '<td style="padding:' + padV(9) + ' ' + padH(6) + ';border:1px solid #333;font-size:' + fs(15) + ';text-align:center">' + (it.qty || 0) + '</td>'
+      + '<td style="padding:' + padV(9) + ' ' + padH(10) + ';border:1px solid #333;font-size:' + fs(15) + ';text-align:right;white-space:nowrap">' + money(it.price || 0) + '</td>'
+      + '<td style="padding:' + padV(9) + ' ' + padH(6) + ';border:1px solid #333"></td>'
       + '</tr>';
   }).join('');
-  // 总金额行：紧跟商品表最后一行（仅最后一页出现）
-  var totalRow = (pageNo >= pageTotal)
-    ? '<tfoot><tr style="background:#f0f0f0">'
-      + '<td colspan="2" style="padding:9px 10px;border:1px solid #333;font-size:15px;text-align:right;font-weight:600">总金额</td>'
-      + '<td style="padding:9px 10px;border:1px solid #333;font-size:16px;text-align:right;font-weight:600;white-space:nowrap">' + money(total) + '</td>'
-      + '<td style="padding:9px 6px;border:1px solid #333"></td>'
-    + '</tr></tfoot>'
-    : '';
-  // 金额区只在最后一页出现，避免每页重复误导
-  var foot = (pageNo >= pageTotal)
-    ? '<table style="width:100%;border-collapse:collapse;margin-top:24px"><tr>'
-      + '<td style="border-top:2px solid #222;padding-top:14px;font-size:16px;width:50%"><span style="color:#555">定金　</span><span style="font-weight:600">' + money(deposit) + '</span></td>'
-      + '<td style="border-top:2px solid #222;padding-top:14px;font-size:16px;width:50%"><span style="color:#555">尾款　</span><span style="font-weight:600">' + money(finalPay) + '</span></td>'
-      + '</tr></table>'
-    : '';
-  var pageTag = pageTotal > 1
-    ? '<div style="margin-top:18px;text-align:right;font-size:12px;color:#888">第 ' + pageNo + ' / ' + pageTotal + ' 页</div>'
-    : '';
-  return '<div style="width:794px;height:1123px;background:#ffffff;padding:56px 52px;box-sizing:border-box;font-family:' + FONT + ';color:#222222">'
+  // 商品总件数（全量合计）
+  var totalQty = (order.items || []).reduce(function(s, it){ return s + (Number(it.qty) || 0); }, 0);
+  // 商品总件数 + 总金额行：紧跟商品表最后一行（单页始终显示）
+  var totalRow =
+      '<tfoot>'
+      + '<tr style="background:#f0f0f0">'
+        + '<td colspan="2" style="padding:' + padV(9) + ' ' + padH(10) + ';border:1px solid #333;font-size:' + fs(15) + ';text-align:right;font-weight:600">商品总件数</td>'
+        + '<td style="padding:' + padV(9) + ' ' + padH(10) + ';border:1px solid #333;font-size:' + fs(16) + ';text-align:right;font-weight:600;white-space:nowrap">' + totalQty + ' 件</td>'
+        + '<td style="padding:' + padV(9) + ' ' + padH(6) + ';border:1px solid #333"></td>'
+      + '</tr>'
+      + '<tr style="background:#f0f0f0">'
+        + '<td colspan="2" style="padding:' + padV(9) + ' ' + padH(10) + ';border:1px solid #333;font-size:' + fs(15) + ';text-align:right;font-weight:600">总金额</td>'
+        + '<td style="padding:' + padV(9) + ' ' + padH(10) + ';border:1px solid #333;font-size:' + fs(16) + ';text-align:right;font-weight:600;white-space:nowrap">' + money(total) + '</td>'
+        + '<td style="padding:' + padV(9) + ' ' + padH(6) + ';border:1px solid #333"></td>'
+      + '</tr>'
+    + '</tfoot>';
+  // 金额区（定金/尾款）：单页始终显示
+  var foot =
+      '<table style="width:100%;border-collapse:collapse;margin-top:' + padV(24) + '"><tr>'
+      + '<td style="border-top:2px solid #222;padding-top:' + padV(14) + ';font-size:' + fs(16) + ';width:50%"><span style="color:#555">定金　</span><span style="font-weight:600">' + money(deposit) + '</span></td>'
+      + '<td style="border-top:2px solid #222;padding-top:' + padV(14) + ';font-size:' + fs(16) + ';width:50%"><span style="color:#555">尾款　</span><span style="font-weight:600">' + money(finalPay) + '</span></td>'
+      + '</tr></table>';
+  return '<div style="width:794px;background:#ffffff;padding:' + padV(56) + ' ' + padH(52) + ';box-sizing:border-box;font-family:' + FONT + ';color:#222222">'
     + '<table style="width:100%;border-collapse:collapse"><tr>'
-      + '<td style="border-bottom:2px solid #222222;padding-bottom:12px;font-size:22px;font-weight:600;letter-spacing:1px;text-align:left">上门订单</td>'
-      + '<td style="border-bottom:2px solid #222222;padding-bottom:12px;font-size:14px;color:#444444;text-align:right;white-space:nowrap">上门日期　' + doorDate + '</td>'
+      + '<td style="border-bottom:2px solid #222222;padding-bottom:' + padV(12) + ';font-size:' + fs(22) + ';font-weight:600;letter-spacing:1px;text-align:left">大仙高端家电</td>'
+      + '<td style="border-bottom:2px solid #222222;padding-bottom:' + padV(12) + ';font-size:' + fs(14) + ';color:#444444;text-align:right;white-space:nowrap">' + doorDate + '</td>'
     + '</tr></table>'
-    + '<table style="width:100%;border-collapse:collapse;margin-top:24px;font-size:16px">'
-      + '<tr><td style="width:64px;color:#555555;padding:3px 0;vertical-align:top">客户</td><td style="padding:3px 0;font-weight:600">' + contact + '</td></tr>'
-      + '<tr><td style="width:64px;color:#555555;padding:3px 0;vertical-align:top">电话</td><td style="padding:3px 0;font-weight:600">' + phone + '</td></tr>'
-      + '<tr><td style="width:64px;color:#555555;padding:3px 0;vertical-align:top">地址</td><td style="padding:3px 0;line-height:1.7">' + addr + '</td></tr>'
+    + '<table style="width:100%;border-collapse:collapse;margin-top:' + padV(24) + ';font-size:' + fs(16) + '">'
+      + '<tr><td style="width:64px;color:#555555;padding:' + padV(3) + ' 0;vertical-align:top">客户</td><td style="padding:' + padV(3) + ' 0;font-weight:600">' + cityName + '</td></tr>'
     + '</table>'
-    + '<div style="margin-top:26px;font-size:16px;font-weight:600">商品明细</div>'
-    + '<table style="width:100%;border-collapse:collapse;margin-top:10px;table-layout:fixed">'
+    + '<div style="margin-top:' + padV(26) + ';font-size:' + fs(16) + ';font-weight:600">商品明细</div>'
+    + '<table style="width:100%;border-collapse:collapse;margin-top:' + padV(10) + ';table-layout:fixed">'
       + '<colgroup><col><col style="width:58px"><col style="width:110px"><col style="width:88px"></colgroup>'
       + '<thead><tr style="background:#f0f0f0">'
-        + '<th style="padding:9px 10px;border:1px solid #333333;font-size:15px;text-align:left;font-weight:600">商品名称</th>'
-        + '<th style="padding:9px 6px;border:1px solid #333333;font-size:15px;text-align:center;font-weight:600">数量</th>'
-        + '<th style="padding:9px 10px;border:1px solid #333333;font-size:15px;text-align:right;font-weight:600">单价</th>'
-        + '<th style="padding:9px 6px;border:1px solid #333333;font-size:15px;text-align:center;font-weight:600">配货</th>'
+        + '<th style="padding:' + padV(9) + ' ' + padH(10) + ';border:1px solid #333333;font-size:' + fs(15) + ';text-align:left;font-weight:600">商品名称</th>'
+        + '<th style="padding:' + padV(9) + ' ' + padH(6) + ';border:1px solid #333333;font-size:' + fs(15) + ';text-align:center;font-weight:600">数量</th>'
+        + '<th style="padding:' + padV(9) + ' ' + padH(10) + ';border:1px solid #333333;font-size:' + fs(15) + ';text-align:right;font-weight:600">单价</th>'
+        + '<th style="padding:' + padV(9) + ' ' + padH(6) + ';border:1px solid #333333;font-size:' + fs(15) + ';text-align:center;font-weight:600">备注</th>'
       + '</tr></thead>'
       + '<tbody>' + rows + '</tbody>' + totalRow
     + '</table>'
-    + foot + pageTag
+    + foot
     + '</div>';
 }
 
@@ -10717,16 +10751,24 @@ async function exportDoorOrderPdf(orderId){
   document.body.appendChild(host);
   try{
     await loadPdfLibs();
-    const pages = splitPdfItemPages(order.items || []);
-    const pdf = new window.jspdf.jsPDF({ unit:'mm', format:'a4', orientation:'portrait', compress:true });
-    for(let p = 0; p < pages.length; p++){
-      host.innerHTML = buildDoorOrderSheet(order, pages[p], p + 1, pages.length);
-      const canvas = await window.html2canvas(host.firstElementChild, {
-        scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false
-      });
-      if(p > 0) pdf.addPage();
-      pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, 210, 297);
+    const itemsAll = order.items || [];
+    // 单页自适应：迭代调整纵向系数 factor，使内容自然高度恰好撑满一张 A4（794×1123px ≈ 210×297mm）
+    let factor = 1;
+    const TARGET_H = 1123;
+    for(let i = 0; i < 6; i++){
+      host.innerHTML = buildDoorOrderSheet(order, itemsAll, factor);
+      const realH = host.firstElementChild.offsetHeight;
+      if(Math.abs(realH - TARGET_H) <= 4) break;
+      factor = factor * (TARGET_H / realH);
+      if(factor < 0.62) factor = 0.62;   // 极多商品：下限，宁可被 PDF 轻微纵向压缩也保持单页
+      if(factor > 1.55) factor = 1.55;   // 极少商品：上限，避免行距夸张，底部留白亦可接受
     }
+    const canvas = await window.html2canvas(host.firstElementChild, {
+      scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false
+    });
+    const pdf = new window.jspdf.jsPDF({ unit:'mm', format:'a4', orientation:'portrait', compress:true });
+    // 整张截图拉伸铺满 A4：宽 794→210mm、高 1123→297mm，比例一致不变形（内容已自适应到该比例）
+    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, 210, 297);
     const fileName = '上门订单_' + (order.contact || order.customerName || '客户') + '_' + (order.completionDate || order.orderDate || '') + '.pdf';
     pdf.save(fileName);
     showToast('已导出订单 PDF', 'success');
@@ -10760,6 +10802,8 @@ function saveDoorDetail(orderId){
     if(sEl !== null) it.stock = (sEl.value === '是' ? '是' : '否');
     const wEl = document.getElementById('wasteItem_' + i);
     if(wEl !== null) it.waste = parseInt(wEl.value) || 0;
+    const aEl = document.getElementById('doorArrivalItem_' + i);
+    if(aEl !== null) it.customerArrival = (aEl.value || '').trim();
   });
   const flowed = autoDoorConfirmIfAllStocked(o);
   DB.set('orders', orders);
