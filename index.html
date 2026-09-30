@@ -1658,7 +1658,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026092906</div>
+          <div class="brand-sub">v2026092908</div>
         </div>
       </div>
     </div>
@@ -7321,7 +7321,7 @@ function toggleSearchSelect(productId, e){
       existing.qty += 1;
       existing.subtotal = existing.price * existing.qty;
     }else{
-      cart.push({ productId: product.id, name: product.name, price: product.price, cost: product.cost, qty: 1, subtotal: product.price, stock: '否' });
+      cart.push({ productId: product.id, name: product.name, price: product.price, cost: product.cost, qty: 1, subtotal: product.price, stock: '无' });
     }
   }
   renderCart();
@@ -7356,7 +7356,7 @@ function confirmAddProducts(){
         cost: product.cost,
         qty: 1,
         subtotal: product.price,
-        stock: '否'
+        stock: '无'
       });
     }
   });
@@ -7523,7 +7523,7 @@ function confirmManualAddProduct(){
       cost: (prod.cost != null ? prod.cost : prod.price), // 成本默认等于售价
       qty: 1,
       subtotal: prod.price,
-      stock: '否',
+      stock: '无',
       auto_added: (r.reason === 'created' || prod.auto_added === true || prod.need_calibration === true) ? true : undefined
     });
   }
@@ -8457,7 +8457,7 @@ function renderOrderDetail(){
               <th>数量</th>
               <th>售价</th>
               ${isAdmin ? '<th>成本</th><th>损耗</th><th>利润</th>' : ''}
-              ${isDoor ? '<th>是否备货</th>' : ''}
+              ${isDoor ? '<th>货到店</th>' : ''}
               ${(isAdmin || isOperator) && (order.status==='pending' || order.items && order.items.some(it=>it.ordered)) ? '<th>下单</th>' : ''}
               ${isAdmin && order.type==='warehouse' && !hideInlineTracking ? '<th>物流单号</th>' : ''}
               ${editMode ? '<th>操作</th>' : ''}
@@ -8478,8 +8478,8 @@ function renderOrderDetail(){
                   <td>${money(cost)}</td>
                   <td><input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px;color:var(--danger);font-weight:600" id="wasteItem_${i}" oninput="saveItemWaste('${order.id}',${i},this.value)" onchange="saveItemWaste('${order.id}',${i},this.value)"></td>
                   <td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}" id="adminItemProfit_${i}">${money(itemProfit)}</td>
-                  <td><select class="form-control" id="doorStockItem_${i}" style="padding:6px 10px;width:70px" onchange="saveItemStock('${order.id}',${i},this.value)"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select></td>
-                  <td><input type="text" class="form-control" id="doorArrivalItem_${i}" value="${escapeHtml(it.customerArrival||'')}" placeholder="序列号" style="padding:6px 10px;width:120px" onchange="saveItemArrival('${order.id}',${i},this.value)"></td>
+                  <td><select class="form-control" id="doorStockItem_${i}" style="padding:6px 10px;width:70px" onchange="saveItemStock('${order.id}',${i},this.value)"><option value="无" ${(it.stock!=='有' && it.stock!=='是')?'selected':''}>无</option><option value="有" ${(it.stock==='有' || it.stock==='是')?'selected':''}>有</option></select></td>
+                  <td><input type="text" class="form-control" id="doorArrivalItem_${i}" value="${escapeHtml(it.customerArrival||'')}" placeholder="" style="padding:6px 10px;width:120px" onchange="saveItemArrival('${order.id}',${i},this.value)"></td>
                 ` : `
                   <td>${editMode ? `<input type="text" class="form-control" id="editItemName_${i}" value="${escapeHtml(it.name)}" style="padding:6px 10px">` : escapeHtml(it.name)}${isAdmin && itemIsUncalibrated(it) ? '<span style="background:#f59e0b;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;margin-left:6px;font-weight:500;vertical-align:middle;white-space:nowrap">🔶 待校准</span>' : ''}${it.itemRemark ? '<div style="font-size:11px;color:#b45309;margin-top:2px;white-space:pre-wrap">商品备注：'+escapeHtml(it.itemRemark)+'</div>' : ''}</td>
                   <td>${editMode ? `<input type="number" class="form-control" id="editItemQty_${i}" value="${it.qty}" min="1" style="padding:6px 10px;width:60px" onchange="recalcEditItem(${i})">` : it.qty}</td>
@@ -8489,7 +8489,7 @@ function renderOrderDetail(){
                   ${isAdmin ? `<td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}">${money(itemProfit)}</td>` : ''}
                   ${((isAdmin || isOperator) && (order.status==='pending' || order.items && order.items.some(it=>it.ordered))) ? `<td>${it.ordered ? '<button class="btn btn-sm" title="双击撤回下单" ondblclick="markItemUnordered(\''+order.id+'\','+i+')" style="background:#3b82f6;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer">已下单</button>' : '<button class="btn btn-success btn-sm" onclick="markItemOrdered(\''+order.id+'\','+i+')">下单</button>'}</td>` : ''}
                   ${(isAdmin && order.type==='warehouse' && !hideInlineTracking) ? `<td><input type="text" class="form-control" id="whTrackItem_${i}" value="${escapeHtml(it.trackingNo) || ''}" placeholder="输入运单号" style="padding:6px 10px;min-width:150px">${it.trackingNo ? `<a class="btn-link" style="margin-left:6px;white-space:nowrap" onclick="queryLogistics(escapeJsStr(order.id), ${i}, document.getElementById('whTrackItem_${i}').value)">查询</a>` : ''}</td>` : ''}
-                  ${isDoor ? `<td>${editMode ? `<select class="form-control" id="editItemStock_${i}" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : ((isAdmin || currentUser.role==='sales') ? `<select class="form-control" onchange="saveItemStock('${order.id}',${i},this.value)" style="padding:6px 10px;width:70px"><option value="否" ${it.stock!=='是'?'selected':''}>否</option><option value="是" ${it.stock==='是'?'selected':''}>是</option></select>` : (it.stock==='是'?'<span class="tag tag-completed">已备货</span>':'<span class="tag tag-pending">未备货</span>'))}</td>` : ''}
+                  ${isDoor ? `<td>${editMode ? `<select class="form-control" id="editItemStock_${i}" style="padding:6px 10px;width:70px"><option value="无" ${(it.stock!=='有' && it.stock!=='是')?'selected':''}>无</option><option value="有" ${(it.stock==='有' || it.stock==='是')?'selected':''}>有</option></select>` : ((isAdmin || currentUser.role==='sales') ? `<select class="form-control" onchange="saveItemStock('${order.id}',${i},this.value)" style="padding:6px 10px;width:70px"><option value="无" ${(it.stock!=='有' && it.stock!=='是')?'selected':''}>无</option><option value="有" ${(it.stock==='有' || it.stock==='是')?'selected':''}>有</option></select>` : (it.stock==='有' || it.stock==='是'?'<span class="tag tag-completed">有</span>':'<span class="tag tag-pending">无</span>'))}</td>` : ''}
                   ${editMode ? `<td><button class="btn-link danger" onclick="removeEditItem(${i})">删除</button></td>` : ''}
                 `}
               </tr>
@@ -9052,9 +9052,17 @@ function copySingleOrderInfo(orderId){
   if(addr) head += addr;
   else if(order.region || order.address) head += (order.region || '') + (order.address || '');
   lines.push(head);
-  // 每个商品一行：商品名 ×数量
+  // 每个商品一行：商品名 ×数量 — 状态（货到客户有物流单号 → 直接显示该单号；货到店=有 → 显示 有；货到店为 无/空 且货到客户无内容 → 不显示任何状态）
   if(order.items && order.items.length){
-    order.items.forEach(it => { lines.push((it.name || '未命名商品') + ' ×' + (it.qty || 1)); });
+    order.items.forEach(it => {
+      let status = '';
+      const arrival = (it.customerArrival || '').trim();
+      if(arrival) status = '#' + arrival;
+      else if(it.stock === '有' || it.stock === '是') status = '有';
+      // 货到店为 无/空 且货到客户无内容 → 不显示状态
+      const base = (it.name || '未命名商品') + ' ×' + (it.qty || 1);
+      lines.push(status ? base + ' — ' + status : base);
+    });
   }
   // 备注行（始终显示）
   lines.push('备注：' + (order.remark || ''));
@@ -9413,11 +9421,11 @@ function setOrderCompleted(orderId){
   updateOrderStatus(orderId, 'completed');
 }
 
-// 上门订单：当全部商品的备货状态均为“已备货”(是) 且当前为待下单(pending)时，自动流转为已下单(confirmed)
+// 上门订单：当全部商品的备货状态均为“有” 且当前为待下单(pending)时，自动流转为已下单(confirmed)
 function autoDoorConfirmIfAllStocked(order){
   if(order.type !== 'door' || order.status !== 'pending') return false;
   if(!order.items || !order.items.length) return false;
-  const allStocked = order.items.every(it => it.stock === '是');
+  const allStocked = order.items.every(it => it.stock === '有' || it.stock === '是');
   if(allStocked){
     // 上门订单备货齐自动转「已下单」：先固化成本快照（此后不再随商品库变动）
     freezeOrderItemCosts(order);
@@ -9586,7 +9594,7 @@ function toggleEditSelect(pid, e){
   }else{
     // 勾选 → 立即加入订单
     _editSearchSelected.add(pid);
-    orders[idx].items.push({ productId: product.id, name: product.name, price: product.price, cost: product.price, qty: 1, subtotal: product.price, stock: '否' });
+    orders[idx].items.push({ productId: product.id, name: product.name, price: product.price, cost: product.price, qty: 1, subtotal: product.price, stock: '无' });
     orders[idx].total += product.price;
   }
   // 全款订单：同步「全款金额」(fullPayment) = 最新订单总额
@@ -9649,7 +9657,7 @@ function confirmManualAddToOrder(){
       cost: (prod.cost != null ? prod.cost : prod.price), // 成本默认等于售价
       qty: 1,
       subtotal: prod.price,
-      stock: '否',
+      stock: '无',
       auto_added: (r.reason === 'created' || prod.auto_added === true || prod.need_calibration === true) ? true : undefined
     });
     orders[idx].total += prod.price;
@@ -9674,7 +9682,7 @@ function confirmEditAddProducts(){
     if(!product) return;
     orders[idx].items.push({
       productId: product.id, name: product.name, price: product.price, cost: product.price,
-      qty: 1, subtotal: product.price, stock: '否'
+      qty: 1, subtotal: product.price, stock: '无'
     });
     orders[idx].total += product.price;
   });
@@ -10573,7 +10581,7 @@ async function saveAdminOrder(orderId){
   renderOrders();
 }
 
-// 上门订单：标记商品是否备货（销售/管理员可直接编辑，无需进入完整编辑模式）
+// 上门订单：标记商品货到店状态「有/无」（销售/管理员可直接编辑，无需进入完整编辑模式）
 function saveItemStock(orderId, itemIndex, value) {
   const orders = DB.get('orders');
   const idx = orders.findIndex(o => o.id === orderId);
@@ -10582,7 +10590,7 @@ function saveItemStock(orderId, itemIndex, value) {
     showToast('仅销售或管理员可修改备货状态', 'error');
     return;
   }
-  orders[idx].items[itemIndex].stock = (value === '是' ? '是' : '否');
+  orders[idx].items[itemIndex].stock = (value === '有' || value === '是' ? '有' : '无');
   const flowed = autoDoorConfirmIfAllStocked(orders[idx]);
   orders[idx].updatedAt = nowStr();
   DB.set('orders', orders);
@@ -10590,7 +10598,7 @@ function saveItemStock(orderId, itemIndex, value) {
   // 立即同步订单表到云端（关键状态变更），避免防抖/切页期间改动丢失
   syncOrdersNow().catch(function(){});
   renderOrderDetail();
-  showToast(flowed ? '全部商品已备货，订单已自动转为「已下单」' : '备货状态已更新', 'success');
+  showToast(flowed ? '全部商品已到店，订单已自动转为「已下单」' : '货到店状态已更新', 'success');
 }
 
 // 上门订单：填写商品「货到客户」序列号（仅管理员可编辑），即时保存并同步
@@ -10781,7 +10789,7 @@ async function exportDoorOrderPdf(orderId){
   }
 }
 
-// 上门订单详情（管理员查看）：保存商品「是否备货」修改，并回存损耗与日期
+// 上门订单详情（管理员查看）：保存商品「货到店」修改，并回存损耗与日期
 function saveDoorDetail(orderId){
   const orders = DB.get('orders');
   const idx = orders.findIndex(o => o.id === orderId);
@@ -10799,7 +10807,7 @@ function saveDoorDetail(orderId){
   o.updatedAt = nowStr(); // 关键：刷新时间戳，确保上门订单的备货/损耗/日期改动能同步到云端并被其它端识别为最新
   o.items.forEach((it, i) => {
     const sEl = document.getElementById('doorStockItem_' + i);
-    if(sEl !== null) it.stock = (sEl.value === '是' ? '是' : '否');
+    if(sEl !== null) it.stock = (sEl.value === '有' || sEl.value === '是' ? '有' : '无');
     const wEl = document.getElementById('wasteItem_' + i);
     if(wEl !== null) it.waste = parseInt(wEl.value) || 0;
     const aEl = document.getElementById('doorArrivalItem_' + i);
@@ -10811,10 +10819,10 @@ function saveDoorDetail(orderId){
   syncOrdersNow().catch(function(){});
   let msg;
   if(flowed){
-    msg = '全部商品已备货，订单已自动转为「已下单」';
+    msg = '全部商品已到店，订单已自动转为「已下单」';
   } else {
-    const stocked = o.items.filter(it => it.stock === '是').length;
-    msg = '已保存（' + stocked + '/' + o.items.length + ' 个商品已备货，全部备货后订单自动转为「已下单」）';
+    const stocked = o.items.filter(it => it.stock === '有' || it.stock === '是').length;
+    msg = '已保存（' + stocked + '/' + o.items.length + ' 个商品已到店，全部到店后订单自动转为「已下单」）';
   }
   showToast(msg, 'success');
   renderOrderDetail();
@@ -14433,8 +14441,9 @@ async function renderSchedule(){
       var dayOrders = orderMap[dateStr] || [];
       var isToday = dateStr === todayStr();
       var clickFn = dayOrders.length ? 'showScheduleDayOrders(\''+dateStr+'\')' : '';
-      html += '<div onclick="'+clickFn+'" style="min-height:80px;padding:4px;border:1px solid '+(isToday?'var(--primary)':'var(--border)')+';border-radius:4px;cursor:'+(dayOrders.length?'pointer':'default')+';background:'+(isToday?'var(--primary-light)':'#fff')+'">';
-      html += '<div style="font-size:12px;font-weight:'+(isToday?'700':'400')+'">'+d+'</div>';
+      var missingCount = dayOrders.reduce(function(sum, o){ return sum + (o.items || []).filter(function(it){ return it.stock === '无' || it.stock === '否'; }).length; }, 0);
+      html += '<div onclick="'+clickFn+'" style="position:relative;min-height:80px;padding:4px;border:1px solid '+(isToday?'var(--primary)':'var(--border)')+';border-radius:4px;cursor:'+(dayOrders.length?'pointer':'default')+';background:'+(isToday?'var(--primary-light)':'#fff')+'">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center"><div style="font-size:12px;font-weight:'+(isToday?'700':'400')+'">'+d+'</div>'+(missingCount ? '<span style="background:var(--danger);color:#fff;font-size:11px;font-weight:600;padding:1px 5px;border-radius:9px;min-width:18px;text-align:center">'+missingCount+'</span>' : '')+'</div>';
       if(dayOrders.length){
         html += '<div style="margin-top:2px"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--primary)"></span>';
         if(dayOrders.length <= 3){
