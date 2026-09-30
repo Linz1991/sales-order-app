@@ -40,6 +40,10 @@ function _initSupabase(){
     window.addEventListener('DOMContentLoaded', function(){
       setTimeout(function(){ try{ if(typeof healJsonArrayFields === 'function') healJsonArrayFields(); }catch(e){ console.warn('[heal] 初始化失败：', (e && e.message) || e); } }, 600);
     });
+    // v20260929：启动轻量差量对账定时器（自动发现云端新单 / 字段变化，解决非实时同步痛点）
+    window.addEventListener('DOMContentLoaded', function(){
+      setTimeout(function(){ try{ if(typeof startAutoReconcile === 'function') startAutoReconcile(); }catch(e){} }, 3000);
+    });
     return;
   }
   window._sbpbClient = null;
@@ -237,6 +241,80 @@ function dismissOrderGapBanner(){
   const banner = document.getElementById('orderGapBanner');
   if(banner) banner.style.display = 'none';
   _orderGapDismissed = true;   // 本会话忽略
+}
+// v20260929 方案A：轻量差量对账定时器（解决「非实时同步」痛点，零侵入现有逻辑）
+// 设计要点：
+//   1) 不重新启用被刻意关闭的全量轮询 autoSyncTick（全量 731KB/次太费流量，见 4940 行注释）；
+//   2) 每 5 分钟只拉 select(id, updated_at) 轻量列表（738 单约 40KB），与本地比对；
+//   3) 仅「本地缺失」或「云端 updated_at 比本地新（如管理员改了订单状态）」的少数单，才拉全字段覆盖本地；
+//   4) 不消耗 repairMissingOrders 的 50/10 每日补洞配额（走独立轻量路径）；
+//   5) 仅在页面可见时执行；无变化时零额外流量；失败单记 30 分钟冷却，避免反复打同一单。
+let _autoReconcileFailed = {};
+function _autoReconcileTs(s){
+  try{ const d = new Date(String(s == null ? '' : s).replace(' ', 'T')); const t = d.getTime(); return isNaN(t) ? 0 : t; }
+  catch(e){ return 0; }
+}
+async function autoReconcileOrders(){
+  if(!window._sbpbClient) return;
+  if(!currentUser) return;
+  if(document.visibilityState !== 'visible') return;   // 页面不可见不查，省流量
+  const isAdmin = currentUser.role === 'admin';
+  const isOperator = currentUser.role === 'operator';
+  try{
+    let q = window._sbpbClient.from('orders').select('id, updated_at').eq('_deleted', false);
+    if(!isAdmin && !isOperator) q = q.eq('sales_id', currentUser.id);
+    const { data, error } = await withTimeout(q.order('created_at', { ascending: true }), 15000, 'autoReconcile');
+    if(error || !Array.isArray(data)) return;
+    const cloudMap = {};
+    data.forEach(function(r){ if(r && r.id) cloudMap[r.id] = r.updated_at || ''; });
+    const local = (DB.get('orders', []) || []).filter(function(o){
+      if(o && o._deleted) return false;
+      if(!isAdmin && !isOperator && o.salesId !== currentUser.id) return false;
+      return true;
+    });
+    const localMap = {};
+    local.forEach(function(o){ if(o && o.id != null) localMap[o.id] = o.updatedAt || ''; });
+    const need = [];
+    Object.keys(cloudMap).forEach(function(id){
+      if(_autoReconcileFailed[id] && (Date.now() - _autoReconcileFailed[id]) > 30 * 60 * 1000) delete _autoReconcileFailed[id];
+      const missing = !(id in localMap);
+      const changed = _autoReconcileTs(cloudMap[id]) > _autoReconcileTs(localMap[id] || '');
+      if((missing || changed) && !_autoReconcileFailed[id]) need.push(id);
+    });
+    if(!need.length) return;   // 无变化：零额外流量
+    const { data: rows, error: e2 } = await withTimeout(
+      window._sbpbClient.from('orders').select('*').in('id', need), 15000, 'autoReconcilePull');
+    if(e2 || !Array.isArray(rows) || !rows.length){
+      need.forEach(function(id){ _autoReconcileFailed[id] = Date.now(); });   // 失败冷却，交由红条/手动同步
+      return;
+    }
+    const all = DB.get('orders', []);
+    const byId = {};
+    all.forEach(function(o){ if(o && o.id != null) byId[o.id] = o; });
+    rows.forEach(function(o){ byId[o.id] = o; });   // 云端优先覆盖（仅当云端 updated_at 更新才进 need，不会覆盖本地新改）
+    DB.set('orders', Object.keys(byId).map(function(k){ return byId[k]; }));
+    need.forEach(function(id){ _autoReconcileFailed[id] = 0; });
+    // 仅在订单相关页且可见时轻量刷新，让变化立刻可见（复用现有渲染器，不乱刷其他页）
+    if(document.visibilityState === 'visible'){
+      try{
+        if(currentRoute === 'orders' || currentRoute === 'order-detail' || window._currentOrderId){
+          if(typeof renderOrderList === 'function') renderOrderList();
+          if(window._currentOrderId && typeof renderOrderDetail === 'function') renderOrderDetail();
+        }
+        if(typeof renderSidebar === 'function') renderSidebar();
+      }catch(e){}
+    }
+  }catch(e){
+    console.warn('[autoReconcile] 异常:', (e && e.message) || e);
+  }
+}
+function startAutoReconcile(){
+  if(window._autoReconcileTimer) return;   // 防重：仅启动一次
+  try{
+    window._autoReconcileTimer = setInterval(function(){ try{ autoReconcileOrders(); }catch(e){} }, 5 * 60 * 1000);
+    setTimeout(function(){ try{ autoReconcileOrders(); }catch(e){} }, 8000);   // 启动后错峰跑一次，登录后尽快收敛
+    console.log('[autoReconcile] 已启动 5 分钟差量对账定时器');
+  }catch(e){}
 }
 async function orderGapSyncNow(){
   const banner = document.getElementById('orderGapBanner');
@@ -1580,7 +1658,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026092802</div>
+          <div class="brand-sub">v2026092901</div>
         </div>
       </div>
     </div>
