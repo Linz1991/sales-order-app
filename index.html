@@ -2724,7 +2724,7 @@ const DB = {
             // 商品基础字段(按 index 兜底匹配，顺序稳定)：编辑戳优先（无戳时退回只补不删）
             // itemRemark（商品备注）：v20260917 纳入编辑戳优先合并，随 saveItemRemark 打的
             // _syncEditAt 跨端生效（含清空），未纳入前会被对方旧副本的整行 LWW 丢掉。
-            const ITEM_FIELDS = ['name','price','qty','stock','subtotal','itemRemark','customerArrival'];
+            const ITEM_FIELDS = ['name','price','qty','stock','subtotal','itemRemark','customerArrival','govSubsidy'];
             _finalRow.items.forEach(function(t, i){
               if(!t) return;
               const l = lr.items[i], rr = r.items[i];
@@ -6623,7 +6623,7 @@ function viewOrder(orderId, forceViewOnly){
               if(cloud[k] !== undefined && cloud[k] !== null && cloud[k] !== '') orders[i][k] = cloud[k];
             });
             if(Array.isArray(cloud.items) && Array.isArray(orders[i].items)){
-              const ITEM_FIELDS = ['name','price','qty','stock','subtotal','trackingNo','waste'];
+              const ITEM_FIELDS = ['name','price','qty','stock','subtotal','trackingNo','waste','govSubsidy'];
               cloud.items.forEach(function(ci, idx){
                 const t = orders[i].items[idx];
                 if(!t) return;
@@ -8541,6 +8541,15 @@ function renderOrderDetail(){
           const arrivalCell = (isAdmin && !editMode)
             ? '<input type="text" class="form-control" id="doorArrivalItem_'+i+'" value="'+escapeHtml(it.customerArrival||'')+'" placeholder="" style="padding:6px 10px;width:130px" onchange="saveItemArrival(\''+order.id+'\','+i+',this.value)">'
             : '<span style="font-size:13px;color:#333">'+(escapeHtml(it.customerArrival||'') || '<span style="color:#bbb">—</span>')+'</span>';
+          // 国补勾选：管理员/销售可勾选（即时保存）；其他角色只读显示
+          let govCell;
+          if(editMode){
+            govCell = '<label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;color:#555;cursor:pointer"><input type="checkbox" id="doorGovItem_'+i+'" '+((it.govSubsidy)?'checked':'')+'> 国补</label>';
+          } else if(isAdmin || currentUser.role==='sales'){
+            govCell = '<label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;color:#555;cursor:pointer"><input type="checkbox" id="doorGovItem_'+i+'" '+((it.govSubsidy)?'checked':'')+' onchange="saveItemGovSubsidy(\''+order.id+'\','+i+',this.checked)"> 国补</label>';
+          } else {
+            govCell = (it.govSubsidy) ? '<label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;color:#555;cursor:default"><input type="checkbox" disabled checked> 国补</label>' : '<span style="font-size:13px;color:#bbb">国补 —</span>';
+          }
           return `
             <div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;background:${rowBg}">
               <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px">
@@ -8554,6 +8563,7 @@ function renderOrderDetail(){
                 <span>利润 <b style="color:${itemProfit>=0?'var(--success)':'var(--danger)'}">${money(itemProfit)}</b></span>
               </div>` : (editMode ? `<div style="margin-top:8px;font-size:13px;color:#555">售价 <b style="color:#222">${priceCell}</b></div>` : '')}
               <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px 22px;margin-top:12px">
+                <div style="display:flex;align-items:center;gap:8px">${govCell}</div>
                 <div style="display:flex;align-items:center;gap:8px"><span style="font-size:13px;color:#555">货到店</span>${stockCell}</div>
                 <div style="display:flex;align-items:center;gap:8px"><span style="font-size:13px;color:#555">货到客户</span>${arrivalCell}</div>
                 ${editMode ? `<button class="btn-link danger" style="margin-left:auto" onclick="removeEditItem(${i})">删除</button>` : ''}
@@ -8719,7 +8729,7 @@ function renderOrderDetail(){
     html += `
     <div class="detail-section card">
       <h4>💰 收款信息</h4>
-      <div class="detail-box detail-locked">🔒 收款金额仅提交人（${escapeHtml(order.salesName) || '销售'}）及管理员可见</div>
+      <div class="detail-box detail-locked" style="display:none;">🔒 收款金额仅提交人（${escapeHtml(order.salesName) || '销售'}）及管理员可见</div>
     </div>`;
   }
   // operator（操作员）无财务权限查看他人订单：整块收款信息（含提示）不渲染
@@ -9117,6 +9127,33 @@ function copySingleOrderInfo(orderId){
   }
   // 备注行（始终显示）
   lines.push('备注：' + (order.remark || ''));
+  // 上门订单：保留上方信息，追加备货统计 + 国补清单
+  if(order.type === 'door' && order.items && order.items.length){
+    let totalQty = 0, stockedQty = 0, shippedQty = 0, needStockQty = 0;
+    const govItems = [];
+    order.items.forEach(it => {
+      const q = (it.qty || 0);
+      totalQty += q;
+      if(it.stock === '有' || it.stock === '是') stockedQty += q;
+      else needStockQty += q;
+      if((it.customerArrival || '').trim()) shippedQty += q;
+      if(it.govSubsidy) govItems.push(it);
+    });
+    lines.push('');
+    lines.push('————— 备货统计 —————');
+    lines.push('总计 ' + totalQty + ' 件商品');
+    lines.push('店里已备货 ' + stockedQty + ' 件');
+    lines.push('已发货到客户家里 ' + shippedQty + ' 件');
+    lines.push('需要备货 ' + needStockQty + ' 件');
+    if(govItems.length){
+      lines.push('其中国补的商品有：');
+      govItems.forEach(it => {
+        const sub = (it.price || 0) * 0.85;
+        const subStr = (Math.round(sub * 100) / 100).toString();
+        lines.push((it.name || '未命名商品') + ' ' + (it.price || 0) + '*0.85=' + subStr);
+      });
+    }
+  }
   copyToClipboardWithMsg(lines.join('\n'));
 }
 
@@ -9789,6 +9826,8 @@ async function saveEditOrder(orderId){
     total += it.subtotal;
     const stockEl = document.getElementById('editItemStock_'+i);
     if(stockEl) it.stock = stockEl.value;
+    const govEl = document.getElementById('doorGovItem_'+i);
+    if(govEl !== null) it.govSubsidy = !!govEl.checked;
     // 同时回读物流单号（管理员可在编辑态直接改运单号；分支2输入框现已带 id，避免保存时丢失）
     const tEl = document.getElementById('trackItem_'+i);
     if(tEl !== null) it.trackingNo = (tEl.value || '').trim();
@@ -10671,6 +10710,24 @@ function saveItemArrival(orderId, itemIndex, value) {
   showToast('货到客户序列号已更新', 'success');
 }
 
+// 上门订单：标记商品「国补」（管理员/销售可勾选），即时保存并同步
+function saveItemGovSubsidy(orderId, itemIndex, value) {
+  if (currentUser.role !== 'admin' && currentUser.role !== 'sales') {
+    showToast('仅销售或管理员可标记国补', 'error');
+    return;
+  }
+  const orders = DB.get('orders');
+  const idx = orders.findIndex(o => o.id === orderId);
+  if (idx < 0) return;
+  orders[idx].items[itemIndex].govSubsidy = !!value;
+  orders[idx].updatedAt = nowStr();
+  DB.set('orders', orders);
+  _pinWriteLock(orderId); // 写入窗口锁：防止同步/重拉期间被旧云端数据覆盖
+  syncOrdersNow().catch(function(){});
+  renderOrderDetail();
+  showToast('国补标记已更新', 'success');
+}
+
 /* ============ 上门订单一键导出 PDF（v2026092802） ============ */
 // jsPDF 自带字体不含中文，故走「浏览器渲染 DOM → html2canvas 截图 → 贴入 PDF」路线：
 // 中文由系统字体渲染，不会乱码；代价是 PDF 内文字为位图（不可搜索、放大略糊）。
@@ -10863,6 +10920,8 @@ function saveDoorDetail(orderId){
     if(wEl !== null) it.waste = parseInt(wEl.value) || 0;
     const aEl = document.getElementById('doorArrivalItem_' + i);
     if(aEl !== null) it.customerArrival = (aEl.value || '').trim();
+    const gEl = document.getElementById('doorGovItem_' + i);
+    if(gEl !== null) it.govSubsidy = !!gEl.checked;
   });
   const flowed = autoDoorConfirmIfAllStocked(o);
   DB.set('orders', orders);
