@@ -1658,7 +1658,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026100101</div>
+          <div class="brand-sub">v2026100102</div>
         </div>
       </div>
     </div>
@@ -9175,8 +9175,8 @@ function copySingleOrderInfo(orderId){
     if(govItems.length){
       lines.push('其中国补的商品有：');
       govItems.forEach(it => {
-        const price = (it.price || 0);                 // 系统售价（国补后实付价）
-        const original = parseFloat((price / 0.85).toFixed(2));  // 国补前原价（由实付价÷0.85反推，保留两位）
+        const price = (it.price || 0);                 // 系统里的售价（国补后实付价）
+        const original = Math.round(price / 0.85);     // 国补前原价 = 实付价 ÷ 0.85（四舍五入取整）
         lines.push((it.name || '未命名商品') + ' ' + original + '*0.85=' + (Math.round(price * 100) / 100).toFixed(2));
       });
     }
