@@ -9113,16 +9113,21 @@ function copySingleOrderInfo(orderId){
   if(addr) head += addr;
   else if(order.region || order.address) head += (order.region || '') + (order.address || '');
   lines.push(head);
-  // 每个商品一行：商品名 ×数量 — 状态（货到客户有物流单号 → 直接显示该单号；货到店=有 → 显示 有；货到店为 无/空 且货到客户无内容 → 不显示任何状态）
+  // 每个商品一行：商品名 ×数量 + 标记（货到客户有物流单号 → 显示 — #单号；货到店=有 → — ✅，按数量重复；货到店为 无/空 → 直接 ❗️，按数量重复）
   if(order.items && order.items.length){
     order.items.forEach(it => {
-      let status = '';
+      const qty = (it.qty || 1);
       const arrival = (it.customerArrival || '').trim();
-      if(arrival) status = '#' + arrival;
-      else if(it.stock === '有' || it.stock === '是') status = '有';
-      // 货到店为 无/空 且货到客户无内容 → 不显示状态
-      const base = (it.name || '未命名商品') + ' ×' + (it.qty || 1);
-      lines.push(status ? base + ' — ' + status : base);
+      let mark = '';
+      if(arrival){
+        mark = ' — #' + arrival;            // 货到客户：显示物流单号，不标 ✅/❗️
+      } else if(it.stock === '有' || it.stock === '是'){
+        mark = ' — ' + '✅'.repeat(qty);     // 有货：按数量标 ✅
+      } else {
+        mark = '❗️'.repeat(qty);             // 缺货/未选：按数量标 ❗️
+      }
+      const base = (it.name || '未命名商品') + ' ×' + qty;
+      lines.push(base + mark);
     });
   }
   // 备注行（始终显示）
@@ -9134,9 +9139,14 @@ function copySingleOrderInfo(orderId){
     order.items.forEach(it => {
       const q = (it.qty || 0);
       totalQty += q;
-      if(it.stock === '有' || it.stock === '是') stockedQty += q;
-      else needStockQty += q;
-      if((it.customerArrival || '').trim()) shippedQty += q;
+      const arrival = (it.customerArrival || '').trim();
+      if(arrival){
+        shippedQty += q;                 // 已发货到客户：优先，不再计入需要备货
+      } else if(it.stock === '有' || it.stock === '是'){
+        stockedQty += q;                 // 店里已备货
+      } else {
+        needStockQty += q;               // 需要备货（缺货且未发货）
+      }
       if(it.govSubsidy) govItems.push(it);
     });
     lines.push('');
