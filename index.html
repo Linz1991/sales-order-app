@@ -1661,7 +1661,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026100107</div>
+          <div class="brand-sub">v2026100108</div>
         </div>
       </div>
     </div>
@@ -2180,7 +2180,7 @@ const DB = {
       }
       // 商品表：把原始云端列表暂存，供启动时去重对齐使用（避免本地旧缓存重复上云）
       if(key === 'products') window._lastCloudProducts = cloud || [];
-      // v2026100107：payments 全量拉取时执行删除传播。收款记录被管理员在云端删除后，
+      // v2026100108：payments 全量拉取时执行删除传播。收款记录被管理员在云端删除后，
       // 必须同步清掉本地缓存，否则本地脏行会被 _pushDirtyRows 重新 upsert 复活。
       if(key === 'payments'){
         const cloudIds = new Set((cloud || []).map(function(r){ return r && r.id; }).filter(Boolean));
@@ -3436,7 +3436,7 @@ const DB = {
         }
       }catch(e){ console.warn('[status-guard] 跳过:', e && e.message); }
     }
-    // v2026100107：payments 上推保护。收款记录被云端删除/作废后，本地陈旧脏行不得重新 upsert 复活；
+    // v2026100108：payments 上推保护。收款记录被云端删除/作废后，本地陈旧脏行不得重新 upsert 复活；
     // 否则管理员在云端删掉的误收款会被客户端同步再次写回（如蔡小姐 27230 误收款反复复活）。
     if(key === 'payments' && snakeData && snakeData.length){
       try{
@@ -5710,6 +5710,7 @@ function checkOrderAutoFlow(){
     if(o.type === 'door' && o.completionDate && !['completed'].includes(o.status)){
       if(today > o.completionDate){
         o.status = 'completed';
+        if(!o.completedAt) o.completedAt = nowStr(); // v2026100108：利润归属日期依赖此字段，此前漏写
         o.updatedAt = nowStr(); // 关键：刷新时间戳，否则 pull 时云端旧 pending（毫秒更旧）会把本地 completed 覆盖回 pending → 列表频闪
         changed = true;
         return; // 已完成后不再走下面的流转
@@ -8694,7 +8695,7 @@ function renderOrderDetail(){
   // 但本人（提交人）查看「已下单/已完成」订单时，显示只读收款信息，不再编辑/选择）
   const isSalesReadOnlyView = !isAdmin && isOwner && (order.status==='completed' || order.status==='confirmed' || order.status==='feedback' || order.status==='feedback_done');
   const showPaymentReadonly = isSalesReadOnlyView || viewOnly || isDoorConfirmedAdmin;
-  // v2026100107：已收款 = 建单登记初始值 + Σ已到账收款；待收款 = 总额 - 已收款。
+  // v2026100108：已收款 = 建单登记初始值 + Σ已到账收款；待收款 = 总额 - 已收款。
   // 不能只读 collectedAmount（它只是初始值，不含后续收款），否则收完尾款仍显示"待收款"。
   const _doorRemain = getOrderRemaining(order);
   const _doorPaidSum = Math.max(0, (parseInt(order.total) || 0) - _doorRemain);
@@ -9505,6 +9506,7 @@ function salesSubmitFeedback(orderId){
   }
   showConfirm('确认提交反馈？确认后该订单将转入「已完成」列表。', async () => {
     orders[idx].status = 'completed';
+    if(!orders[idx].completedAt) orders[idx].completedAt = nowStr(); // v2026100108：利润归属日期依赖此字段，此前漏写
     orders[idx].lockedBy = null; orders[idx].lockedAt = null; // 清除可能残留的管理员锁，避免影响已完成后同步
     orders[idx].updatedAt = nowStr();
     _pinWriteLock(orderId); // 写入窗口锁：反馈完成即刻 pin，350ms 重拉/推送间隙不被云端旧 feedback 闪回（配合 _mergeById 写锁内状态保护）
@@ -9545,6 +9547,7 @@ function markOrderFeedbackDone(orderId){
   }
   showConfirm('确认将该订单标记为「已反馈」？确认后订单将转入「已完成」列表。', async () => {
     orders[idx].status = 'completed';
+    if(!orders[idx].completedAt) orders[idx].completedAt = nowStr(); // v2026100108：利润归属日期依赖此字段，此前漏写
     orders[idx].lockedBy = null; orders[idx].lockedAt = null; // 清除可能残留的管理员锁，避免影响已完成后同步
     orders[idx].updatedAt = nowStr();
     _pinWriteLock(orderId); // 写入窗口锁：反馈完成即刻 pin，350ms 重拉/推送间隙不被云端旧 feedback 闪回（配合 _mergeById 写锁内状态保护）
@@ -10484,26 +10487,19 @@ function calcOrderProfit(order) {
   if (!order || !order.items) return 0;
   const grossProfit = order.items.reduce((total, it) => {
     const cost = effectiveItemCost(order, it);
-    const itemProfit = it.price * it.qty - cost * it.qty - (it.waste || 0);
+    // v2026100108：price/qty 加空值兜底（与详情页/导出处口径一致）。
+    // 任一商品出现 undefined 会让整单利润变 NaN，并顺着汇总污染整张报表的合计数。
+    const qty = Number(it.qty) || 0;
+    const itemProfit = (Number(it.price) || 0) * qty - cost * qty - (Number(it.waste) || 0);
     return total + itemProfit;
   }, 0);
   // 扣减售后损耗金额（财务联动）
   return grossProfit - (order.afterSaleLoss || 0);
 }
 
-// 利润归属日期
+// 利润归属日期（v2026100108：统一为 getProfitDate 唯一口径，消除首页与报表两套算法）
 function calcProfitDate(order) {
-  if (!order) return null;
-  if (order.type === 'door') {
-    // 上门订单：利润算在已完成那天
-    return (order.completedAt || '').slice(0, 10) || null;
-  }
-  if (order.type === 'warehouse') {
-    // 留仓订单：利润算在变为已下单那天
-    return (order.confirmedAt || '').slice(0, 10) || (order.orderDate || null);
-  }
-  // 普通订单：利润算在变为已下单那天
-  return (order.confirmedAt || '').slice(0, 10) || null;
+  return getProfitDate(order) || null;
 }
 
 // 保存商品损耗（即时落库，避免切换状态/页面时丢失）
@@ -10575,6 +10571,7 @@ async function markItemOrdered(orderId, idx){
         const o2 = orders2.find(x => x.id === orderId);
         if(!o2) return;
         o2.status = 'confirmed';
+        if(!o2.confirmedAt) o2.confirmedAt = nowStr(); // v2026100108：利润归属日期依赖此字段，此前漏写导致首页利润统计不到
         o2.updatedAt = nowStr();
         DB.set('orders', orders2);
         _pinWriteLock(orderId); // 写入窗口锁：状态推进到 confirmed，3 秒内禁止云端回退为 pending
@@ -10605,6 +10602,7 @@ async function markItemOrdered(orderId, idx){
         const o2 = orders2.find(x => x.id === orderId);
         if(!o2) return;
         o2.status = 'confirmed';
+        if(!o2.confirmedAt) o2.confirmedAt = nowStr(); // v2026100108：利润归属日期依赖此字段，此前漏写导致首页利润统计不到
         o2.updatedAt = nowStr();
         DB.set('orders', orders2);
         _pinWriteLock(orderId); // 写入窗口锁：状态推进到 confirmed，3 秒内禁止云端回退为 pending
@@ -13305,7 +13303,7 @@ function getOrderRemaining(order){
   if(!order) return 0;
   const basePaid = getOrderPaidBase(order);
   const finalPay = parseInt(order.finalPayment) || Math.max(0, (parseInt(order.total) || 0) - basePaid);
-  // v2026100107：过滤明显超额的收款（单笔超过尾款金额视为误登记），防止误收款把待收尾款冲成 0
+  // v2026100108：过滤明显超额的收款（单笔超过尾款金额视为误登记），防止误收款把待收尾款冲成 0
   const paidRecords = (DB.get('payments') || []).filter(p =>
     p && p.orderId === order.id &&
     p.status === 'paid' &&
@@ -13486,7 +13484,7 @@ function savePayment(orderId){
   const allOrders = DB.get('orders');
   const target = allOrders.find(o => o.id === orderId);
   if(target){
-    // v2026100107：不再把收款累加回写 collectedAmount。
+    // v2026100108：不再把收款累加回写 collectedAmount。
     // collectedAmount 的语义是「建单时登记的实际已收（初始值）」，后续收款一律记在 payments 里；
     // 待收尾款 = 总额 - 初始值 - Σ已到账收款，微信总额 = 初始值 + Σ收款记录。
     // 原写法把 payments 累加进 collectedAmount，而上面两处又会再算一遍 payments → 双重计算，
@@ -14679,7 +14677,7 @@ async function renderSchedule(){
             html += escapeHtml(o.customerName||'');
             var _city = orderCityOf(o);
             if(_city) html += '<br>'+escapeHtml(_city);
-            // v2026100107：原写法直接读静态字段 finalPayment（建单时算出的尾款额），
+            // v2026100108：原写法直接读静态字段 finalPayment（建单时算出的尾款额），
             // 尾款收齐后日历上仍会一直显示「尾款¥X」，造成"钱收了还显示"的错觉。
             // 改为显示「实际待收尾款」，已收齐则不显示。
             var _remain = getOrderRemaining(o);
@@ -14965,16 +14963,27 @@ function changeUserRole(userId, role){
 
 /* ============ 利润结算辅助函数 ============ */
 function getProfitDate(order){
+  if(!order) return '';
   // 统一返回纯日期 YYYY-MM-DD（截断 ISO 时间部分），避免云端拉回的
   // created_at/completionDate 等带 'T' 时间导致字符串比较时被日期范围过滤器漏掉
   function toPlain(d){ if(!d) return ''; var s = String(d); return s.slice(0,10); }
-  // 留仓/上门订单以完成日期为准
-  if((order.type === 'warehouse' || order.type === 'door') && order.completionDate){
-    return toPlain(order.completionDate);
+  // v2026100108：原先系统里并存两套利润归属日期——calcProfitDate(首页) 只认 confirmed_at/completed_at，
+  // getProfitDate(报表) 只认 completion_date/order_date。而 confirmed_at/completed_at 在状态流转时
+  // 从未写入（777 单里 748 单为空），导致首页利润漏掉 96% 的订单、与报表数字对不上。
+  // 现统一为唯一口径：优先业务日期，逐级回退到流转时间戳、下单日期、创建时间，保证每单都能算出归属日期。
+  var chain;
+  if(order.type === 'door' || order.type === 'warehouse'){
+    // 上门/留仓：与日历一致，优先「上门(完成)日期」
+    chain = [order.completionDate, order.completedAt, order.confirmedAt, order.orderDate, order.createdAt];
+  }else{
+    // 普通订单：优先转「已下单」时间，其次发货/反馈时间，最后下单日期
+    chain = [order.confirmedAt, order.shippedAt, order.feedbackAt, order.orderDate, order.createdAt];
   }
-  // 常规订单以履约日期为准
-  if(order.fulfillmentDate) return toPlain(order.fulfillmentDate);
-  return toPlain(order.orderDate) || toPlain(order.createdAt) || '';
+  for(var i = 0; i < chain.length; i++){
+    var d = toPlain(chain[i]);
+    if(d) return d;
+  }
+  return '';
 }
 /* ============ 人员管理 ============ */
 function renderUsers(){
@@ -15432,10 +15441,12 @@ function renderProfitReport(){
       (o.items||[]).forEach(function(it){
         var prod = products.find(function(p){ return p.id === it.productId; });
         var cost = effectiveItemCost(o, it);
-        s.revenue += it.price * it.qty;
-        s.cost += cost * it.qty;
-        s.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
-        s.loss += (it.waste||0);
+        // v2026100108：与 calcOrderProfit 同口径，price/qty 加兜底防 NaN 污染整列合计
+        var _qty = Number(it.qty) || 0, _price = Number(it.price) || 0, _waste = Number(it.waste) || 0;
+        s.revenue += _price * _qty;
+        s.cost += cost * _qty;
+        s.profit += _price * _qty - cost * _qty - _waste;
+        s.loss += _waste;
       });
       s.loss += o.afterSaleLoss || 0;
       s.profit -= (o.afterSaleLoss || 0);
@@ -15875,10 +15886,12 @@ function exportProfitCSV(){
       (o.items||[]).forEach(function(it){
         var prod = products.find(function(p){ return p.id === it.productId; });
         var cost = effectiveItemCost(o, it);
-        s.revenue += it.price * it.qty;
-        s.cost += cost * it.qty;
-        s.profit += it.price * it.qty - cost * it.qty - (it.waste||0);
-        s.loss += (it.waste||0);
+        // v2026100108：与 calcOrderProfit 同口径，price/qty 加兜底防 NaN 污染整列合计
+        var _qty = Number(it.qty) || 0, _price = Number(it.price) || 0, _waste = Number(it.waste) || 0;
+        s.revenue += _price * _qty;
+        s.cost += cost * _qty;
+        s.profit += _price * _qty - cost * _qty - _waste;
+        s.loss += _waste;
       });
       s.loss += o.afterSaleLoss || 0;
       s.profit -= (o.afterSaleLoss || 0);
