@@ -9136,7 +9136,7 @@ function copySingleOrderInfo(orderId){
   if(order.type === 'door' && order.items && order.items.length){
     let totalQty = 0, stockedQty = 0, shippedQty = 0, needStockQty = 0;
     const govItems = [];
-    order.items.forEach(it => {
+    order.items.forEach((it, idx) => {
       const q = (it.qty || 0);
       totalQty += q;
       const arrival = (it.customerArrival || '').trim();
@@ -9147,7 +9147,11 @@ function copySingleOrderInfo(orderId){
       } else {
         needStockQty += q;               // 需要备货（缺货且未发货）
       }
-      if(it.govSubsidy) govItems.push(it);
+      // 优先取界面当前勾选（含编辑模式未点保存的勾选）；无勾选框元素时退回已保存数据
+      let govFlag = it.govSubsidy;
+      const gEl = document.getElementById('doorGovItem_' + idx);
+      if(gEl !== null) govFlag = !!gEl.checked;
+      if(govFlag) govItems.push(it);
     });
     lines.push('');
     lines.push('————— 备货统计 —————');
@@ -9158,9 +9162,9 @@ function copySingleOrderInfo(orderId){
     if(govItems.length){
       lines.push('其中国补的商品有：');
       govItems.forEach(it => {
-        const sub = (it.price || 0) * 0.85;
-        const subStr = (Math.round(sub * 100) / 100).toString();
-        lines.push((it.name || '未命名商品') + ' ' + (it.price || 0) + '*0.85=' + subStr);
+        const price = (it.price || 0);                 // 系统售价（国补后实付价）
+        const original = Math.round(price / 0.85);     // 国补前原价（由国补后售价倒推）
+        lines.push((it.name || '未命名商品') + ' ' + original + '*0.85=' + (Math.round(price * 100) / 100).toFixed(2));
       });
     }
   }
