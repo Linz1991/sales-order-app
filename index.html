@@ -1661,7 +1661,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026100106</div>
+          <div class="brand-sub">v2026100107</div>
         </div>
       </div>
     </div>
@@ -2180,7 +2180,7 @@ const DB = {
       }
       // 商品表：把原始云端列表暂存，供启动时去重对齐使用（避免本地旧缓存重复上云）
       if(key === 'products') window._lastCloudProducts = cloud || [];
-      // v2026100106：payments 全量拉取时执行删除传播。收款记录被管理员在云端删除后，
+      // v2026100107：payments 全量拉取时执行删除传播。收款记录被管理员在云端删除后，
       // 必须同步清掉本地缓存，否则本地脏行会被 _pushDirtyRows 重新 upsert 复活。
       if(key === 'payments'){
         const cloudIds = new Set((cloud || []).map(function(r){ return r && r.id; }).filter(Boolean));
@@ -3436,7 +3436,7 @@ const DB = {
         }
       }catch(e){ console.warn('[status-guard] 跳过:', e && e.message); }
     }
-    // v2026100106：payments 上推保护。收款记录被云端删除/作废后，本地陈旧脏行不得重新 upsert 复活；
+    // v2026100107：payments 上推保护。收款记录被云端删除/作废后，本地陈旧脏行不得重新 upsert 复活；
     // 否则管理员在云端删掉的误收款会被客户端同步再次写回（如蔡小姐 27230 误收款反复复活）。
     if(key === 'payments' && snakeData && snakeData.length){
       try{
@@ -8694,6 +8694,10 @@ function renderOrderDetail(){
   // 但本人（提交人）查看「已下单/已完成」订单时，显示只读收款信息，不再编辑/选择）
   const isSalesReadOnlyView = !isAdmin && isOwner && (order.status==='completed' || order.status==='confirmed' || order.status==='feedback' || order.status==='feedback_done');
   const showPaymentReadonly = isSalesReadOnlyView || viewOnly || isDoorConfirmedAdmin;
+  // v2026100107：已收款 = 建单登记初始值 + Σ已到账收款；待收款 = 总额 - 已收款。
+  // 不能只读 collectedAmount（它只是初始值，不含后续收款），否则收完尾款仍显示"待收款"。
+  const _doorRemain = getOrderRemaining(order);
+  const _doorPaidSum = Math.max(0, (parseInt(order.total) || 0) - _doorRemain);
   if(canViewFinancials && (!isSalesRestrictedView || isSalesReadOnlyView)){
     if(showPaymentReadonly){
       html += `
@@ -8702,8 +8706,8 @@ function renderOrderDetail(){
           <div class="detail-green-title">💰 收款信息</div>
           <div class="info-grid">
             <div class="info-item"><div class="info-label">订单总额</div><div class="info-value" style="color:var(--primary);font-size:18px">${money(order.total||0)}</div></div>
-            <div class="info-item"><div class="info-label">已收款</div><div class="info-value" style="color:var(--success)">${money(order.collectedAmount||0)}</div></div>
-            <div class="info-item"><div class="info-label">待收款</div><div class="info-value" style="color:var(--danger)">${money(Math.max(0,(order.total||0)-(order.collectedAmount||0)))}</div></div>
+            <div class="info-item"><div class="info-label">已收款</div><div class="info-value" style="color:var(--success)">${money(Math.min((order.total||0), _doorPaidSum))}</div></div>
+            <div class="info-item"><div class="info-label">待收款</div><div class="info-value" style="color:var(--danger)">${money(_doorRemain)}</div></div>
             <div class="info-item"><div class="info-label">收款方式</div><div class="info-value">${order.paymentMethod==='wechat'?'微信支付':(order.paymentMethod==='scan'?'扫码支付':'-')}</div></div>
             <div class="info-item"><div class="info-label">尾款状态</div><div class="info-value">${order.deposit ? '有尾款（'+money(Math.max(0,(order.total||0)-(order.deposit||0)))+'）' : '无尾款（全款）'}</div></div>
           </div>
@@ -13301,7 +13305,7 @@ function getOrderRemaining(order){
   if(!order) return 0;
   const basePaid = getOrderPaidBase(order);
   const finalPay = parseInt(order.finalPayment) || Math.max(0, (parseInt(order.total) || 0) - basePaid);
-  // v2026100106：过滤明显超额的收款（单笔超过尾款金额视为误登记），防止误收款把待收尾款冲成 0
+  // v2026100107：过滤明显超额的收款（单笔超过尾款金额视为误登记），防止误收款把待收尾款冲成 0
   const paidRecords = (DB.get('payments') || []).filter(p =>
     p && p.orderId === order.id &&
     p.status === 'paid' &&
@@ -13482,10 +13486,14 @@ function savePayment(orderId){
   const allOrders = DB.get('orders');
   const target = allOrders.find(o => o.id === orderId);
   if(target){
+    // v2026100107：不再把收款累加回写 collectedAmount。
+    // collectedAmount 的语义是「建单时登记的实际已收（初始值）」，后续收款一律记在 payments 里；
+    // 待收尾款 = 总额 - 初始值 - Σ已到账收款，微信总额 = 初始值 + Σ收款记录。
+    // 原写法把 payments 累加进 collectedAmount，而上面两处又会再算一遍 payments → 双重计算，
+    // 已收金额越滚越大直至超过订单总额（蔡小姐单被算成 54460 > 总额 27230）。
     const initPaid = parseInt(target.collectedAmount) || 0;
     const paidSum = (DB.get('payments') || []).filter(p => p.orderId === orderId && p.status === 'paid').reduce((s, p) => s + (parseInt(p.amount) || 0), 0);
-    const totalCollected = initPaid + paidSum;
-    target.collectedAmount = totalCollected;
+    const totalCollected = initPaid + paidSum; // 仅用于判定是否结清，不回写
     const orderTotal = parseInt(target.total) || 0;
     target.paymentSettled = (orderTotal > 0 && totalCollected >= orderTotal);
     target.updatedAt = nowStr();
@@ -14671,7 +14679,11 @@ async function renderSchedule(){
             html += escapeHtml(o.customerName||'');
             var _city = orderCityOf(o);
             if(_city) html += '<br>'+escapeHtml(_city);
-            if(o.finalPayment > 0) html += '<br>尾款'+money(o.finalPayment);
+            // v2026100107：原写法直接读静态字段 finalPayment（建单时算出的尾款额），
+            // 尾款收齐后日历上仍会一直显示「尾款¥X」，造成"钱收了还显示"的错觉。
+            // 改为显示「实际待收尾款」，已收齐则不显示。
+            var _remain = getOrderRemaining(o);
+            if(_remain > 0) html += '<br>尾款'+money(_remain);
             html += '</div>';
           });
         } else {
