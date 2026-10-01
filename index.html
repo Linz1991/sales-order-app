@@ -9113,6 +9113,8 @@ function copySingleOrderInfo(orderId){
   if(addr) head += addr;
   else if(order.region || order.address) head += (order.region || '') + (order.address || '');
   lines.push(head);
+  // 地址与商品之间分隔横线
+  lines.push('────────────────────────────');
   // 每个商品一行：商品名 ×数量 + 标记（货到客户有物流单号 → 显示 — #单号；货到店=有 → — ✅，按数量重复；货到店为 无/空 → 直接 ❗️，按数量重复）
   if(order.items && order.items.length){
     order.items.forEach(it => {
@@ -9159,11 +9161,22 @@ function copySingleOrderInfo(orderId){
     lines.push('店里已备货 ' + stockedQty + ' 件');
     lines.push('已发货到客户家里 ' + shippedQty + ' 件');
     lines.push('需要备货 ' + needStockQty + ' 件');
+    // 货款统计（定金/尾款自动带出；合计=订单总额，无总额则按明细求和）
+    lines.push('');
+    lines.push('————— 货款统计 —————');
+    lines.push('定金：' + ((order.deposit != null && order.deposit !== 0) ? money(order.deposit) : ''));
+    const _fp = (order.finalPayment != null ? order.finalPayment : (order.final_payment != null ? order.final_payment : 0));
+    lines.push('尾款：' + (_fp ? money(_fp) : ''));
+    const _goodsTotal = (order.total != null && order.total !== 0) ? order.total : order.items.reduce(function(s, it){ return s + (it.price || 0) * (it.qty || 0); }, 0);
+    lines.push('合计：' + money(_goodsTotal));
+    // 国补统计
+    lines.push('');
+    lines.push('————— 国补统计 —————');
     if(govItems.length){
       lines.push('其中国补的商品有：');
       govItems.forEach(it => {
         const price = (it.price || 0);                 // 系统售价（国补后实付价）
-        const original = Math.round(price / 0.85);     // 国补前原价（由国补后售价倒推）
+        const original = parseFloat((price / 0.85).toFixed(2));  // 国补前原价（由实付价÷0.85反推，保留两位）
         lines.push((it.name || '未命名商品') + ' ' + original + '*0.85=' + (Math.round(price * 100) / 100).toFixed(2));
       });
     }
