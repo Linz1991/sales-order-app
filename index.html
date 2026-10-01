@@ -2180,6 +2180,19 @@ const DB = {
       }
       // 商品表：把原始云端列表暂存，供启动时去重对齐使用（避免本地旧缓存重复上云）
       if(key === 'products') window._lastCloudProducts = cloud || [];
+      // v2026100106：payments 全量拉取时执行删除传播。收款记录被管理员在云端删除后，
+      // 必须同步清掉本地缓存，否则本地脏行会被 _pushDirtyRows 重新 upsert 复活。
+      if(key === 'payments'){
+        const cloudIds = new Set((cloud || []).map(function(r){ return r && r.id; }).filter(Boolean));
+        const _graceCutoff = Date.now() - 30000;
+        merged = (merged || []).filter(function(r){
+          if(!r || !r.id) return true;
+          if(cloudIds.has(r.id)) return true;
+          const ct = Date.parse((r.createdAt || '').replace(' ', 'T'));
+          if(!isNaN(ct) && ct > _graceCutoff) return true;
+          return false;
+        });
+      }
       localStorage.setItem('soms_'+key, JSON.stringify(key === 'users' ? this._scrubUserPasswords(merged) : merged));
       return merged;
     }catch(e){
@@ -3422,6 +3435,30 @@ const DB = {
           });
         }
       }catch(e){ console.warn('[status-guard] 跳过:', e && e.message); }
+    }
+    // v2026100106：payments 上推保护。收款记录被云端删除/作废后，本地陈旧脏行不得重新 upsert 复活；
+    // 否则管理员在云端删掉的误收款会被客户端同步再次写回（如蔡小姐 27230 误收款反复复活）。
+    if(key === 'payments' && snakeData && snakeData.length){
+      try{
+        const _pids = snakeData.map(function(o){ return o.id; }).filter(Boolean);
+        if(_pids.length){
+          const { data: _cr } = await withTimeout(
+            window._sbpbClient.from('payments').select('id, status, updated_at').in('id', _pids),
+            8000, '_pushDirtyRows payments-guard'
+          );
+          const _cloudPay = {};
+          (_cr||[]).forEach(function(r){ if(r && r.id) _cloudPay[r.id] = { status: r.status, updated_at: r.updated_at }; });
+          const _ts = function(v){ return Date.parse((v || '').replace(' ', 'T')) || 0; };
+          snakeData = snakeData.filter(function(o){
+            const c = _cloudPay[o.id];
+            if(!c) return true; // 云端没有：允许上推（ genuinely 新建收款）
+            // 云端已作废/删除/云端版本更新 → 不上推本地陈旧副本
+            if(c.status === 'void' || c.status === 'deleted') return false;
+            if(_ts(c.updated_at) > _ts(o.updated_at)) return false;
+            return true;
+          });
+        }
+      }catch(e){ console.warn('[payments-guard] 跳过:', e && e.message); }
     }
     // orders 走通用 snakeData（含 updated_at，云端 trg_orders_updated_at 触发器会再刷新为 now()）。
     try{
@@ -13263,7 +13300,14 @@ function getOrderPaidBase(order){
 function getOrderRemaining(order){
   if(!order) return 0;
   const basePaid = getOrderPaidBase(order);
-  const paidRecords = (DB.get('payments') || []).filter(p => p.orderId === order.id && p.status === 'paid');
+  const finalPay = parseInt(order.finalPayment) || Math.max(0, (parseInt(order.total) || 0) - basePaid);
+  // v2026100106：过滤明显超额的收款（单笔超过尾款金额视为误登记），防止误收款把待收尾款冲成 0
+  const paidRecords = (DB.get('payments') || []).filter(p =>
+    p && p.orderId === order.id &&
+    p.status === 'paid' &&
+    (parseInt(p.amount) || 0) > 0 &&
+    (parseInt(p.amount) || 0) <= finalPay
+  );
   const paidSum = paidRecords.reduce((s, p) => s + (parseInt(p.amount) || 0), 0);
   return Math.max(0, (parseInt(order.total) || 0) - basePaid - paidSum);
 }
