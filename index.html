@@ -1661,7 +1661,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026100109</div>
+          <div class="brand-sub">v2026100201</div>
         </div>
       </div>
     </div>
@@ -17118,6 +17118,17 @@ function applyVirtualScroll(id){
     var t=document.getElementById('newVersionText');
     var bar=document.getElementById('newVersionBar');
     if(!b || _autoTimer) return; // 已在倒计时则不重复弹
+    // v2026100201 熔断：同一版本若已尝试过一次自动刷新仍未对齐，则改为仅提示手动刷新。
+    // 防止 version.json 与页面 brand-sub 版本号不一致时陷入「刷新→再检测→再刷新」死循环。
+    var _fuseKey='nv_reload_'+ver;
+    var _tried=false;
+    try{ _tried = sessionStorage.getItem(_fuseKey)==='1'; }catch(e){}
+    if(_tried){
+      if(t) t.textContent='检测到新版本 v'+ver+'，请手动刷新页面（Ctrl/Cmd+Shift+R）完成更新。';
+      b.style.display='flex';
+      return;
+    }
+    try{ sessionStorage.setItem(_fuseKey,'1'); }catch(e){}
     if(t) t.textContent='已发布新版本 v'+ver+'，为保证数据同步与配额修复，10 秒后自动刷新…';
     if(bar){ try{ bar.style.transition='none'; bar.style.width='100%'; setTimeout(function(){ bar.style.transition='width 10s linear'; bar.style.width='0%'; },50); }catch(e){} }
     b.style.display='flex';
