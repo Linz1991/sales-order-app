@@ -1661,7 +1661,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026100204</div>
+          <div class="brand-sub">v2026100205</div>
         </div>
       </div>
     </div>
@@ -1788,7 +1788,7 @@ const DB = {
         this._addDirty(key, dirty);
       }catch(e){}
     }
-    // v2026100204：本地写入加保护。localStorage 配额满会抛 QuotaExceededError，
+    // v2026100205：本地写入加保护。localStorage 配额满会抛 QuotaExceededError，
     // 异常若向上冒泡会中断调用方 -> 缓存永远写不进 -> 下次导航仍判定“无缓存”而全量重拉 -> egress 暴涨。
     // 这里捕获后先清掉最不重要的本地审计日志再重试一次；仍失败也只记日志，绝不中断业务。
     try{
@@ -5532,6 +5532,29 @@ const routeTitles = {
   audit: ['操作日志','查看操作审计记录']
 };
 
+// v2026100205：路由渲染失败兜底。渲染函数抛错时（含 async 函数的 rejection），
+// 明确显示错误页 + 重试按钮，避免「标题已切换到新页面、内容却残留上一页」的诡异现象。
+function renderRouteError(route, e){
+  console.error('页面渲染失败:', route, e);
+  try{
+    var _mc = document.getElementById('mainContent');
+    if(!_mc) return;
+    _mc.innerHTML = '<div style="padding:48px 16px;text-align:center;color:var(--text-muted)">'
+      + '<div style="font-size:15px;margin-bottom:8px">⚠️ 页面渲染出错（' + String(route) + '）</div>'
+      + '<div style="font-size:12px;line-height:1.7;word-break:break-all">' + String((e && e.message) || e || '未知错误') + '</div>'
+      + '<div style="margin-top:14px"><button class="btn btn-primary" onclick="location.reload()"'
+      + ' style="padding:8px 18px">重试</button></div></div>';
+  }catch(_){}
+}
+// 统一执行路由渲染：同步异常直接捕获，async 渲染函数的 rejection 由 .catch 兜住
+function safeRenderRoute(fn, route){
+  try{
+    var _r = fn();
+    if(_r && typeof _r.catch === 'function'){
+      _r.catch(function(e){ renderRouteError(route, e); });
+    }
+  }catch(e){ renderRouteError(route, e); }
+}
 async function navigate(route){
   currentRoute = route;
   // 权限检查：销售角色不能访问管理员专属页面
@@ -5614,7 +5637,7 @@ async function navigate(route){
     try{ if(window._navLoadTimer){ clearTimeout(window._navLoadTimer); window._navLoadTimer = null; } }catch(e){}
     if(!hasLocalCache){
       mainEl.innerHTML = '<div style="padding:48px 16px;text-align:center;color:var(--text-muted)">⏳ 正在从云端加载最新数据…<div id="navLoadHint" style="margin-top:14px;font-size:12px;line-height:1.7"></div></div>';
-      // v2026100204 兜底：首次(本地无缓存)需全量拉取订单数据，若 25s 仍未完成则给出明确说明与手动重试入口。
+      // v2026100205 兜底：首次(本地无缓存)需全量拉取订单数据，若 25s 仍未完成则给出明确说明与手动重试入口。
       // 注意：此处【不自动重复拉取】——自动重试会在网络差时把 egress 翻倍，只提供手动按钮由用户决定。
       window._navLoadTimer = setTimeout(function(){
         try{
@@ -5655,11 +5678,11 @@ async function navigate(route){
             + ' style="padding:8px 18px">重试</button></div></div>';
         }
       });
-    if(hasLocalCache) fn();
+    if(hasLocalCache) safeRenderRoute(fn, route);
     if(route === 'orders'){ checkOrderSyncGap(); }
     else { const _b = document.getElementById('orderGapBanner'); if(_b) _b.style.display = 'none'; }
   } else {
-    fn();
+    safeRenderRoute(fn, route);
   }
   // 注意：管理员「进入待下单订单详情页」不再自动加锁（旧逻辑 3520 行会在此 acquireOrderLock）。
   // 仅当管理员真正「编辑订单」(enterEditMode) 或「确认下单」(markItemOrdered) 时才上锁，
@@ -5772,8 +5795,8 @@ function checkOrderAutoFlow(){
 async function renderDashboard(){
   // 渲染函数只负责展示，不自己拉网络：navigate()/Realtime/afterWriteRefresh 已保证数据为云端最新。
   const isAdmin = currentUser.role === 'admin';
-  const orders = DB.get('orders');
-  const aftersales = DB.get('aftersales');
+  const orders = DB.get('orders') || [];
+  const aftersales = DB.get('aftersales') || [];
 
   let html = '';
   if(isAdmin){
@@ -5833,7 +5856,7 @@ async function renderDashboard(){
       </div>
     `;
 
-    const recentOrders = activeOrders.filter(o => o.status === 'pending').sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,10);
+    const recentOrders = activeOrders.filter(o => o.status === 'pending' && o.createdAt).sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||''))).slice(0,10);
 
     html += `
       <div class="card">
