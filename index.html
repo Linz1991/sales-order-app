@@ -1661,7 +1661,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026100203</div>
+          <div class="brand-sub">v2026100204</div>
         </div>
       </div>
     </div>
@@ -1788,7 +1788,21 @@ const DB = {
         this._addDirty(key, dirty);
       }catch(e){}
     }
-    localStorage.setItem('soms_'+key, JSON.stringify(val));
+    // v2026100204：本地写入加保护。localStorage 配额满会抛 QuotaExceededError，
+    // 异常若向上冒泡会中断调用方 -> 缓存永远写不进 -> 下次导航仍判定“无缓存”而全量重拉 -> egress 暴涨。
+    // 这里捕获后先清掉最不重要的本地审计日志再重试一次；仍失败也只记日志，绝不中断业务。
+    try{
+      localStorage.setItem('soms_'+key, JSON.stringify(val));
+    }catch(e){
+      console.warn('[DB.set] 本地写入失败：' + (((e && e.name) || 'Error') + ' ' + ((e && e.message) || e)));
+      try{
+        localStorage.removeItem('soms_audit_log');
+        localStorage.setItem('soms_'+key, JSON.stringify(val));
+        console.warn('[DB.set] 已清理本地审计日志后写入成功');
+      }catch(e2){
+        console.error('[DB.set] 清理后仍写入失败，本次改动仅存在于内存：' + ((e2 && e2.message) || e2));
+      }
+    }
     // 火忘式异步同步到 Supabase
     // audit_log 为本地审计日志，设计上无需跨端传播（见 pushToCloud/pushLocalChanges 注释），
     // 且其表结构/权限易致 upsert 失败并误报“部分数据同步失败（表：audit_log）”，故跳过上云同步。
@@ -5597,8 +5611,22 @@ async function navigate(route){
   const mainEl = document.getElementById('mainContent');
   const hasLocalCache = tables.length && tables.some(function(tb){ return (DB.get(tb, []).length > 0); });
   if(tables.length && window._sbpbClient && mainEl){
+    try{ if(window._navLoadTimer){ clearTimeout(window._navLoadTimer); window._navLoadTimer = null; } }catch(e){}
     if(!hasLocalCache){
-      mainEl.innerHTML = '<div style="padding:48px 16px;text-align:center;color:var(--text-muted)">⏳ 正在从云端加载最新数据…</div>';
+      mainEl.innerHTML = '<div style="padding:48px 16px;text-align:center;color:var(--text-muted)">⏳ 正在从云端加载最新数据…<div id="navLoadHint" style="margin-top:14px;font-size:12px;line-height:1.7"></div></div>';
+      // v2026100204 兜底：首次(本地无缓存)需全量拉取订单数据，若 25s 仍未完成则给出明确说明与手动重试入口。
+      // 注意：此处【不自动重复拉取】——自动重试会在网络差时把 egress 翻倍，只提供手动按钮由用户决定。
+      window._navLoadTimer = setTimeout(function(){
+        try{
+          var _h = document.getElementById('navLoadHint');
+          if(_h && currentRoute === route){
+            _h.innerHTML = '<span style="color:#b45309">云端响应较慢（首次进入需下载全部订单数据）。</span>'
+              + '<br>请保持本页打开稍候；若长时间无响应，可 '
+              + '<a href="javascript:void(0)" onclick="location.reload()" style="color:var(--primary);text-decoration:underline">刷新重试</a>'
+              + '，或检查网络后重试。';
+          }
+        }catch(e){}
+      }, 25000);
     }
     // 后台静默拉取，不阻塞首次渲染；每个 pullTableAuthoritative 内部已有 20s 超时（orders 表约 400KB）。
     // 【2026-0825 配额优化】本地已有订单缓存时，不再每次导航进页面都全表拉取 orders（每次约 392KB，PostgREST 暴涨主因之一）；
@@ -5609,6 +5637,7 @@ async function navigate(route){
     });
     Promise.all(_tablesToPull.map(function(tb){ return DB.pullTableAuthoritative(tb); }))
       .then(function(){
+        try{ if(window._navLoadTimer){ clearTimeout(window._navLoadTimer); window._navLoadTimer = null; } }catch(e){}
         // 拉取完成后：若用户仍停在本页，则刷新一次以展示最新数据
         if(currentRoute === route){
           const _renderer = (window._routeRenderers && window._routeRenderers[route]) || fn;
@@ -5617,9 +5646,13 @@ async function navigate(route){
         }
       })
       .catch(function(e){
+        try{ if(window._navLoadTimer){ clearTimeout(window._navLoadTimer); window._navLoadTimer = null; } }catch(e){}
         console.warn('导航后台拉取云端失败：', (e && e.message) || e);
         if(!hasLocalCache && currentRoute === route && mainEl){
-          mainEl.innerHTML = '<div style="padding:48px 16px;text-align:center;color:var(--text-muted)">加载失败，请检查网络后重试</div>';
+          mainEl.innerHTML = '<div style="padding:48px 16px;text-align:center;color:var(--text-muted)">'
+            + '加载失败，请检查网络后重试'
+            + '<div style="margin-top:14px"><button class="btn btn-primary" onclick="location.reload()"'
+            + ' style="padding:8px 18px">重试</button></div></div>';
         }
       });
     if(hasLocalCache) fn();
