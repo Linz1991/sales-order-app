@@ -1661,7 +1661,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026100301</div>
+          <div class="brand-sub">v2026100603</div>
         </div>
       </div>
     </div>
@@ -3565,6 +3565,32 @@ const DB = {
               if(r2.error) throw r2.error;
               continue;
             }
+          }
+          // v20261006：唯一索引 products_name_uniq_active 命中兜底。
+          // 批量 upsert 任一行撞「同名在架」即整批 23505 失败；改逐行上推，撞索引的行复用云端已有同名商品，
+          // 避免「导入/新增同名商品」时整批商品同步卡死（连正常新商品也推不上云）。
+          const _isUniq = key === 'products' && /23505|products_name_uniq_active/i.test(errMsg);
+          if(_isUniq){
+            const _batchRows = rows.slice(i, i + batchSize); // 只处理当前批次对应的脏行，不误伤其它批次
+            for(const r of _batchRows){
+              const prod = (local||[]).find(function(p){ return p && String(p.id) === String(r.id); });
+              if(!prod) continue;
+              const _oldId = prod.id; // 保存旧 id：下方改写 prod.id 后仍需用它匹配订单引用
+              let res;
+              try{ res = await pushSingleProductToCloud(prod); }catch(e){ res = false; }
+              if(res && res.conflictResolved && res.adopted){
+                const a = res.adopted;
+                prod.id = a.id; prod.name = a.name; prod.price = a.price; prod.cost = a.cost; prod.status = a.status;
+                delete prod.auto_added;
+                const orders = this.get('orders', []);
+                let chg = false;
+                orders.forEach(function(o){ (o.items||[]).forEach(function(it){ if(it.productId === _oldId){ it.productId = a.id; chg = true; } }); });
+                if(chg) this.set('orders', orders);
+                this._clearDirty(key, [_oldId]);
+              }
+            }
+            this.set('products', local);
+            continue; // 本批已逐行处理完毕
           }
           throw error;
         }
@@ -7565,6 +7591,27 @@ function confirmAddProducts(){
 function normalizeProductName(s){
   return String(s == null ? '' : s).toLowerCase().replace(/\s+/g, '');
 }
+// v20261006：撞唯一索引时，按归一化名在云端查「在架」同名商品，供复用
+let _cloudNormCache = { ts: 0, list: null }; // v2026100603：云端同名兜底快照，30s 内复用，降低高频撞索引流量
+async function _findCloudProductByNormName(name, excludeId){
+  if(!window._sbpbClient) return null;
+  const key = normalizeProductName(name);
+  if(!key) return null;
+  try{
+    // 优先用本地镜像（已同步过即命中），排除自身，避免把"正在推送的商品"又当命中
+    const _local = (DB.get('products')||[]).find(p => p && p.status === 'on' && p.id !== excludeId && normalizeProductName(p.name) === key);
+    if(_local) return _local;
+    // 云端兜底：30s 内复用同一份全量快照，避免重复全拉
+    const _now = Date.now();
+    if(!_cloudNormCache.list || _now - _cloudNormCache.ts > 30000){
+      const { data, error } = await window._sbpbClient
+        .from('products').select('id,name,price,cost,status').eq('status','on');
+      if(error || !data) return null;
+      _cloudNormCache = { ts: _now, list: data };
+    }
+    return _cloudNormCache.list.find(p => p && normalizeProductName(p.name) === key) || null;
+  }catch(e){ return null; }
+}
 // 按商品名查库（不区分大小写、忽略首尾空格）
 function findProductByName(name){
   const key = normalizeProductName(name);
@@ -7620,7 +7667,7 @@ function _isLocallyCalibrated(id){ return id != null && _calibratedSet().has(Str
 //  ② 同名但已下架           → 拒绝添加，提示联系管理员上架（防止下架商品以重复记录变相重新上架）
 //  ③ 确属新品               → 写入商品库：成本默认等于售价，标记「待校准」，提醒管理员补全真实成本
 // 返回 {ok, reason:'dup'|'dup-off'|'created'|'no-name'|'no-price', product, msg}
-function addProductBySales(name, price){
+async function addProductBySales(name, price){
   name = String(name == null ? '' : name).trim();
   price = parseInt(price, 10) || 0;
   if(!name) return {ok:false, reason:'no-name', msg:'请输入商品名称'};
@@ -7647,7 +7694,21 @@ function addProductBySales(name, price){
   const products = DB.get('products') || [];
   products.push(np);
   DB.set('products', products);
-  if(typeof pushSingleProductToCloud === 'function') pushSingleProductToCloud(np); // 立即上推，管理员端可见
+  // v20261006：await 上推；撞唯一索引(23505)时把本地幽灵 np 改写为云端已存在同名商品的视图，无报错、无重复
+  const pushRes = (typeof pushSingleProductToCloud === 'function') ? await pushSingleProductToCloud(np) : true;
+  if(pushRes && pushRes.conflictResolved && pushRes.adopted){
+    const a = pushRes.adopted;
+    // np 是已 push 进本地数组的同一引用，原地改写为云端已存在商品（同 id），购物车引用自然拿到正确 id
+    np.id = a.id; np.name = a.name; np.price = a.price; np.cost = a.cost; np.status = a.status;
+    delete np.auto_added;
+    if(window._prodHasCalibCol === true) np.need_calibration = (a.need_calibration === true);
+    DB.set('products', products);
+    if(typeof currentUser !== 'undefined' && currentUser && currentUser.role === 'admin' && typeof renderProducts === 'function'){
+      try{ renderProducts(); }catch(e){}
+    }
+    return {ok:true, reason:'dup', product:np,
+      msg:'商品库已有「'+a.name+'」（售价 '+money(a.price)+'），已直接添加，不用再添加'};
+  }
   // 若新建时列探测还没回来，探测完成后补推一次，确保管理员端能收到「待校准」
   if(window._prodHasCalibCol === null && typeof detectProductCalibColumn === 'function'){
     detectProductCalibColumn().then(function(){
@@ -7694,11 +7755,11 @@ function showManualAddProduct(){
   results.style.display = 'block';
 }
 
-function confirmManualAddProduct(){
+async function confirmManualAddProduct(){
   const name = document.getElementById('manualProdName').value.trim();
   const price = parseInt(document.getElementById('manualProdPrice').value) || 0;
   // v20260917：统一走 addProductBySales（查重忽略大小写 / 已存在给友好提示 / 新品成本=售价并标记待校准）
-  const r = addProductBySales(name, price);
+  const r = await addProductBySales(name, price);
   if(!r.ok){ showToast(r.msg, 'error', 4500); return; }
   const prod = r.product;
   const existing = cart.find(c => c.productId === prod.id);
@@ -8136,9 +8197,9 @@ function submitOrder(){
   DB.set('orders', orders);
 
   // 自动把订单中“库内不存在”的商品写入商品库，成本默认等于售价并标记 auto_added，管理员后续校准真实采购成本
-  (function ensureProductsInLibrary(){
-    (cart||[]).forEach(function(c){
-      if(!c || !c.name) return;
+  (async function ensureProductsInLibrary(){
+    for(const c of (cart||[])){
+      if(!c || !c.name) continue;
       const lib = DB.get('products');
       // v20260917：查重统一走 findProductByName（忽略大小写/首尾空格），
       // 此前 p.name === c.name 严格相等，大小写不同就会重复建一条商品进库。
@@ -8148,18 +8209,18 @@ function submitOrder(){
         c.productId = prod.id;
         if(c.cost == null || c.cost === 0) c.cost = (prod.cost != null ? prod.cost : prod.price) || 0;
         if(prod.auto_added === true || prod.need_calibration === true) c.auto_added = true;
-        return;
+        continue;
       }
-      if(!(c.price > 0)) return; // 无售价不建库，避免产生无法校准的垃圾商品
-      const r = addProductBySales(c.name, c.price);
+      if(!(c.price > 0)) continue; // 无售价不建库，避免产生无法校准的垃圾商品
+      const r = await addProductBySales(c.name, c.price);
       if(!r.ok){
         if(r.product && r.product.id) c.productId = r.product.id; // 同名已下架：复用原记录，不新建
-        return;
+        continue;
       }
       c.productId = r.product.id; // 重映射到商品，便于后续利润/详情计算
       c.cost = (r.product.cost != null ? r.product.cost : (c.price || 0));
       if(r.reason === 'created') c.auto_added = true; // 供管理员审核订单时提示校准
-    });
+    }
   })();
 
   // 确保订单 items 快照里的 cost 与 cart 一致（手动新增商品在 ensureProductsInLibrary 中补了 cost）
@@ -9983,11 +10044,11 @@ function showManualAddToOrder(){
   results.style.display = 'block';
 }
 
-function confirmManualAddToOrder(){
+async function confirmManualAddToOrder(){
   const name = document.getElementById('manualOrderProdName').value.trim();
   const price = parseInt(document.getElementById('manualOrderProdPrice').value) || 0;
   // v20260917：统一走 addProductBySales（查重忽略大小写 / 已存在给友好提示 / 新品成本=售价并标记待校准）
-  const r = addProductBySales(name, price);
+  const r = await addProductBySales(name, price);
   if(!r.ok){ showToast(r.msg, 'error', 4500); return; }
   const prod = r.product;
   const orderId = window._currentOrderId;
@@ -12876,35 +12937,16 @@ function cleanupDuplicateProducts(cloudProducts){
 
     const idMap = {}; // 被删除的 id -> 保留的 id
 
-    // 1) 本地精确同名去重（保留 updatedAt/createdAt 最新的一条）
-    const byName = {};
-    products.forEach(p => {
-      const n = (p.name || '').trim();
-      if(!n) return;
-      if(!byName[n]) byName[n] = [];
-      byName[n].push(p);
-    });
-    let keepProducts = [];
-    Object.values(byName).forEach(arr => {
-      arr.sort((a, b) => {
-        const ta = Date.parse(((a.updatedAt || a.createdAt || '')).replace(' ', 'T')) || 0;
-        const tb = Date.parse(((b.updatedAt || b.createdAt || '')).replace(' ', 'T')) || 0;
-        return tb - ta;
-      });
-      keepProducts.push(arr[0]);
-      for(let i = 1; i < arr.length; i++) idMap[arr[i].id] = arr[0].id;
-    });
-
-    // 2) 本地模糊同名去重（去除空格/括号/大小写后仍相同，视为重复）
+    // 1) 本地同名去重（统一用 normName 口径：小写 + 去空格 + 去括号，一次合并处理"精确/模糊"两类重复）。
+    //    保留 updatedAt/createdAt 最新的一条，其余映射到保留 id。
     const byNorm = {};
-    const afterExact = keepProducts;
-    keepProducts = [];
-    afterExact.forEach(p => {
+    products.forEach(p => {
       const n = normName(p.name);
-      if(!n) { keepProducts.push(p); return; }
+      if(!n) return;
       if(!byNorm[n]) byNorm[n] = [];
       byNorm[n].push(p);
     });
+    let keepProducts = [];
     Object.values(byNorm).forEach(arr => {
       arr.sort((a, b) => {
         const ta = Date.parse(((a.updatedAt || a.createdAt || '')).replace(' ', 'T')) || 0;
@@ -12915,10 +12957,11 @@ function cleanupDuplicateProducts(cloudProducts){
       for(let i = 1; i < arr.length; i++) idMap[arr[i].id] = arr[0].id;
     });
 
-    // 3) 以云端商品为准：本地存在但云端没有，且规范化名称与云端某商品重复，则删除并映射到云端 ID
+    // 2) 以云端商品为准：本地存在但云端没有、且规范化名称与云端某在架商品相同 → 视为重复，删除并映射到云端 ID。
+    //    （去掉原先的 +10 魔法阈值：它既会漏触发、又会误删离线新建的同名商品；现直接以"名称是否撞云端"判定）
     //    云端列表由 _loadTable 在同步后写入 window._lastCloudProducts
     const cloud = cloudProducts || window._lastCloudProducts || [];
-    if(cloud.length > 0 && products.length > cloud.length + 10){
+    if(cloud.length > 0){
       const cloudIdSet = new Set(cloud.map(p => p.id));
       const cloudByNorm = {};
       cloud.forEach(p => {
@@ -12936,7 +12979,7 @@ function cleanupDuplicateProducts(cloudProducts){
           idMap[p.id] = cloudByNorm[n];
           return; // 不加入保留列表
         }
-        aligned.push(p); // 可能是离线新建的真实新品，保留
+        aligned.push(p); // 离线新建的真实新品（名字不与云端任何在架商品同名）→ 保留
       });
       keepProducts = aligned;
     }
@@ -13266,6 +13309,15 @@ async function pushSingleProductToCloud(product){
     if(error) throw error;
     return true;
   }catch(e){
+    // v20261006：唯一索引 products_name_uniq_active 命中兜底。
+    // 场景：本地镜像漏查同名商品（缓存未同步 / 并发新建），upsert 走 INSERT 分支撞 name 唯一索引。
+    // 此时云端已存在同名在架商品，查出来复用，避免本地留下幽灵记录、用户看到报错。
+    const _isUniqConflict = e && (e.code === '23505' ||
+      (e.message && /products_name_uniq_active/.test(e.message)));
+    if(_isUniqConflict){
+      const adopted = await _findCloudProductByNormName(product.name, product.id);
+      if(adopted) return { conflictResolved: true, adopted: adopted };
+    }
     console.warn('商品推云端失败:', (e && e.message) || e);
     return false;
   }
@@ -13297,6 +13349,7 @@ async function saveProduct(){
   // 此前只要中间任一步抛异常（清除订单待校准标记、推送云端等），函数就静默中断，
   // 用户点「保存」后什么提示都没有，误以为没保存成功。
   let savedProduct = null;
+  let _origName = name; // 编辑前原名，撞唯一索引回滚用
   const isAdmin = !!(currentUser && currentUser.role === 'admin');
   // v20260917：商品管理模块对销售只读——即使绕过界面直接调用也不允许写入
   if(!isAdmin){ showToast('商品库为只读，销售不能新增或修改商品','warning',4000); return; }
@@ -13326,6 +13379,7 @@ async function saveProduct(){
   if(id){
     const idx = products.findIndex(p => p.id === id);
     if(idx >= 0){
+      _origName = products[idx].name; // 记录编辑前原名，撞唯一索引时回滚
       products[idx] = {...products[idx], name, category, price, cost, updatedAt: _nowStr};
       delete products[idx].auto_added;
       if(isAdmin){
@@ -13393,12 +13447,30 @@ async function saveProduct(){
   //    （此前推云成功与否完全无提示，管理员在别的设备看不到时会误以为没保存）
   let _cloudOk = false;
   try{ _cloudOk = await pushSingleProductToCloud(savedProduct); }catch(e){ _cloudOk = false; }
-  showToast(
-    _cloudOk ? '已同步到云端，其它设备刷新即可看到'
-             : '已保存到本机；云端同步未成功，将自动重试，请勿清空缓存（可稍后点「对齐云端」）',
-    _cloudOk ? 'success' : 'warning',
-    4000
-  );
+  if(_cloudOk && _cloudOk.conflictResolved){
+    // 唯一索引拦截：云端已有同名在架商品，改名/新建被拒绝。回滚本地，避免"本地新名 + 云端旧名"不一致导致改名静默丢失。
+    const _dupName = savedProduct.name;
+    const _pl = DB.get('products') || [];
+    const _pi = _pl.findIndex(p => p.id === savedProduct.id);
+    if(id){
+      // 编辑改名撞重：本地名字回滚为原名
+      if(_pi >= 0){ _pl[_pi].name = _origName; DB.set('products', _pl); }
+      renderProducts(); renderSidebar();
+      showToast('商品名「'+escapeHtml(_dupName)+'」已存在同名在架商品，无法重名保存（已恢复原名）', 'error', 5000);
+    }else{
+      // 新建就撞重名：移除本地刚加的幽灵商品，避免重复
+      if(_pi >= 0){ _pl.splice(_pi, 1); DB.set('products', _pl); }
+      renderProducts(); renderSidebar();
+      showToast('商品名「'+escapeHtml(_dupName)+'」已存在同名在架商品，已取消新建', 'error', 5000);
+    }
+  }else{
+    showToast(
+      _cloudOk ? '已同步到云端，其它设备刷新即可看到'
+               : '已保存到本机；云端同步未成功，将自动重试，请勿清空缓存（可稍后点「对齐云端」）',
+      _cloudOk ? 'success' : 'warning',
+      4000
+    );
+  }
 }
 
 function toggleProductStatus(productId){
@@ -16948,6 +17020,19 @@ window.onload = async function(){
   }catch(e){
     console.warn('云端同步出错，将使用本地缓存:', e.message);
   }
+
+  // v20261006：版本变更时强制全量重拉商品库，确保云端清理/改价的商品在客户端升级瞬间落地。
+  // 等价于无需人工逐台点「对齐云端」——已删商品（本轮整治删的 31 条）会在新版首次打开时立即从本地消失。
+  // 日常仍依赖每日全量拉取 + 启动 cleanupDuplicateProducts 兜底自愈。
+  try{
+    const _APP_VER = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || window.APP_VERSION || '2026100603';
+    const _lastVer = localStorage.getItem('soms_app_version') || '';
+    if(_lastVer !== _APP_VER){
+      await DB.loadProductsFromCloud({ forceFull: true });
+      cleanupDuplicateProducts(window._lastCloudProducts);
+    }
+    try{ localStorage.setItem('soms_app_version', _APP_VER); }catch(e){}
+  }catch(e){ console.warn('版本变更全量重拉商品失败:', e && e.message); }
 
   // 初始化预置数据（仅在缓存为空时填充种子数据）
   initData();
