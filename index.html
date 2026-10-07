@@ -1661,7 +1661,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026100603</div>
+          <div class="brand-sub">v2026100701</div>
         </div>
       </div>
     </div>
@@ -7592,7 +7592,7 @@ function normalizeProductName(s){
   return String(s == null ? '' : s).toLowerCase().replace(/\s+/g, '');
 }
 // v20261006：撞唯一索引时，按归一化名在云端查「在架」同名商品，供复用
-let _cloudNormCache = { ts: 0, list: null }; // v2026100603：云端同名兜底快照，30s 内复用，降低高频撞索引流量
+let _cloudNormCache = { ts: 0, list: null }; // v2026100701：云端同名兜底快照，30s 内复用，降低高频撞索引流量
 async function _findCloudProductByNormName(name, excludeId){
   if(!window._sbpbClient) return null;
   const key = normalizeProductName(name);
@@ -13349,7 +13349,7 @@ async function saveProduct(){
   // 此前只要中间任一步抛异常（清除订单待校准标记、推送云端等），函数就静默中断，
   // 用户点「保存」后什么提示都没有，误以为没保存成功。
   let savedProduct = null;
-  let _origName = name; // 编辑前原名，撞唯一索引回滚用
+  let _origName = null; // 编辑前原名，撞唯一索引回滚用（在 const name 声明后再赋值，避免 TDZ 报错）
   const isAdmin = !!(currentUser && currentUser.role === 'admin');
   // v20260917：商品管理模块对销售只读——即使绕过界面直接调用也不允许写入
   if(!isAdmin){ showToast('商品库为只读，销售不能新增或修改商品','warning',4000); return; }
@@ -17025,7 +17025,7 @@ window.onload = async function(){
   // 等价于无需人工逐台点「对齐云端」——已删商品（本轮整治删的 31 条）会在新版首次打开时立即从本地消失。
   // 日常仍依赖每日全量拉取 + 启动 cleanupDuplicateProducts 兜底自愈。
   try{
-    const _APP_VER = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || window.APP_VERSION || '2026100603';
+    const _APP_VER = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || window.APP_VERSION || '2026100701';
     const _lastVer = localStorage.getItem('soms_app_version') || '';
     if(_lastVer !== _APP_VER){
       await DB.loadProductsFromCloud({ forceFull: true });
