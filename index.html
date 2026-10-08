@@ -294,7 +294,11 @@ async function autoReconcileOrders(){
     const all = DB.get('orders', []);
     const byId = {};
     all.forEach(function(o){ if(o && o.id != null) byId[o.id] = o; });
-    rows.forEach(function(o){ byId[o.id] = o; });   // 云端优先覆盖（仅当云端 updated_at 更新才进 need，不会覆盖本地新改）
+    // v2026100801 关键修复：此处必须 _toCamel 转换！Supabase JS SDK 的 select('*') 返回的是
+    // snake_case 列名（customer_name / created_at），若原样写入本地，则该单 o.customerName / o.createdAt
+    // 全为 undefined → 列表「没姓名」且排序当空串「排到最底部」；且因更新判定读不到 updatedAt，
+    // 下次对账又判「云端更新」再拉一次 snake_case 覆盖 → 永久卡住、反复出现。
+    rows.forEach(function(o){ byId[o.id] = DB._toCamel(o); });   // 云端优先覆盖（仅当云端 updated_at 更新才进 need，不会覆盖本地新改）
     DB.set('orders', Object.keys(byId).map(function(k){ return byId[k]; }));
     need.forEach(function(id){ _autoReconcileFailed[id] = 0; });
     // 仅在订单相关页且可见时轻量刷新，让变化立刻可见（复用现有渲染器，不乱刷其他页）
@@ -1661,7 +1665,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026100701</div>
+          <div class="brand-sub">v2026100801</div>
         </div>
       </div>
     </div>
@@ -4107,6 +4111,29 @@ function fmtDateTime(s){
   return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+
     p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());
 }
+
+// ===== 列表排序/姓名兜底（v20261007 修复）=====
+// 根治「localeCompare(createdAt) 字符串比较」在 createdAt 格式混用（空格裸串 / T / Z / +00:00）时
+// 字典序错位 → 表现为「最新的订单排到列表底部」。改用 Date.parse 把任意格式归一为真实 epoch 毫秒再比较。
+// v2026100801：同时兼容 snake_case 行（created_at）——即便某条脏数据以 snake 形式落进本地，
+// 排序仍按真实时间而非空串处理，避免被错判成「最旧」排到列表底部。
+function _createdAtTs(v){
+  if(v && typeof v === 'object') v = v.createdAt || v.created_at || '';
+  const n = v ? Date.parse(('' + v).replace(/ /g, 'T')) : 0;
+  return isNaN(n) ? 0 : n;
+}
+// 降序：新创建的排前面（与旧 (b.createdAt).localeCompare(a.createdAt) 语义一致，但时区/格式安全）。
+function _createdAtDesc(a, b){ return _createdAtTs(b) - _createdAtTs(a); }
+// 姓名兜底：customerName 缺失时依次回退 customer_name(snake) / 收件人(contact) / 电话，
+// 避免真实订单在列表里显示空白「-」。
+function displayNameOf(o){
+  if(!o) return '';
+  return (o.customerName && ('' + o.customerName).trim())
+      || (o.customer_name && ('' + o.customer_name).trim())
+      || (o.contact && ('' + o.contact).trim())
+      || (o.phone && ('' + o.phone).trim())
+      || '';
+}
 // 统一的「订单已删除」判定：同时认顶层 _deleted 标记 与 隐藏同步键 items[0]._delSync.d。
 // 用于所有「统计 / 列表 / 角标」计数，确保"除已删除的订单数量"口径一致、不会因只判某一处而漏算/误算。
 function isOrderDeleted(o){
@@ -5975,7 +6002,7 @@ async function renderDashboard(){
       </div>
     `;
 
-    const recentOrders = activeOrders.filter(o => o.status === 'pending' && o.createdAt).sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||''))).slice(0,10);
+    const recentOrders = activeOrders.filter(o => o.status === 'pending' && o.createdAt).sort((a,b)=>_createdAtDesc(a,b)).slice(0,10);
 
     html += `
       <div class="card">
@@ -5989,7 +6016,7 @@ async function renderDashboard(){
               <tbody>
                 ${recentOrders.length ? recentOrders.map(o=>`
                   <tr>
-                    <td>${orderIdCell(o.id)}<br>${escapeHtml(o.customerName) || '-'}</td>
+                    <td>${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o)) || '-'}</td>
                     <td>${money(o.total)}</td>
                     <td>${statusTag(o.status)}</td>
                     <td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button></td>
@@ -6352,7 +6379,7 @@ async function renderOrders(){
         return true;
       });
     }
-    filtered = [...filtered].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+    filtered = [...filtered].sort((a,b)=>_createdAtDesc(a,b));
     const products = DB.get('products');
 
     const hasDateRange = !!(window._expStart || window._expEnd);
@@ -6401,7 +6428,7 @@ async function renderOrders(){
           html += `
             <div class="order-card" onclick="viewOrder('${o.id}', true)" style="${missingTracking?'border-left:4px solid #8b5cf6;background:#f5f3ff;':''}">
               <div class="card-row" style="margin-bottom:6px"><span class="card-label">订单号</span>${orderIdCell(o.id, {clickView:true})}</div>
-              <div class="card-customer">${escapeHtml(o.customerName)||'-'}</div>
+              <div class="card-customer">${escapeHtml(displayNameOf(o))||'-'}</div>
               <div class="card-row"><span class="card-label">类型</span>${orderTypeTag(o.type)}</div>
               <div class="card-row"><span class="card-label">状态</span>${statusTag(o.status)}${paymentSettledTag(o)}</div>
               <div class="card-row"><span class="card-label">金额</span><b style="color:var(--text)">${money(o.total)}</b></div>
@@ -6426,7 +6453,7 @@ async function renderOrders(){
           const productList = products || [];
           const itemCols = isAdmin ? 7 : 6;
           html += `<tr>`;
-          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(o.customerName)||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span></td>`;
+          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span></td>`;
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/><col/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const prod = productList.find(p => p.id === it.productId);
@@ -6455,7 +6482,7 @@ async function renderOrders(){
       if(filtered.length){
         filtered.forEach(o => {
           html += `<tr>`;
-          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(o.customerName)||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span></td>`;
+          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span></td>`;
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/><col/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const prod = (products||[]).find(p => p.id === it.productId);
@@ -6485,7 +6512,7 @@ async function renderOrders(){
       if(filtered.length){
         filtered.forEach(o => {
           html += `<tr>`;
-          html += `<td>${orderIdCell(o.id)}<br>${escapeHtml(o.customerName)||'-'}</td>`;
+          html += `<td>${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}</td>`;
           html += `<td style="font-weight:600">${money(o.total)}</td>`;
           html += `<td>${orderTypeTag(o.type)}</td>`;
           html += `<td>${statusTag(o.status)}${paymentSettledTag(o)}</td>`;
@@ -6562,7 +6589,7 @@ async function renderOrders(){
     if(group.length) filtered = filtered.filter(o => group.includes(o.status));
   }
 
-  filtered = [...filtered].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+  filtered = [...filtered].sort((a,b)=>_createdAtDesc(a,b));
   // 加载更多：筛选条件变化时重置页数；点「加载更多」只增加页数、不重置
   const _salesListSig = [status, keyword, salesDateStart, salesDateEnd, typeFilter].join('|');
   if(window._salesListSig !== _salesListSig){
@@ -6634,7 +6661,7 @@ async function renderOrders(){
         html += `
           <div class="order-card" onclick="viewOrder('${o.id}')" style="${missingTracking?'border-left:4px solid #8b5cf6;background:#f5f3ff;':''}">
             <div class="card-row" style="margin-bottom:6px"><span class="card-label">订单号</span>${orderIdCell(o.id, {clickView:true})}</div>
-            <div class="card-customer">${escapeHtml(o.customerName)||'-'}</div>
+            <div class="card-customer">${escapeHtml(displayNameOf(o))||'-'}</div>
             <div class="card-tags">
               ${salesStatusLabel(o.status)}
             </div>
@@ -6670,7 +6697,7 @@ async function renderOrders(){
       if(filtered.length){
         filtered.forEach(function(o){
           html += '<tr>';
-          html += '<td style="vertical-align:top">'+orderIdCell(o.id, {clickView:true})+'<br>'+escapeHtml(o.customerName||'-')+'</td>';
+          html += '<td style="vertical-align:top">'+orderIdCell(o.id, {clickView:true})+'<br>'+escapeHtml(displayNameOf(o))||'-'+'</td>';
           html += '<td colspan="3" style="padding:0;vertical-align:top"><table class="order-items-sub-table"><tbody>';
           (o.items||[]).forEach(function(it){
             var missingTracking = ['confirmed','shipped'].indexOf(o.status) >= 0 && o.type !== 'door' && !o.noTracking && !it.trackingNo;
@@ -6709,7 +6736,7 @@ async function renderOrders(){
             ? '<button class="btn btn-primary btn-sm" onclick="editOrder(\''+o.id+'\')">编辑</button>'
             : '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>';
           html += '<tr>';
-          html += '<td style="vertical-align:top">'+orderIdCell(o.id, {clickView:true})+'<br>'+escapeHtml(o.customerName||'-')+'</td>';
+          html += '<td style="vertical-align:top">'+orderIdCell(o.id, {clickView:true})+'<br>'+escapeHtml(displayNameOf(o))||'-'+'</td>';
           html += '<td colspan="3" style="padding:0;vertical-align:top"><table class="order-items-sub-table"><tbody>';
           (o.items||[]).forEach(function(it){
             // 销售端：商品子表只读 name / qty / price；严禁渲染 cost / waste / profit
@@ -6750,7 +6777,7 @@ async function renderOrders(){
               const missingTracking = ['confirmed','shipped'].includes(o.status) && o.type !== 'door' && !o.noTracking && (o.items||[]).some(it => !it.trackingNo);
               return `
               <tr style="${missingTracking?'background:#f5f3ff;':''}">
-                <td style="${missingTracking?'border-left:3px solid #8b5cf6;padding-left:7px;color:#6d28d9;font-weight:600;':''}">${orderIdCell(o.id)}<br>${escapeHtml(o.customerName)||'-'}</td>
+                <td style="${missingTracking?'border-left:3px solid #8b5cf6;padding-left:7px;color:#6d28d9;font-weight:600;':''}">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}</td>
                 <td>${escapeHtml(o.phone) || '<span style="color:var(--text-muted)">未填写</span>'}</td>
                 <td>${salesStatusLabel(o.status)}</td>
                 <td style="font-size:12px">${remark}</td>
@@ -6975,7 +7002,7 @@ function renderCleanupResult(){
   }
   const rows = list.map(o => `
     <tr>
-      <td>${escapeHtml(o.customerName || '-')}</td>
+      <td>${escapeHtml(displayNameOf(o))||'-'}</td>
       <td style="font-size:12px">${escapeHtml(o.id || '')}</td>
       <td style="font-weight:600">${money(parseInt(o.total) || 0)}</td>
       <td>${escapeHtml(o.status || '-')}</td>
@@ -7592,7 +7619,7 @@ function normalizeProductName(s){
   return String(s == null ? '' : s).toLowerCase().replace(/\s+/g, '');
 }
 // v20261006：撞唯一索引时，按归一化名在云端查「在架」同名商品，供复用
-let _cloudNormCache = { ts: 0, list: null }; // v2026100701：云端同名兜底快照，30s 内复用，降低高频撞索引流量
+let _cloudNormCache = { ts: 0, list: null }; // v2026100801：云端同名兜底快照，30s 内复用，降低高频撞索引流量
 async function _findCloudProductByNormName(name, excludeId){
   if(!window._sbpbClient) return null;
   const key = normalizeProductName(name);
@@ -11634,7 +11661,7 @@ function showCustomerOrders(customerId){
   const customer = customers.find(c => c.id === customerId);
   if(!customer){ showToast('客户不存在','error'); return; }
   const orders = DB.get('orders').filter(o => o.customerId === customerId);
-  const sortedOrders = [...orders].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+  const sortedOrders = [...orders].sort((a,b)=>_createdAtDesc(a,b));
 
   const modalHtml = `
     <div class="modal-mask" onclick="if(event.target===this)closeModal()">
@@ -11918,11 +11945,11 @@ function exportOrders(){
       return true;
     });
   }
-  filtered = [...filtered].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+  filtered = [...filtered].sort((a,b)=>_createdAtDesc(a,b));
 
   // 当前标签无数据：自动回退导出全部非上门订单，避免"点了没反应"
   if(!filtered.length){
-    const fallback = orders.filter(o => o.type !== 'door').sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+    const fallback = orders.filter(o => o.type !== 'door').sort((a,b)=>_createdAtDesc(a,b));
     if(fallback.length){
       filtered = fallback;
       const tabLabelMap = { pending:'待下单', confirmed:'已下单', feedback:'待反馈', completed:'已完成', all:'全部' };
@@ -12033,7 +12060,7 @@ function exportAftersales(){
       return true;
     });
   }
-  filtered = [...filtered].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+  filtered = [...filtered].sort((a,b)=>_createdAtDesc(a,b));
 
   if(!filtered.length){ showToast('当前筛选无售后工单可导出','error'); return; }
 
@@ -13493,7 +13520,7 @@ function renderPayments(){
   if(!isAdmin) payments = payments.filter(p => p.salesId === currentUser.id);
   const status = window._paymentStatus || '';
   let filtered = status ? payments.filter(p => p.status === status) : payments;
-  filtered = [...filtered].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+  filtered = [...filtered].sort((a,b)=>_createdAtDesc(a,b));
 
   let html = `
     <div class="card">
@@ -13526,7 +13553,7 @@ function renderPayments(){
             ${filtered.length ? filtered.map(p=>`
               <tr>
                 <td><a class="btn-link" onclick="viewOrder('${p.orderId}')">${p.orderId}</a></td>
-                <td>${escapeHtml(p.customerName)||'-'}</td>
+                <td>${escapeHtml(displayNameOf(p))||'-'}</td>
                 ${isAdmin ? `<td>${escapeHtml(p.salesName) || '-'}</td>` : ''}
                 <td style="font-weight:600">${money(p.amount)}</td>
                 <td>${p.stage || '-'}</td>
@@ -13604,7 +13631,7 @@ function showPendingFinalPayments(){
     var deposit = parseInt(o.deposit) || 0;
     if(deposit <= 0) return false;
     return getOrderRemaining(o) > 0;
-  }).sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
+  }).sort(function(a,b){ return _createdAtDesc(a,b); });
 
   var total = calcAllPendingFinalPayments(orders);
   var html = '<div class="modal-overlay" onclick="closeModal(\'pendingFinalPaymentsModal\')" style="z-index:10000">';
@@ -14048,7 +14075,7 @@ function openCommissionModal(){
               <label style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer">
                 <input type="checkbox" value="${o.id}" class="com-order-cb" checked>
                 <div style="flex:1">
-                  <div style="font-weight:500">${o.id} · ${escapeHtml(o.customerName)}</div>
+                  <div style="font-weight:500">${o.id} · ${escapeHtml(displayNameOf(o))}</div>
                   <div style="font-size:12px;color:var(--text-muted)">${escapeHtml(o.salesName)} · ${money(o.total)}</div>
                 </div>
               </label>
@@ -14149,7 +14176,7 @@ function renderAftersales(){
   }
   // 倒序：先按 createdAt（提交售后日期）降序，毫秒相同时按 id 降序，让顺序稳定可预期
   filtered = [...filtered].sort((a,b)=>{
-    const c = (b.createdAt||'').localeCompare(a.createdAt||'');
+    const c = _createdAtDesc(a,b);
     return c !== 0 ? c : (b.id||'').localeCompare(a.id||'');
   });
 
@@ -14542,7 +14569,7 @@ function searchOrdersForAftersale(keyword){
     results.innerHTML = matched.map(o => `
       <div class="ps-item" onclick="selectOrderForAftersale('${o.id}')">
         <div>
-          <div style="font-weight:500">${o.id} · ${escapeHtml(o.customerName)}</div>
+          <div style="font-weight:500">${o.id} · ${escapeHtml(displayNameOf(o))}</div>
           <div style="font-size:12px;color:var(--text-muted)">${escapeHtml(o.phone)||''} ${escapeHtml(o.address)||''}</div>
         </div>
         <button class="btn btn-primary btn-sm">选择</button>
@@ -14946,7 +14973,7 @@ async function renderSchedule(){
         if(dayOrders.length <= 3){
           dayOrders.forEach(function(o){
             html += '<div style="font-size:10px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.45">';
-            html += escapeHtml(o.customerName||'');
+            html += escapeHtml(displayNameOf(o))||'';
             var _city = orderCityOf(o);
             if(_city) html += '<br>'+escapeHtml(_city);
             // v2026100109：原写法直接读静态字段 finalPayment（建单时算出的尾款额），
@@ -14978,7 +15005,7 @@ async function renderSchedule(){
     html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>上门日期</th><th>操作</th></tr></thead><tbody>';
       if(sorted.length){
       sorted.forEach(function(o){
-        var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+escapeHtml(o.customerName)+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDate(doorDateOf(o))+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+        var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+escapeHtml(displayNameOf(o))+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDate(doorDateOf(o))+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
       });
     }
     html += '</tbody></table></div>';
@@ -15001,7 +15028,7 @@ function showScheduleDayOrders(dateStr){
   if(!dayOrders.length){ el.innerHTML = ''; return; }
   var html = '<div class="detail-section card"><h4 style="margin-bottom:10px">'+dateStr+' 的上门订单</h4><div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>上门日期</th><th>操作</th></tr></thead><tbody>';
   dayOrders.forEach(function(o){
-    var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+escapeHtml(o.customerName)+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDate(doorDateOf(o))+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+    var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+escapeHtml(displayNameOf(o))+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDate(doorDateOf(o))+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
   });
   html += '</tbody></table></div></div>';
   el.innerHTML = html;
@@ -15045,7 +15072,7 @@ async function renderWarehouse(){
   if(whDateEnd){
     filtered = filtered.filter(function(o){ var d = (o.orderDate||o.createdAt||'').slice(0,10); return d <= whDateEnd; });
   }
-  filtered = filtered.slice().sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
+  filtered = filtered.slice().sort(function(a,b){ return _createdAtDesc(a,b); });
 
   var whTabs = [
     {key:'',label:'全部'},{key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},
@@ -15076,7 +15103,7 @@ async function renderWarehouse(){
       html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>商品明细</th><th>操作</th></tr></thead><tbody>';
       filtered.forEach(function(o){
         html += '<tr>';
-        html += '<td style="vertical-align:top">'+orderIdCell(o.id)+'<br>'+escapeHtml(o.customerName||'-')+'<br><span style="font-size:11px;color:var(--text-muted)">'+escapeHtml(o.phone||'')+'</span></td>';
+        html += '<td style="vertical-align:top">'+orderIdCell(o.id)+'<br>'+escapeHtml(displayNameOf(o))||'-'+'<br><span style="font-size:11px;color:var(--text-muted)">'+escapeHtml(o.phone||'')+'</span></td>';
         html += '<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>'+(isAdmin?'<col/><col/><col/>':'')+'</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>'+(isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':'')+'</tr></thead><tbody>';
         (o.items||[]).forEach(function(it){
           var cost = effectiveItemCost(o, it);
@@ -15132,7 +15159,7 @@ function renderCollectBalance(){
         (o.phone||'').indexOf(keyword) >= 0;
     });
   }
-  list = list.slice().sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
+  list = list.slice().sort(function(a,b){ return _createdAtDesc(a,b); });
   var totalBalance = list.reduce(function(s,o){ return s + getOrderRemaining(o); }, 0);
 
   var html = '<div class="card"><div class="card-title"><span class="title-text">💵 待收尾款</span>';
@@ -15312,7 +15339,7 @@ function renderAuditLog(){
     document.getElementById('mainContent').innerHTML = '<div class="empty-state"><div class="empty-icon">🔒</div><div class="empty-text">无权访问</div></div>';
     return;
   }
-  const logs = (DB.get('audit_log', []) || []).slice().sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
+  const logs = (DB.get('audit_log', []) || []).slice().sort((a,b) => _createdAtDesc(a,b));
   const actionFilter = window._auditAction || '';
   const actorFilter = window._auditActor || '';
   let filtered = logs;
@@ -17025,7 +17052,7 @@ window.onload = async function(){
   // 等价于无需人工逐台点「对齐云端」——已删商品（本轮整治删的 31 条）会在新版首次打开时立即从本地消失。
   // 日常仍依赖每日全量拉取 + 启动 cleanupDuplicateProducts 兜底自愈。
   try{
-    const _APP_VER = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || window.APP_VERSION || '2026100701';
+    const _APP_VER = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || window.APP_VERSION || '2026100801';
     const _lastVer = localStorage.getItem('soms_app_version') || '';
     if(_lastVer !== _APP_VER){
       await DB.loadProductsFromCloud({ forceFull: true });
