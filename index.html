@@ -294,7 +294,7 @@ async function autoReconcileOrders(){
     const all = DB.get('orders', []);
     const byId = {};
     all.forEach(function(o){ if(o && o.id != null) byId[o.id] = o; });
-    // v2026100801 关键修复：此处必须 _toCamel 转换！Supabase JS SDK 的 select('*') 返回的是
+    // v2026100803 关键修复：此处必须 _toCamel 转换！Supabase JS SDK 的 select('*') 返回的是
     // snake_case 列名（customer_name / created_at），若原样写入本地，则该单 o.customerName / o.createdAt
     // 全为 undefined → 列表「没姓名」且排序当空串「排到最底部」；且因更新判定读不到 updatedAt，
     // 下次对账又判「云端更新」再拉一次 snake_case 覆盖 → 永久卡住、反复出现。
@@ -1665,7 +1665,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026100801</div>
+          <div class="brand-sub">v2026100804</div>
         </div>
       </div>
     </div>
@@ -4115,7 +4115,7 @@ function fmtDateTime(s){
 // ===== 列表排序/姓名兜底（v20261007 修复）=====
 // 根治「localeCompare(createdAt) 字符串比较」在 createdAt 格式混用（空格裸串 / T / Z / +00:00）时
 // 字典序错位 → 表现为「最新的订单排到列表底部」。改用 Date.parse 把任意格式归一为真实 epoch 毫秒再比较。
-// v2026100801：同时兼容 snake_case 行（created_at）——即便某条脏数据以 snake 形式落进本地，
+// v2026100803：同时兼容 snake_case 行（created_at）——即便某条脏数据以 snake 形式落进本地，
 // 排序仍按真实时间而非空串处理，避免被错判成「最旧」排到列表底部。
 function _createdAtTs(v){
   if(v && typeof v === 'object') v = v.createdAt || v.created_at || '';
@@ -7619,7 +7619,7 @@ function normalizeProductName(s){
   return String(s == null ? '' : s).toLowerCase().replace(/\s+/g, '');
 }
 // v20261006：撞唯一索引时，按归一化名在云端查「在架」同名商品，供复用
-let _cloudNormCache = { ts: 0, list: null }; // v2026100801：云端同名兜底快照，30s 内复用，降低高频撞索引流量
+let _cloudNormCache = { ts: 0, list: null }; // v2026100803：云端同名兜底快照，30s 内复用，降低高频撞索引流量
 async function _findCloudProductByNormName(name, excludeId){
   if(!window._sbpbClient) return null;
   const key = normalizeProductName(name);
@@ -7743,7 +7743,7 @@ async function addProductBySales(name, price){
     }).catch(function(){});
   }
   return {ok:true, reason:'created', product:np,
-    msg:'新品「'+name+'」已加入商品库（成本暂按售价记录），已提醒管理员校准成本'};
+    msg:'新品「'+name+'」已加入商品库'};
 }
 
 // 手动添加弹窗里的「库内是否已有」实时提示（输入名称时即时反馈，避免销售重复新建）
@@ -8225,6 +8225,8 @@ function submitOrder(){
 
   // 自动把订单中“库内不存在”的商品写入商品库，成本默认等于售价并标记 auto_added，管理员后续校准真实采购成本
   (async function ensureProductsInLibrary(){
+    // 第一轮：已存在商品补齐 productId/cost；新品收集到 toCreate 待确认
+    const toCreate = [];
     for(const c of (cart||[])){
       if(!c || !c.name) continue;
       const lib = DB.get('products');
@@ -8239,6 +8241,17 @@ function submitOrder(){
         continue;
       }
       if(!(c.price > 0)) continue; // 无售价不建库，避免产生无法校准的垃圾商品
+      toCreate.push(c); // 待确认后再建库，避免静默误建重复商品
+    }
+    // v20261008：判为新品时先弹窗确认，避免“订单改价”被静默当成“新品”写进商品库（订单改价 ≠ 商品库价）
+    if(toCreate.length){
+      const list = toCreate.map(function(c, i){ return (i+1) + '. 「' + c.name + '」 售价 ' + money(c.price); }).join('\n');
+      const ok = await showConfirmAsync('以下 ' + toCreate.length + ' 个商品在商品库里不存在，将作为【新品】加入商品库：\n\n' + list + '\n\n确认全部加入商品库？\n（点「取消」则仅本次订单按此价成交，不会新建商品，也不会改动商品库）');
+      if(!ok){ toCreate.length = 0; } // 用户取消：不写库，订单项保留快照价即可
+    }
+    // 第二轮：对确认加入的新品写库
+    let _addedCount = 0;
+    for(const c of toCreate){
       const r = await addProductBySales(c.name, c.price);
       if(!r.ok){
         if(r.product && r.product.id) c.productId = r.product.id; // 同名已下架：复用原记录，不新建
@@ -8246,8 +8259,10 @@ function submitOrder(){
       }
       c.productId = r.product.id; // 重映射到商品，便于后续利润/详情计算
       c.cost = (r.product.cost != null ? r.product.cost : (c.price || 0));
-      if(r.reason === 'created') c.auto_added = true; // 供管理员审核订单时提示校准
+      if(r.reason === 'created'){ c.auto_added = true; _addedCount++; } // 供管理员审核订单时提示校准
     }
+    // 方案①：确认加入后给明确反馈（之前只有确认框、无成功提示，用户以为"没提示"）
+    if(_addedCount > 0) showToast('已添加 ' + _addedCount + ' 个新品到商品库', 'success', 4000);
   })();
 
   // 确保订单 items 快照里的 cost 与 cart 一致（手动新增商品在 ensureProductsInLibrary 中补了 cost）
@@ -8753,7 +8768,7 @@ function renderOrderDetail(){
               return `
               <tr style="background:${isDoor ? (doorItemIsGreen(it) ? '#e8f5e9' : '#fff1f2') : ''}">
                 ${isAdminDoorDetail ? `
-                  <td>${escapeHtml(it.name)}${isAdmin && itemIsUncalibrated(it) ? '<span style="background:#f59e0b;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;margin-left:6px;font-weight:500;vertical-align:middle;white-space:nowrap">🔶 待校准</span>' : ''}${it.itemRemark ? '<div style="font-size:11px;color:#b45309;margin-top:2px;white-space:pre-wrap">商品备注：'+escapeHtml(it.itemRemark)+'</div>' : ''}</td>
+                  <td>${escapeHtml(it.name)}${it.itemRemark ? '<div style="font-size:11px;color:#b45309;margin-top:2px;white-space:pre-wrap">商品备注：'+escapeHtml(it.itemRemark)+'</div>' : ''}</td>
                   <td>${it.qty}</td>
                   <td>${money(it.price)}</td>
                   <td>${money(cost)}</td>
@@ -8762,7 +8777,7 @@ function renderOrderDetail(){
                   <td><select class="form-control" id="doorStockItem_${i}" style="padding:6px 10px;width:70px" onchange="saveItemStock('${order.id}',${i},this.value)"><option value="" ${(!it.stock || (it.stock!=='有' && it.stock!=='是' && it.stock!=='需订货'))?'selected':''}></option><option value="有" ${(it.stock==='有' || it.stock==='是')?'selected':''}>有</option><option value="需订货" ${(it.stock==='需订货')?'selected':''}>需订货</option></select>${(isAdmin && it.stock==='需订货')?`<br><input type="text" class="form-control" id="doorStockOrder_${i}" value="${escapeHtml(it.stockOrderNo||'')}" placeholder="订货单号" style="padding:4px 8px;width:120px;margin-top:4px" onchange="saveItemStockOrderNo('${order.id}',${i},this.value)">`:''}</td>
                   <td><input type="text" class="form-control" id="doorArrivalItem_${i}" value="${escapeHtml(it.customerArrival||'')}" placeholder="" style="padding:6px 10px;width:120px" onchange="saveItemArrival('${order.id}',${i},this.value)"></td>
                 ` : `
-                  <td>${editMode ? `<input type="text" class="form-control" id="editItemName_${i}" value="${escapeHtml(it.name)}" style="padding:6px 10px">` : escapeHtml(it.name)}${isAdmin && itemIsUncalibrated(it) ? '<span style="background:#f59e0b;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;margin-left:6px;font-weight:500;vertical-align:middle;white-space:nowrap">🔶 待校准</span>' : ''}${it.itemRemark ? '<div style="font-size:11px;color:#b45309;margin-top:2px;white-space:pre-wrap">商品备注：'+escapeHtml(it.itemRemark)+'</div>' : ''}</td>
+                  <td>${editMode ? `<input type="text" class="form-control" id="editItemName_${i}" value="${escapeHtml(it.name)}" style="padding:6px 10px">` : escapeHtml(it.name)}${it.itemRemark ? '<div style="font-size:11px;color:#b45309;margin-top:2px;white-space:pre-wrap">商品备注：'+escapeHtml(it.itemRemark)+'</div>' : ''}</td>
                   <td>${editMode ? `<input type="number" class="form-control" id="editItemQty_${i}" value="${it.qty}" min="1" style="padding:6px 10px;width:60px" onchange="recalcEditItem(${i})">` : it.qty}</td>
                   <td>${editMode ? `<input type="number" class="form-control" id="editItemPrice_${i}" value="${it.price}" min="0" style="padding:6px 10px;width:80px" onchange="recalcEditItem(${i})">` : money(it.price)}</td>
                   ${isAdmin ? `<td>${money(cost)}</td>` : ''}
@@ -8805,7 +8820,6 @@ function renderOrderDetail(){
           const isArrived = doorItemIsGreen(it);
           const rowBg = isArrived ? '#e8f5e9' : '#fff1f2';
           const nameHtml = escapeHtml(it.name)
-            + (isAdmin && itemIsUncalibrated(it) ? '<span style="background:#f59e0b;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;margin-left:6px;font-weight:500;vertical-align:middle;white-space:nowrap">🔶 待校准</span>' : '')
             + (it.itemRemark ? '<div style="font-size:11px;color:#b45309;margin-top:2px;white-space:pre-wrap">商品备注：'+escapeHtml(it.itemRemark)+'</div>' : '');
           const nameCell = editMode ? '<input type="text" class="form-control" id="editItemName_'+i+'" value="'+escapeHtml(it.name)+'" style="padding:6px 10px">' : nameHtml;
           const qtyCell = editMode ? '<input type="number" class="form-control" id="editItemQty_'+i+'" value="'+it.qty+'" min="1" style="padding:6px 10px;width:64px" onchange="recalcEditItem('+i+')">' : ('× '+it.qty);
@@ -11021,7 +11035,16 @@ async function saveAdminOrder(orderId){
   DB.set('orders', orders);
   logAudit({action:'edit_order', targetType:'order', targetId: orderId, targetLabel: o.customerName||'-', before: auditBeforeStatus, after: o.status, detail: '管理员修改(物流/损耗/状态)'});
   schedulePushToCloud();
-  showToast(o.status === 'feedback' ? (o.noTracking ? '已标记为无需物流，订单已转入「待反馈」' : '全部商品物流单号已录入，订单已转入「待反馈」') : '修改完成', 'success');
+  // 进度式提示：未填满时明确告知「已填 N/总数」与后续流转，避免只说「修改完成」让人误以为没生效
+  if(o.status === 'feedback'){
+    showToast(o.noTracking ? '已标记为无需物流，订单已转入「待反馈」' : '全部商品物流单号已录入，订单已转入「待反馈」', 'success');
+  }else if(o.type !== 'door' && (o.items || []).length > 0){
+    const _trackedCnt = (o.items || []).filter(function(it){ return (it.trackingNo || '').trim() !== ''; }).length;
+    const _totalCnt = (o.items || []).length;
+    showToast('已保存（' + _trackedCnt + '/' + _totalCnt + ' 个商品已填单号，填满后订单自动转入「待反馈」）', 'success');
+  }else{
+    showToast('修改完成', 'success');
+  }
   // 返回对应列表（confirmed/shipped 归入「已下单」Tab；feedback_done 归入「已完成」Tab；completed 归入「已完成」Tab）
   window._orderTab = (o.status === 'pending') ? 'pending' : (o.status === 'feedback' ? 'feedback' : (o.status === 'feedback_done' ? 'completed' : (o.status === 'completed' ? 'completed' : 'confirmed')));
   renderOrders();
@@ -12283,19 +12306,20 @@ function exportWarehouseOrders(){
 function isUncalibrated(p){
   if(!p) return false;
   // v20260917 重写：销售新增的商品成本默认 = 售价（非 0），旧版「只看成本是否缺失」永远判不出待校准，
-  // 管理员根本收不到提醒。改为优先级判定——
-  // ① 云端显式标记 need_calibration（跨设备一致，需 products 表加列，见 copyProductCalibSql）；
-  // ② 本机已确认校准过的记录（无列时的降级）；
-  // ③ 本机 auto_added 标记（销售自己在订单里新增的、还没被管理员校准的）；
-  // ④ 成本压根没录（0/空/缺失）。
+  // 管理员根本收不到提醒。改为优先级判定。
+  // v20261008 修复：auto_added（销售新增、管理员尚未在商品管理「保存」过）提到最高优先级——
+  //   旧版先判 need_calibration===false 就短路成“已校准”，而该列是后加的、DEFAULT false，
+  //   历史 auto_added 商品 need_calibration 全为 false → 被误判为已校准、永远不显示待校准也不置顶
+  //   （实测云端 6 个 auto_added 商品全部如此）。管理员保存商品时 saveProduct 会 delete auto_added，
+  //   届时自然移出待校准，不会重复提示。
+  if(_isLocallyCalibrated(p.id)) return false;       // ① 本机已确认校准（无列时的降级）
+  if(p.auto_added === true) return true;             // ② 销售新增且管理员尚未保存 → 待校准（优先）
   if(window._prodHasCalibCol === true){
-    if(p.need_calibration === true) return !_isLocallyCalibrated(p.id);
-    if(p.need_calibration === false) return false; // 管理员已明确校准
+    if(p.need_calibration === true) return true;     // ③ 云端显式待校准
+    if(p.need_calibration === false) return false;   // ④ 云端已明确校准
   }
-  if(_isLocallyCalibrated(p.id)) return false;
-  if(p.auto_added === true) return true;
   const c = Number(p.cost);
-  return !c;
+  return !c;                                         // ⑤ 成本未录（0/空/缺失）
 }
 
 // 订单项是否仍应显示「待校准」：销售在订单中（提交或编辑时）新增的商品，应显示 🔶 待校准，
@@ -13377,6 +13401,7 @@ async function saveProduct(){
   // 用户点「保存」后什么提示都没有，误以为没保存成功。
   let savedProduct = null;
   let _origName = null; // 编辑前原名，撞唯一索引回滚用（在 const name 声明后再赋值，避免 TDZ 报错）
+  let _wasUncal = false; // v20261008：编辑前该商品是否处于「待校准」（用于校准完成后明确提示已移出待校准列表）
   const isAdmin = !!(currentUser && currentUser.role === 'admin');
   // v20260917：商品管理模块对销售只读——即使绕过界面直接调用也不允许写入
   if(!isAdmin){ showToast('商品库为只读，销售不能新增或修改商品','warning',4000); return; }
@@ -13407,6 +13432,7 @@ async function saveProduct(){
     const idx = products.findIndex(p => p.id === id);
     if(idx >= 0){
       _origName = products[idx].name; // 记录编辑前原名，撞唯一索引时回滚
+      _wasUncal = isUncalibrated(products[idx]); // v20261008：必须在覆盖前取，覆盖后 auto_added 已删就取不到了
       products[idx] = {...products[idx], name, category, price, cost, updatedAt: _nowStr};
       delete products[idx].auto_added;
       if(isAdmin){
@@ -13465,7 +13491,10 @@ async function saveProduct(){
   closeModal();
   // ① 本地已落库 → 立刻给确定反馈（含商品名，手机端顶部横幅，3.5s）
   showToast('✓ 商品「' + escapeHtml(savedProduct.name) + '」已保存', 'success', 3500);
-  if(isAdmin && stillUncalibrated){
+  if(isAdmin && _wasUncal && !stillUncalibrated){
+    // v20261008：原本待校准、本次保存后已校准 → 明确告知已移出待校准列表（否则管理员不确定校准是否生效）
+    showToast('✓ 校准完成：「' + escapeHtml(savedProduct.name) + '」已移出「待校准」列表', 'success', 4000);
+  }else if(isAdmin && stillUncalibrated){
     showToast('成本仍与售价相同（或未填），该商品继续保持「待校准」提醒；如真实成本确为售价，请勾选「成本已核实」后保存', 'warning', 6000);
   }
   renderProducts();
@@ -16720,6 +16749,39 @@ function _safeCancel(){
   if(typeof cb === 'function') cb();
 }
 
+// 独立浮层确认框：直接 append 到 body，不写入共用的 #modalContainer，
+// 从而避免「提交订单」等场景里确认框覆盖掉正在显示的订单/商品弹窗（方案①真实副作用）。
+// 确认 => true，取消 / 点遮罩 => false。
+function showConfirmOverlay(msg){
+  return new Promise(function(resolve){
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-mask';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:10000';
+    const body = (msg || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    overlay.innerHTML = '<div class="modal" style="max-width:440px">'
+      + '<div class="modal-header"><h3>确认操作</h3></div>'
+      + '<div class="modal-body"><p style="font-size:14px;line-height:1.7;white-space:pre-wrap">' + body + '</p></div>'
+      + '<div class="modal-footer">'
+      + '<button class="btn btn-secondary" id="cfCancelBtn">取消</button>'
+      + '<button class="btn btn-danger" id="cfOkBtn">确认</button>'
+      + '</div></div>';
+    document.body.appendChild(overlay);
+    function done(v){ if(overlay.parentNode){ overlay.parentNode.removeChild(overlay); } resolve(v); }
+    overlay.addEventListener('click', function(e){ if(e.target === overlay) done(false); });
+    const ok = overlay.querySelector('#cfOkBtn');
+    const cancel = overlay.querySelector('#cfCancelBtn');
+    if(ok) ok.addEventListener('click', function(){ done(true); });
+    if(cancel) cancel.addEventListener('click', function(){ done(false); });
+  });
+}
+
+// 返回 Promise<boolean> 的确认框：确认 => true，取消 / 点遮罩 => false。
+// 供 async 上下文 await 使用（如提交订单时对新品入库的二次确认）。
+// 注意：使用独立浮层（showConfirmOverlay），不覆盖 #modalContainer 内的订单弹窗。
+function showConfirmAsync(msg){
+  return showConfirmOverlay(msg);
+}
+
 /* ============ 物流轨迹查询模块 ============ */
 
 // 基于字符串生成简单哈希种子（保证同一运单号生成相同结果）
@@ -17052,7 +17114,7 @@ window.onload = async function(){
   // 等价于无需人工逐台点「对齐云端」——已删商品（本轮整治删的 31 条）会在新版首次打开时立即从本地消失。
   // 日常仍依赖每日全量拉取 + 启动 cleanupDuplicateProducts 兜底自愈。
   try{
-    const _APP_VER = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || window.APP_VERSION || '2026100801';
+    const _APP_VER = ((document.querySelector('.brand-sub')||{}).textContent || '').trim().replace(/^v/,'') || window.APP_VERSION || '2026100804';
     const _lastVer = localStorage.getItem('soms_app_version') || '';
     if(_lastVer !== _APP_VER){
       await DB.loadProductsFromCloud({ forceFull: true });
