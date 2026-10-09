@@ -1665,7 +1665,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026100905</div>
+          <div class="brand-sub">v2026100906</div>
         </div>
       </div>
     </div>
@@ -2200,6 +2200,12 @@ const DB = {
           seen.add(r.id);
         });
         (cloud||[]).forEach(r => { if(r&&r.id!=null && !seen.has(r.id)){ mergedArr.push(r); seen.add(r.id); } });
+        // v2026100906：把云端密码哈希备份为「离线登录凭据」，供断网时校验（本地缓存的 password 会被安全策略擦除）
+        try{
+          const _pc = {};
+          (mergedArr||[]).forEach(function(r){ if(r && r.username && r.password){ _pc[String(r.username).toLowerCase()] = r.password; } });
+          if(Object.keys(_pc).length){ localStorage.setItem('soms_pwd_cache', JSON.stringify(_pc)); }
+        }catch(e){}
         localStorage.setItem('soms_'+key, JSON.stringify(key === 'users' ? this._scrubUserPasswords(mergedArr) : mergedArr));
         return mergedArr;
       }
@@ -5034,32 +5040,53 @@ async function handleLogin(){
         else { console.warn('[登录] 云端认证失败，降级本地校验：', (e&&e.message)||e); }
       }
     }
-    // 兼容期回退：Auth 账号尚未迁移时，用本地 bcrypt 校验（开通 RLS 后此分支自动失效，不会更不安全）
-    // 登录前先强制从云端拉取最新账号（解决"在其他设备/浏览器刚创建的账号，本机缓存还没同步"导致登录不上的问题）
-    try{
-      if(window._sbpbClient){
-        await DB._loadTable('users');
+    // 兼容期回退：Auth 账号尚未迁移时，用云端/离线密码哈希校验（bcrypt）
+    // —— v2026100906：账号表只拉一次 + 8 秒超时 + 失败降级本地缓存，杜绝双重 20 秒等待与静默失败 ——
+    let users = [];
+    let cloudUsersOk = false;
+    if(window._sbpbClient){
+      try{
+        users = await withTimeout(DB._loadTable('users'), 8000, '拉取云端账号表');
+        cloudUsersOk = true;
+      }catch(e){
+        cloudUsersOk = false;
+        console.warn('[登录] 云端账号表拉取失败/超时，降级本地缓存：', (e && e.message) || e);
       }
-    }catch(e){ /* 云端不可用则降级用本地缓存，不阻断登录 */ }
-    // 用户数据已通过 DB.syncFromCloud() + 上面强制刷新 从 Supabase 同步到 localStorage 缓存
+    }
+    if(!cloudUsersOk || !users || !users.length){ users = DB.get('users', []) || []; }
     // 清理重复/残留账号，确保同名账号只保留最新（含最新密码）的一条
     cleanupDuplicateUsers();
     // 清理重复客户：避免多次下单/录入手机号不一致产生重复客户
     cleanupDuplicateCustomers();
-    const users = await DB._loadTable('users'); // 用云端拉取结果（含 password，未被 _scrubUserPasswords 擦除），避免本地缓存密码被擦导致比对失败
-    const target = users.find(u => u.username === user && !u.disabled);
-    if(!target){ showToast('用户名或密码错误','error'); return; }
-    if(target.disabled){ showToast('该账号已被禁用，无法登录','error'); return; }
+    const target = users.find(u => u.username === user);
+    if(!target){
+      if(!cloudUsersOk){ showToast('无法连接云端账号表（网络不通），请检查网络后重试','error'); return; }
+      showToast('用户名或密码错误','error'); return;
+    }
+    if(target.disabled){ showToast('该账号已被禁用，请联系管理员','error'); return; }
+    // 密码哈希：记录里的优先；若被本地安全策略（_scrubUserPasswords）擦除，则回退离线凭据缓存
+    let storedHash = target.password || '';
+    if(!storedHash){
+      try{
+        const _pc = JSON.parse(localStorage.getItem('soms_pwd_cache') || '{}');
+        storedHash = _pc[String(user).toLowerCase()] || '';
+      }catch(e){ storedHash = ''; }
+    }
+    if(!storedHash){
+      if(!cloudUsersOk){ showToast('云端账号表不可用，且本机无离线凭据；请联网登录一次后再重试','error'); return; }
+      showToast('用户名或密码错误','error'); return;
+    }
     let ok = false;
     try{
-      if(verifyPassword(pass, target.password)){
+      if(verifyPassword(pass, storedHash)){
         ok = true;
-      } else if(target.password === pass){ // 兼容旧明文：首次登录自动升级为哈希
-        target.password = hashPassword(pass); DB.set('users', users); ok = true;
+      } else if(storedHash === pass){ // 兼容旧明文：首次登录自动升级为哈希
+        try{ target.password = hashPassword(pass); DB.set('users', users); }catch(e){}
+        ok = true;
       }
     }catch(e){
       // 非安全上下文或 bcrypt 未加载，降级明文比对，保证可登录
-      if(target.password === pass) ok = true;
+      if(storedHash === pass) ok = true;
     }
     if(!ok){ showToast('用户名或密码错误','error'); return; }
     // 不把密码（即使是哈希）存入会话，降低泄露风险
