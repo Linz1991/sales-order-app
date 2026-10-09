@@ -1645,7 +1645,7 @@ html{scroll-behavior:smooth}
           <label>密码</label>
           <input type="password" id="loginPass" placeholder="请输入密码">
         </div>
-        <button class="btn-login" onclick="handleLogin()">登 录</button>
+        <button class="btn-login" id="loginBtn" onclick="handleLogin()">登 录</button>
       </form>
       <div class="login-extra">
         <label style="color:#64748b;display:flex;align-items:center;gap:6px"><input type="checkbox"> 记住我</label>
@@ -1665,7 +1665,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026100804</div>
+          <div class="brand-sub">v2026100905</div>
         </div>
       </div>
     </div>
@@ -5010,62 +5010,76 @@ async function finishLoginViaAuth(username){
 async function handleLogin(){
   const user = document.getElementById('loginUser').value.trim();
   const pass = document.getElementById('loginPass').value;
+  const btn = document.getElementById('loginBtn');
   if(!user || !pass){ showToast('请输入用户名和密码','error'); return; }
-  // —— 方案二(Auth)：优先走 Supabase 官方认证（密码哈希在服务端校验，绝不下发前端）——
-  if(window._sbpbClient){
-    try{
-      const { data, error } = await window._sbpbClient.auth.signInWithPassword({
-        email: user + '@soms.local',
-        password: pass
-      });
-      if(data && data.user){
-        await finishLoginViaAuth(user);
-        return;
-      }
-      // Auth 未成功（账号未迁移到 Auth / 凭证无效 / Auth 不可用）：不再直接拦截报错误，
-      // 而是降级到下方本地 bcrypt 校验。账号密码真相源是 public.users 表，Auth 仅作增强，
-      // Auth 缺失不应把本地有正确密码的账号挡在门外（修复“登录不进去”）。
-    }catch(e){ /* 真正的异常（网络中断/客户端未就绪）：降级到下方本地离线兜底 */ }
-  }
-  // 兼容期回退：Auth 账号尚未迁移时，用本地缓存的 sha256 校验（开通 RLS 后此分支自动失效，不会更不安全）
-  // 登录前先强制从云端拉取最新账号（解决"在其他设备/浏览器刚创建的账号，本机缓存还没同步"导致登录不上的问题）
+  // —— 登录反馈态：禁用按钮 + 显示「登录中…」，杜绝「点了没反应」错觉与重复点击 ——
+  if(btn){ btn.disabled = true; btn.dataset._old = btn.textContent; btn.textContent = '登录中…'; }
   try{
+    // —— 方案二(Auth)：优先走 Supabase 官方认证（密码哈希在服务端校验，绝不下发前端）——
+    // v20261009：包 6 秒超时，避免 Supabase 慢/无响应时 await 永久挂起导致按钮卡死
     if(window._sbpbClient){
-      await DB._loadTable('users');
+      try{
+        const { data, error } = await withTimeout(
+          window._sbpbClient.auth.signInWithPassword({ email: user + '@soms.local', password: pass }),
+          6000, '登录(云端认证)'
+        );
+        if(data && data.user){
+          await finishLoginViaAuth(user);
+          return;
+        }
+        // Auth 未成功（账号未迁移到 Auth / 凭证无效 / Auth 不可用）：降级到下方本地 bcrypt 校验
+      }catch(e){
+        // 超时（withTimeout reject）或网络异常：一律降级本地离线兜底，不阻断登录
+        if(e && /超时/.test(e.message || '')){ console.warn('[登录] 云端认证超时，降级本地校验'); }
+        else { console.warn('[登录] 云端认证失败，降级本地校验：', (e&&e.message)||e); }
+      }
     }
-  }catch(e){ /* 云端不可用则降级用本地缓存，不阻断登录 */ }
-  // 用户数据已通过 DB.syncFromCloud() + 上面强制刷新 从 Supabase 同步到 localStorage 缓存
-  // 清理重复/残留账号，确保同名账号只保留最新（含最新密码）的一条
-  cleanupDuplicateUsers();
-  // 清理重复客户：避免多次下单/录入手机号不一致产生重复客户
-  cleanupDuplicateCustomers();
-  const users = await DB._loadTable('users'); // 用云端拉取结果（含 password，未被 _scrubUserPasswords 擦除），避免本地缓存密码被擦导致比对失败
-  const target = users.find(u => u.username === user && !u.disabled);
-  if(!target){ showToast('用户名或密码错误','error'); return; }
-  if(target.disabled){ showToast('该账号已被禁用，无法登录','error'); return; }
-  let ok = false;
-  try{
-    if(verifyPassword(pass, target.password)){
-      ok = true;
-    } else if(target.password === pass){ // 兼容旧明文：首次登录自动升级为哈希
-      target.password = hashPassword(pass); DB.set('users', users); ok = true;
+    // 兼容期回退：Auth 账号尚未迁移时，用本地 bcrypt 校验（开通 RLS 后此分支自动失效，不会更不安全）
+    // 登录前先强制从云端拉取最新账号（解决"在其他设备/浏览器刚创建的账号，本机缓存还没同步"导致登录不上的问题）
+    try{
+      if(window._sbpbClient){
+        await DB._loadTable('users');
+      }
+    }catch(e){ /* 云端不可用则降级用本地缓存，不阻断登录 */ }
+    // 用户数据已通过 DB.syncFromCloud() + 上面强制刷新 从 Supabase 同步到 localStorage 缓存
+    // 清理重复/残留账号，确保同名账号只保留最新（含最新密码）的一条
+    cleanupDuplicateUsers();
+    // 清理重复客户：避免多次下单/录入手机号不一致产生重复客户
+    cleanupDuplicateCustomers();
+    const users = await DB._loadTable('users'); // 用云端拉取结果（含 password，未被 _scrubUserPasswords 擦除），避免本地缓存密码被擦导致比对失败
+    const target = users.find(u => u.username === user && !u.disabled);
+    if(!target){ showToast('用户名或密码错误','error'); return; }
+    if(target.disabled){ showToast('该账号已被禁用，无法登录','error'); return; }
+    let ok = false;
+    try{
+      if(verifyPassword(pass, target.password)){
+        ok = true;
+      } else if(target.password === pass){ // 兼容旧明文：首次登录自动升级为哈希
+        target.password = hashPassword(pass); DB.set('users', users); ok = true;
+      }
+    }catch(e){
+      // 非安全上下文或 bcrypt 未加载，降级明文比对，保证可登录
+      if(target.password === pass) ok = true;
     }
-  }catch(e){
-    // 非安全上下文或 bcrypt 未加载，降级明文比对，保证可登录
-    if(target.password === pass) ok = true;
+    if(!ok){ showToast('用户名或密码错误','error'); return; }
+    // 不把密码（即使是哈希）存入会话，降低泄露风险
+    const {password, ...safe} = target;
+    currentUser = safe;
+    sessionStorage.setItem('soms_current_user', JSON.stringify(safe));
+    showApp();
+    showToast('登录成功，欢迎回来 '+safe.name,'success');
+    // 擦除本地缓存中残留的密码哈希（历史版本写入的）
+    DB.set('users', DB.get('users', []));
+    // 登录后立即从云端拉取全部数据（含订单），确保销售即登即见自己名下订单，不依赖15秒轮询
+    if(window._sbpbClient){ DB.syncFromCloud().catch(function(){}); }
+    else { setTimeout(function(){ DB.syncFromCloud().catch(function(){}); }, 2000); } // CDN兜底加载中，稍后重试
+  } finally {
+    // 恢复登录按钮（仅当仍停留在登录页、未成功进入应用时）
+    if(btn && document.getElementById('loginPage') && document.getElementById('loginPage').style.display !== 'none'){
+      btn.disabled = false;
+      btn.textContent = btn.dataset._old || '登 录';
+    }
   }
-  if(!ok){ showToast('用户名或密码错误','error'); return; }
-  // 不把密码（即使是哈希）存入会话，降低泄露风险
-  const {password, ...safe} = target;
-  currentUser = safe;
-  sessionStorage.setItem('soms_current_user', JSON.stringify(safe));
-  showApp();
-  showToast('登录成功，欢迎回来 '+safe.name,'success');
-  // 擦除本地缓存中残留的密码哈希（历史版本写入的）
-  DB.set('users', DB.get('users', []));
-  // 登录后立即从云端拉取全部数据（含订单），确保销售即登即见自己名下订单，不依赖15秒轮询
-  if(window._sbpbClient){ DB.syncFromCloud().catch(function(){}); }
-  else { setTimeout(function(){ DB.syncFromCloud().catch(function(){}); }, 2000); } // CDN兜底加载中，稍后重试
 }
 
 function handleLogout(){
