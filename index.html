@@ -1648,6 +1648,14 @@ html{scroll-behavior:smooth}
         <button class="btn-login" id="loginBtn" onclick="handleLogin()">登 录</button>
       </form>
       <div id="loginDiag" style="display:none;margin-top:12px;padding:10px 12px;border-radius:8px;background:#fff8f1;border:1px solid #f3cfa8;color:#8a4b1c;font-size:12px;line-height:1.75;max-height:200px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,Menlo,Consolas,monospace"></div>
+      <div id="emgBox" style="margin-top:14px;text-align:center">
+        <button type="button" id="emgToggle" onclick="toggleEmgPanel()" style="background:none;border:none;color:#8a6d3b;font-size:12px;cursor:pointer;text-decoration:underline;padding:0">无法登录？使用离线应急登录</button>
+        <div id="emgPanel" style="display:none;margin-top:10px;padding:12px;border-radius:8px;background:#fff;border:1px solid #e0d5c3">
+          <div style="font-size:12px;color:#8a4b1c;line-height:1.6;margin-bottom:8px">仅在确认连不上云端时可用。进入后使用本机数据，恢复联网会自动补同步。</div>
+          <input type="password" id="emgCode" placeholder="输入应急口令" autocomplete="off" style="width:100%;padding:9px 10px;border:1px solid #d9cfbe;border-radius:6px;font-size:14px;outline:none;box-sizing:border-box">
+          <button type="button" id="emgGo" class="btn-login" style="margin-top:10px;width:100%" onclick="handleEmergencyLogin()">进入系统（离线）</button>
+        </div>
+      </div>
       <div class="login-extra">
         <label style="color:#64748b;display:flex;align-items:center;gap:6px"><input type="checkbox"> 记住我</label>
         <a href="#">忘记密码？</a>
@@ -1666,7 +1674,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026100907</div>
+          <div class="brand-sub">v2026100908</div>
         </div>
       </div>
     </div>
@@ -2201,7 +2209,7 @@ const DB = {
           seen.add(r.id);
         });
         (cloud||[]).forEach(r => { if(r&&r.id!=null && !seen.has(r.id)){ mergedArr.push(r); seen.add(r.id); } });
-        // v2026100907：把云端密码哈希备份为「离线登录凭据」，供断网时校验（本地缓存的 password 会被安全策略擦除）
+        // v2026100908：把云端密码哈希备份为「离线登录凭据」，供断网时校验（本地缓存的 password 会被安全策略擦除）
         try{
           const _pc = {};
           (mergedArr||[]).forEach(function(r){ if(r && r.username && r.password){ _pc[String(r.username).toLowerCase()] = r.password; } });
@@ -5026,7 +5034,7 @@ function _ld(line, tone){
   el.textContent += (el.textContent ? '\n' : '') + prefix + line;
   el.scrollTop = el.scrollHeight;
 }
-// v2026100907：把校验通过的密码哈希写入本机「离线登录凭据」，断网也能登录
+// v2026100908：把校验通过的密码哈希写入本机「离线登录凭据」，断网也能登录
 function _cachePwd(u, h){
   try{
     if(!u || !h) return;
@@ -5034,6 +5042,77 @@ function _cachePwd(u, h){
     const pc = JSON.parse(localStorage.getItem('soms_pwd_cache') || '{}');
     if(pc[key] !== h){ pc[key] = h; localStorage.setItem('soms_pwd_cache', JSON.stringify(pc)); }
   }catch(e){}
+}
+/* ===== v2026100908 离线应急登录：仅在确认连不上云端时可用 ===== */
+const EMG_SHA256 = '1c012ec93f7ddf4cf626cb8d636ada1d36be8eaaf7c4e94b2bc1a0aab7c59350';
+const EMG_FNV = '68cf225f';
+function _emgFnv1a(s){ var h = 0x811c9dc5; for(var i=0;i<s.length;i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return ('00000000' + h.toString(16)).slice(-8); }
+async function _emgSha256(s){
+  try{
+    if(window.crypto && crypto.subtle && crypto.subtle.digest){
+      var buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+      return Array.prototype.slice.call(new Uint8Array(buf)).map(function(b){ return ('0'+b.toString(16)).slice(-2); }).join('');
+    }
+  }catch(e){}
+  return null;
+}
+async function _emgVerify(code){
+  var s = String(code || '').trim();
+  var sha = await _emgSha256(s);
+  if(sha && sha === EMG_SHA256) return true;
+  return _emgFnv1a(s) === EMG_FNV;
+}
+function toggleEmgPanel(){
+  var p = document.getElementById('emgPanel');
+  if(!p) return;
+  p.style.display = (p.style.display === 'block') ? 'none' : 'block';
+  if(p.style.display === 'block'){ var i = document.getElementById('emgCode'); if(i) i.focus(); }
+}
+function showEmergencyBanner(){
+  try{
+    if(document.getElementById('emgBanner')) return;
+    var d = document.createElement('div');
+    d.id = 'emgBanner';
+    d.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:99999;background:#b3261e;color:#fff;font-size:13px;line-height:1.5;padding:8px 12px;text-align:center;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,.2)';
+    d.textContent = '离线应急模式：云端未连接，改动仅保存在本机。网络恢复后会自动补同步，请勿在多台设备同时应急开单。';
+    document.body.appendChild(d);
+  }catch(e){}
+}
+window.addEventListener('DOMContentLoaded', function(){
+  try{ if(sessionStorage.getItem('soms_emg_mode') === '1' && sessionStorage.getItem('soms_current_user')) showEmergencyBanner(); }catch(e){}
+});
+async function handleEmergencyLogin(){
+  var codeEl = document.getElementById('emgCode');
+  var btn = document.getElementById('emgGo');
+  var code = codeEl ? String(codeEl.value || '').trim() : '';
+  if(!code){ showToast('请输入应急口令', 'error', 9000); return; }
+  if(btn){ btn.disabled = true; btn.textContent = '验证中…'; }
+  try{
+    var reachable = false;
+    try{
+      await withTimeout(fetch(SUPABASE_URL + '/auth/v1/health', { headers: { apikey: SUPABASE_KEY } }), 4000, '应急探测');
+      reachable = true;
+    }catch(e){ reachable = false; }
+    if(reachable){ showToast('云端当前可用，请使用正常账号密码登录', 'error', 9000); return; }
+    var ok = await _emgVerify(code);
+    if(!ok){ showToast('应急口令不正确', 'error', 9000); return; }
+    var uname = '';
+    try{ uname = String((document.getElementById('loginUser') || {}).value || '').trim(); }catch(e){}
+    var cu = null;
+    try{
+      var us = DB.get('users', []) || [];
+      for(var i=0;i<us.length;i++){ if(us[i] && us[i].username === uname){ cu = us[i]; break; } }
+    }catch(e){}
+    if(cu){ currentUser = { username: cu.username, name: cu.name || cu.username, role: cu.role || 'admin' }; }
+    else { currentUser = { username: uname || 'admin', name: uname ? ('应急-' + uname) : '应急管理员', role: 'admin' }; }
+    sessionStorage.setItem('soms_current_user', JSON.stringify(currentUser));
+    sessionStorage.setItem('soms_emg_mode', '1');
+    showApp();
+    showEmergencyBanner();
+    showToast('已进入离线应急模式：云端未连接，改动仅存本机', 'success', 9000);
+  } finally {
+    if(btn){ btn.disabled = false; btn.textContent = '进入系统（离线）'; }
+  }
 }
 async function handleLogin(){
   const user = document.getElementById('loginUser').value.trim();
