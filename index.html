@@ -23,7 +23,7 @@ if('serviceWorker' in navigator){
 <script src="./libs/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bcryptjs@2.4.3/dist/bcrypt.min.js"></script>
 <script>
-const SUPABASE_URL = 'https://mfimcrzewhnlbtkjgqlq.supabase.co';
+const SUPABASE_URL = 'https://daxian-soms-proxy.pages.dev/sb';
 const SUPABASE_KEY = 'sb_publishable_x1lj1wREId-JMCVTqxJG6w_mcBK0j2Q';
 const APP_SECRET = 'soms_2025_secure_access_key_8f3k9q2m';
 function _initSupabase(){
@@ -216,7 +216,7 @@ async function checkOrderSyncGap(){
       return true;
     }).length;
     const key = 'sb_publishable_x1lj1wREId-JMCVTqxJG6w_mcBK0j2Q';
-    let url = 'https://mfimcrzewhnlbtkjgqlq.supabase.co/rest/v1/orders?_deleted=eq.false&select=count';
+    let url = SUPABASE_URL + '/rest/v1/orders?_deleted=eq.false&select=count';
     if(!isAdmin && !isOperator) url += '&sales_id=eq.' + encodeURIComponent(currentUser.id);
     const r = await fetch(url, {
       headers: { 'apikey': key, 'Authorization': 'Bearer ' + key, 'x-app-secret': 'soms_2025_secure_access_key_8f3k9q2m', 'Prefer': 'count=exact' }
@@ -436,7 +436,7 @@ _initSupabase();
  * 函数地址由 Supabase 项目自动推导。部署函数并在函数 Secrets 中配置
  * KUAIDI100_KEY / KUAIDI100_CUSTOMER 后即生效。
  */
-const KUAIDI100_PROXY = SUPABASE_URL.replace(/\.supabase\.co$/, '.functions.supabase.co') + '/query-kuaidi100';
+const KUAIDI100_PROXY = SUPABASE_URL + '/functions/v1/query-kuaidi100';
 // ── 快递100 密钥：不再硬编码于前端 ──
 //   公开 PWA 代码里的密钥会被任何人抓取并盗刷查询次数。所有查询统一经 Supabase Edge Function
 //   代理中转（见 supabase/functions/query-kuaidi100/index.ts），密钥仅存于函数 Secrets。
@@ -1674,7 +1674,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026100908</div>
+          <div class="brand-sub">v2026100909</div>
         </div>
       </div>
     </div>
