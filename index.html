@@ -1647,6 +1647,7 @@ html{scroll-behavior:smooth}
         </div>
         <button class="btn-login" id="loginBtn" onclick="handleLogin()">登 录</button>
       </form>
+      <div id="loginDiag" style="display:none;margin-top:12px;padding:10px 12px;border-radius:8px;background:#fff8f1;border:1px solid #f3cfa8;color:#8a4b1c;font-size:12px;line-height:1.75;max-height:200px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,Menlo,Consolas,monospace"></div>
       <div class="login-extra">
         <label style="color:#64748b;display:flex;align-items:center;gap:6px"><input type="checkbox"> 记住我</label>
         <a href="#">忘记密码？</a>
@@ -1665,7 +1666,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026100906</div>
+          <div class="brand-sub">v2026100907</div>
         </div>
       </div>
     </div>
@@ -2200,7 +2201,7 @@ const DB = {
           seen.add(r.id);
         });
         (cloud||[]).forEach(r => { if(r&&r.id!=null && !seen.has(r.id)){ mergedArr.push(r); seen.add(r.id); } });
-        // v2026100906：把云端密码哈希备份为「离线登录凭据」，供断网时校验（本地缓存的 password 会被安全策略擦除）
+        // v2026100907：把云端密码哈希备份为「离线登录凭据」，供断网时校验（本地缓存的 password 会被安全策略擦除）
         try{
           const _pc = {};
           (mergedArr||[]).forEach(function(r){ if(r && r.username && r.password){ _pc[String(r.username).toLowerCase()] = r.password; } });
@@ -5013,99 +5014,147 @@ async function finishLoginViaAuth(username){
   DB.set('users', DB.get('users', []));
 }
 
+function _ldClear(){
+  const el = document.getElementById('loginDiag');
+  if(el){ el.style.display = 'none'; el.textContent = ''; }
+}
+function _ld(line, tone){
+  const el = document.getElementById('loginDiag');
+  if(!el) return;
+  el.style.display = 'block';
+  const prefix = tone === 'ok' ? '✓ ' : tone === 'bad' ? '✕ ' : tone === 'warn' ? '⚠ ' : '· ';
+  el.textContent += (el.textContent ? '\n' : '') + prefix + line;
+  el.scrollTop = el.scrollHeight;
+}
+// v2026100907：把校验通过的密码哈希写入本机「离线登录凭据」，断网也能登录
+function _cachePwd(u, h){
+  try{
+    if(!u || !h) return;
+    const key = String(u).toLowerCase();
+    const pc = JSON.parse(localStorage.getItem('soms_pwd_cache') || '{}');
+    if(pc[key] !== h){ pc[key] = h; localStorage.setItem('soms_pwd_cache', JSON.stringify(pc)); }
+  }catch(e){}
+}
 async function handleLogin(){
   const user = document.getElementById('loginUser').value.trim();
   const pass = document.getElementById('loginPass').value;
   const btn = document.getElementById('loginBtn');
   if(!user || !pass){ showToast('请输入用户名和密码','error'); return; }
-  // —— 登录反馈态：禁用按钮 + 显示「登录中…」，杜绝「点了没反应」错觉与重复点击 ——
+  _ldClear();
+  const _t0 = Date.now();
   if(btn){ btn.disabled = true; btn.dataset._old = btn.textContent; btn.textContent = '登录中…'; }
   try{
-    // —— 方案二(Auth)：优先走 Supabase 官方认证（密码哈希在服务端校验，绝不下发前端）——
-    // v20261009：包 6 秒超时，避免 Supabase 慢/无响应时 await 永久挂起导致按钮卡死
-    if(window._sbpbClient){
+    // ① 云端客户端（SDK）是否就绪
+    const sdkReady = !!window._sbpbClient;
+    _ld('① 云端客户端：' + (sdkReady ? '已就绪' : '未就绪（本机 SDK 未加载，本次只能用本机离线凭据登录）'), sdkReady ? 'ok' : 'warn');
+
+    // ② 连通性探测 + ③ 云端认证：并行发起，各自超时，任何一个都不会挂死
+    const pProbe = (async function(){
+      const t = Date.now();
       try{
-        const { data, error } = await withTimeout(
-          window._sbpbClient.auth.signInWithPassword({ email: user + '@soms.local', password: pass }),
-          6000, '登录(云端认证)'
-        );
-        if(data && data.user){
-          await finishLoginViaAuth(user);
-          return;
-        }
-        // Auth 未成功（账号未迁移到 Auth / 凭证无效 / Auth 不可用）：降级到下方本地 bcrypt 校验
+        const r = await withTimeout(fetch(SUPABASE_URL + '/auth/v1/health', { headers: { apikey: SUPABASE_KEY } }), 5000, '云端探测');
+        return { ok:true, info:'浏览器直连可达（HTTP ' + r.status + '，' + (Date.now()-t) + 'ms）' };
       }catch(e){
-        // 超时（withTimeout reject）或网络异常：一律降级本地离线兜底，不阻断登录
-        if(e && /超时/.test(e.message || '')){ console.warn('[登录] 云端认证超时，降级本地校验'); }
-        else { console.warn('[登录] 云端认证失败，降级本地校验：', (e&&e.message)||e); }
+        return { ok:false, info:'浏览器直连不可达（' + ((e && e.message) || e) + '，' + (Date.now()-t) + 'ms）' };
       }
+    })();
+    const pAuth = (async function(){
+      if(!window._sbpbClient) return { ok:false, info:'跳过（客户端未就绪）' };
+      try{
+        const res = await withTimeout(window._sbpbClient.auth.signInWithPassword({ email: user + '@soms.local', password: pass }), 5000, '登录(云端认证)');
+        const d = res && res.data, err = res && res.error;
+        if(d && d.user) return { ok:true, info:'通过' };
+        return { ok:false, info:'未通过（' + ((err && err.message) || '接口未返回用户') + '）' };
+      }catch(e){
+        return { ok:false, info:'失败（' + ((e && e.message) || e) + '）' };
+      }
+    })();
+    const _pair = await Promise.all([pProbe, pAuth]);
+    _ld('② 云端连通性：' + _pair[0].info, _pair[0].ok ? 'ok' : 'bad');
+    _ld('③ 云端账号认证：' + _pair[1].info, _pair[1].ok ? 'ok' : (_pair[0].ok ? 'warn' : 'bad'));
+    if(_pair[1].ok){
+      await finishLoginViaAuth(user);
+      return;
     }
-    // 兼容期回退：Auth 账号尚未迁移时，用云端/离线密码哈希校验（bcrypt）
-    // —— v2026100906：账号表只拉一次 + 8 秒超时 + 失败降级本地缓存，杜绝双重 20 秒等待与静默失败 ——
+
+    // ④ 云端账号表：只拉一次 + 5 秒超时，失败立刻降级本机缓存
     let users = [];
     let cloudUsersOk = false;
     if(window._sbpbClient){
       try{
-        users = await withTimeout(DB._loadTable('users'), 8000, '拉取云端账号表');
+        users = await withTimeout(DB._loadTable('users'), 5000, '拉取云端账号表');
         cloudUsersOk = true;
-      }catch(e){
-        cloudUsersOk = false;
-        console.warn('[登录] 云端账号表拉取失败/超时，降级本地缓存：', (e && e.message) || e);
-      }
+      }catch(e){ cloudUsersOk = false; }
     }
+    _ld('④ 云端账号表：' + (sdkReady ? (cloudUsersOk ? ('拉取成功，' + ((users && users.length) || 0) + ' 条') : '拉取失败/超时') : '跳过（客户端未就绪）'), cloudUsersOk ? 'ok' : 'warn');
     if(!cloudUsersOk || !users || !users.length){ users = DB.get('users', []) || []; }
-    // 清理重复/残留账号，确保同名账号只保留最新（含最新密码）的一条
-    cleanupDuplicateUsers();
-    // 清理重复客户：避免多次下单/录入手机号不一致产生重复客户
-    cleanupDuplicateCustomers();
-    const target = users.find(u => u.username === user);
-    if(!target){
-      if(!cloudUsersOk){ showToast('无法连接云端账号表（网络不通），请检查网络后重试','error'); return; }
-      showToast('用户名或密码错误','error'); return;
+    const localCount = (DB.get('users', []) || []).length;
+    _ld('⑤ 本机账号缓存：' + localCount + ' 条（云端不可用时用于兜底）', localCount ? 'ok' : 'warn');
+
+    try{ cleanupDuplicateUsers(); }catch(e){}
+    try{ cleanupDuplicateCustomers(); }catch(e){}
+
+    const target = users.find(function(u){ return u.username === user; });
+    if(target){
+      _ld('⑥ 账号 [' + user + ']：已找到（角色=' + (target.role || '未标注') + (target.disabled ? '，已禁用' : '') + '）', target.disabled ? 'warn' : 'ok');
+    }else{
+      _ld('⑥ 账号 [' + user + ']：' + (cloudUsersOk ? '云端账号表中不存在这个用户名' : '本机缓存中不存在这个用户名'), 'bad');
     }
-    if(target.disabled){ showToast('该账号已被禁用，请联系管理员','error'); return; }
-    // 密码哈希：记录里的优先；若被本地安全策略（_scrubUserPasswords）擦除，则回退离线凭据缓存
-    let storedHash = target.password || '';
+
+    let storedHash = target ? (target.password || '') : '';
     if(!storedHash){
       try{
         const _pc = JSON.parse(localStorage.getItem('soms_pwd_cache') || '{}');
         storedHash = _pc[String(user).toLowerCase()] || '';
       }catch(e){ storedHash = ''; }
     }
+    _ld('⑦ 可校验的密码凭据：' + (storedHash ? ('已找到（' + (/^\$2[aby]\$/.test(storedHash) ? 'bcrypt 哈希' : '非标准格式') + '）') : '未找到'), storedHash ? 'ok' : 'bad');
+
+    if(!target){
+      const _msg = cloudUsersOk ? '用户名或密码错误（云端账号表里没有这个用户名）' : '本机没有该账号，且云端账号表连不上；请检查网络后重试';
+      _ld('结论：' + _msg, 'bad'); showToast(_msg, 'error', 9000); return;
+    }
+    if(target.disabled){
+      const _msg = '该账号已被禁用，请联系管理员';
+      _ld('结论：' + _msg, 'bad'); showToast(_msg, 'error', 9000); return;
+    }
     if(!storedHash){
-      if(!cloudUsersOk){ showToast('云端账号表不可用，且本机无离线凭据；请联网登录一次后再重试','error'); return; }
-      showToast('用户名或密码错误','error'); return;
+      const _msg = cloudUsersOk ? '该账号在云端没有可用密码，请让管理员在用户管理中重置密码' : '本机没保存过该账号的密码，且当前连不上云端；请联网后再试';
+      _ld('结论：' + _msg, 'bad'); showToast(_msg, 'error', 9000); return;
     }
     let ok = false;
     try{
       if(verifyPassword(pass, storedHash)){
         ok = true;
-      } else if(storedHash === pass){ // 兼容旧明文：首次登录自动升级为哈希
-        try{ target.password = hashPassword(pass); DB.set('users', users); }catch(e){}
+      }else if(storedHash === pass){
+        try{ target.password = hashPassword(pass); DB.set('users', users); storedHash = target.password; }catch(e){}
         ok = true;
       }
     }catch(e){
-      // 非安全上下文或 bcrypt 未加载，降级明文比对，保证可登录
       if(storedHash === pass) ok = true;
     }
-    if(!ok){ showToast('用户名或密码错误','error'); return; }
-    // 不把密码（即使是哈希）存入会话，降低泄露风险
+    if(!ok){
+      const _msg = '密码不正确（账号已找到，但密码校验未通过）';
+      _ld('结论：' + _msg, 'bad'); showToast(_msg, 'error', 9000); return;
+    }
+    // —— 校验通过：进入系统（并刷新本机离线凭据） ——
+    _ld('结论：校验通过，正在进入系统…', 'ok');
+    try{ _cachePwd(user, storedHash); }catch(e){}
     const {password, ...safe} = target;
     currentUser = safe;
     sessionStorage.setItem('soms_current_user', JSON.stringify(safe));
     showApp();
-    showToast('登录成功，欢迎回来 '+safe.name,'success');
-    // 擦除本地缓存中残留的密码哈希（历史版本写入的）
+    showToast('登录成功，欢迎回来 ' + (safe.name || user), 'success');
     DB.set('users', DB.get('users', []));
-    // 登录后立即从云端拉取全部数据（含订单），确保销售即登即见自己名下订单，不依赖15秒轮询
     if(window._sbpbClient){ DB.syncFromCloud().catch(function(){}); }
-    else { setTimeout(function(){ DB.syncFromCloud().catch(function(){}); }, 2000); } // CDN兜底加载中，稍后重试
+    else { setTimeout(function(){ DB.syncFromCloud().catch(function(){}); }, 2000); }
   } finally {
-    // 恢复登录按钮（仅当仍停留在登录页、未成功进入应用时）
-    if(btn && document.getElementById('loginPage') && document.getElementById('loginPage').style.display !== 'none'){
-      btn.disabled = false;
-      btn.textContent = btn.dataset._old || '登 录';
-    }
+    try{
+      const lp = document.getElementById('loginPage');
+      const _stillLogin = lp && lp.style.display !== 'none';
+      _ld('本次登录耗时 ' + (Date.now()-_t0) + 'ms（可直接截图此框反馈）');
+      if(btn && _stillLogin){ btn.disabled = false; btn.textContent = btn.dataset._old || '登 录'; }
+    }catch(e){}
   }
 }
 
