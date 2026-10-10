@@ -281,7 +281,10 @@ async function autoReconcileOrders(){
     Object.keys(cloudMap).forEach(function(id){
       if(_autoReconcileFailed[id] && (Date.now() - _autoReconcileFailed[id]) > 30 * 60 * 1000) delete _autoReconcileFailed[id];
       const missing = !(id in localMap);
-      const changed = _autoReconcileTs(cloudMap[id]) > _autoReconcileTs(localMap[id] || '');
+      // 方案C（v2026101004）：比较放宽——本地时间戳为空(0)或云端更新即判需拉，规避历史脏时间戳误判
+      const localTs = _autoReconcileTs(localMap[id] || '');
+      const cloudTs = _autoReconcileTs(cloudMap[id]);
+      const changed = (localTs === 0) || (cloudTs > localTs);
       if((missing || changed) && !_autoReconcileFailed[id]) need.push(id);
     });
     if(!need.length) return;   // 无变化：零额外流量
@@ -298,8 +301,10 @@ async function autoReconcileOrders(){
     // snake_case 列名（customer_name / created_at），若原样写入本地，则该单 o.customerName / o.createdAt
     // 全为 undefined → 列表「没姓名」且排序当空串「排到最底部」；且因更新判定读不到 updatedAt，
     // 下次对账又判「云端更新」再拉一次 snake_case 覆盖 → 永久卡住、反复出现。
-    rows.forEach(function(o){ byId[o.id] = DB._toCamel(o); });   // 云端优先覆盖（仅当云端 updated_at 更新才进 need，不会覆盖本地新改）
-    DB.set('orders', Object.keys(byId).map(function(k){ return byId[k]; }));
+    // 方案C（v2026101004）：拉云覆盖前先推本机未推改动，避免覆盖丢失（风险1规避）
+    try{ await DB._pushDirtyRows('orders'); }catch(e){}
+    rows.forEach(function(o){ byId[o.id] = DB._toCamel(o); });   // 云端优先覆盖
+    DB.set('orders', Object.keys(byId).map(function(k){ return byId[k]; }), { fromCloud: true });
     need.forEach(function(id){ _autoReconcileFailed[id] = 0; });
     // 仅在订单相关页且可见时轻量刷新，让变化立刻可见（复用现有渲染器，不乱刷其他页）
     if(document.visibilityState === 'visible'){
@@ -1674,7 +1679,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026101002</div>
+          <div class="brand-sub">v2026101004</div>
         </div>
       </div>
     </div>
@@ -1793,23 +1798,35 @@ const DB = {
       return out;
     }catch(e){ return def !== undefined ? def : []; }
   },
-  set(key, val){
+  set(key, val, opts){
     if(key === 'users') val = this._scrubUserPasswords(val);
     // v2026081904 行级脏标记：写入时记录新增/变化 id，供增量上推只 upsert 脏行
     // （避免全量 upsert 刷新未改行的 updated_at，导致增量查询退化成全量、egress 暴涨）。
     // v20260907：脏标记从 orders/products 扩展到全部上云表（含 customers/aftersales/payments/commissions），
     // 使 pushLocalChanges/_pushDirtyRows 只推脏行、零变化零请求（此前小表走 syncTable 每 2min 全量双向同步）。
-    if(key === 'orders' || key === 'products' || key === 'customers' || key === 'aftersales' || key === 'payments' || key === 'commissions'){
+    if(opts && opts.fromCloud){
+      // 对账拉云写入：云端已是真相源，直接落本机，不标记脏、不反推、不刷新时间戳（避免把刚拉来的云端值又 upsert 回去）
+    } else if(key === 'orders' || key === 'products' || key === 'customers' || key === 'aftersales' || key === 'payments' || key === 'commissions'){
       try{
         const oldArr = this.get(key, []) || [];
         const newArr = val || [];
         const oldById = {};
         (oldArr||[]).forEach(function(r){ if(r && r.id != null) oldById[r.id] = r; });
         const dirty = [];
+        const isOrders = (key === 'orders');
         (newArr||[]).forEach(function(r){
           if(!r || r.id == null) return;
           const o = oldById[r.id];
-          if(!o || JSON.stringify(o) !== JSON.stringify(r)) dirty.push(r.id);
+          const fullEqual = o && JSON.stringify(o) === JSON.stringify(r);
+          if(fullEqual) return; // 原样重存：不刷时间戳、不脏、不推
+          // 方案C（v2026101004）：业务内容（排除时间戳）变化才刷新 updated_at，
+          // 让「金额/商品/状态任意字段改动」都能被销售端对账识别为最新并拉取，根治多端不一致。
+          const bizChanged = !DB._orderBizEqual(o, r);
+          if(isOrders && bizChanged){
+            const ts = (typeof nowStr === 'function') ? nowStr() : new Date().toISOString();
+            r.updated_at = ts; r.updatedAt = ts;
+          }
+          dirty.push(r.id);
         });
         this._addDirty(key, dirty);
       }catch(e){}
@@ -1832,9 +1849,8 @@ const DB = {
     // 火忘式异步同步到 Supabase
     // audit_log 为本地审计日志，设计上无需跨端传播（见 pushToCloud/pushLocalChanges 注释），
     // 且其表结构/权限易致 upsert 失败并误报“部分数据同步失败（表：audit_log）”，故跳过上云同步。
-    if(key !== 'audit_log'){
-      // v20260907 降 egress：写后同步统一走只推脏行（orders/products 原本如此；customers/aftersales/payments/commissions
-      // 此前走 syncTable 全量双向同步——每 2min 轮询 + 每次本地写入都会全量 GET+upsert，是 9/2 egress 超量的主因）。
+    if(key !== 'audit_log' && !(opts && opts.fromCloud)){
+      // v20260907 降 egress：写后同步统一走只推脏行。对账拉云写入（fromCloud）已是云端真相，跳过推送。
       this._pushDirtyRows(key).catch(function(err){
         console.warn('后台同步失败 ['+key+']:', err.message);
       });
@@ -1842,7 +1858,7 @@ const DB = {
     // 2026-0808：订单/商品写后，立即从云端权威重拉全量并刷新当前视图（Req4），
     // 不依赖本地状态。避免“一端保存后，另一端界面仍显示旧值”。
     // 用防抖合并连续写操作（如逐商品填单号），避免重渲染风暴。
-    if((key === 'orders' || key === 'products' || key === 'aftersales') && typeof window._afterWriteRefresh === 'function'){
+    if((key === 'orders' || key === 'products' || key === 'aftersales') && !(opts && opts.fromCloud) && typeof window._afterWriteRefresh === 'function'){
       if(!window._afterWriteTimers) window._afterWriteTimers = {};
       const k = key;
       clearTimeout(window._afterWriteTimers[k]);
@@ -1895,6 +1911,14 @@ const DB = {
       result[camelKey] = obj[k];
     }
     return result;
+  },
+  // 方案C（v2026101004）：排除时间戳字段后比较订单业务内容是否变化。
+  // 用于 DB.set 判断「是否需刷新 updated_at」（仅业务字段变化才刷，原样重存不刷，避免无谓推送/egress 暴涨）。
+  _orderBizEqual(a, b){
+    if(!a || !b) return false;
+    const ca = Object.assign({}, a); ca.updated_at = ca.updatedAt = '__SKIP_TS__';
+    const cb = Object.assign({}, b); cb.updated_at = cb.updatedAt = '__SKIP_TS__';
+    return JSON.stringify(ca) === JSON.stringify(cb);
   },
 
   // 初始化 snakeToCamel 映射
@@ -4164,7 +4188,7 @@ function _createdAtTs(v){
 }
 // 降序：新创建的排前面（与旧 (b.createdAt).localeCompare(a.createdAt) 语义一致，但时区/格式安全）。
 function _createdAtDesc(a, b){ return _createdAtTs(b) - _createdAtTs(a); }
-// 售后/订单「创建日期」字符串（YYYY-MM-DD），用于时间范围筛选（v2026101002 改用单号兜底）
+// 售后/订单「创建日期」字符串（YYYY-MM-DD），用于时间范围筛选（v2026101004 改用单号兜底）
 function _createdDateStr(a){
   const ts = _createdAtTs(a);
   if(ts > 0){ const dt = new Date(ts), p = n => String(n).padStart(2,'0'); return dt.getFullYear()+'-'+p(dt.getMonth()+1)+'-'+p(dt.getDate()); }
@@ -12291,6 +12315,10 @@ function exportAftersales(){
       return true;
     });
   }
+  const asSrc = window._asSourceType || '';
+  if(asSrc){
+    filtered = filtered.filter(a => asSourceType(a) === asSrc);
+  }
   filtered = [...filtered].sort((a,b)=>_createdAtDesc(a,b));
 
   if(!filtered.length){ showToast('当前筛选无售后工单可导出','error'); return; }
@@ -12300,13 +12328,13 @@ function exportAftersales(){
     const s = String(cell == null ? '' : cell).replace(/"/g,'""');
     return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
   };
-  const header = ['售后单号','原订单号','客户','电话','售后商品','数量','单价','售后损耗','状态','创建时间','售后原因'];
+  const header = ['售后单号','售后类型','原订单号','客户','电话','售后商品','数量','单价','售后损耗','状态','创建时间','售后原因'];
   const rows = [];
   filtered.forEach(a => {
     const items = (a.items&&a.items.length) ? a.items : [{ name:'(无商品)', qty:0, price:0 }];
     items.forEach((it, idx) => {
       rows.push([
-        a.id, a.orderId||'',
+        a.id, (idx === 0 ? asSourceTypeTag(a) : ''), a.orderId||'',
         a.customerName||'', a.phone||'',
         it.name||'', it.qty||0, Math.round(it.price||0),
         (idx === 0 && isAdmin) ? Math.round(a.loss||0) : (isAdmin ? '' : ''),
@@ -14379,6 +14407,12 @@ function settleCommission(commissionId){
 
 /* ============ 售后管理 ============ */
 let aftersaleImages = []; // 售后图片
+// 2026-10-10：新增「无订单客户售后」(walkin) 支持——门店/电话/微信等无订单号的散客售后
+let aftersaleWalkinItems = [];   // 现场客户售后商品列表 {productId,name,qty}
+let aftersaleWalkinSales = null; // 管理员代建时选择的归属销售 {id,name}
+// 售后来源类型：order=关联订单售后（orderId 有值）；walkin=无订单客户售后（orderId 为空）
+function asSourceType(a){ return (a && a.orderId) ? 'order' : 'walkin'; }
+function asSourceTypeTag(a){ return asSourceType(a) === 'order' ? '关联订单' : '无订单客户'; }
 
 function renderAftersales(){
   const isAdmin = currentUser.role === 'admin';
@@ -14413,6 +14447,10 @@ function renderAftersales(){
       if(asEnd && d > asEnd) return false;
       return true;
     });
+  }
+  const asSrc = window._asSourceType || '';
+  if(asSrc){
+    filtered = filtered.filter(a => asSourceType(a) === asSrc);
   }
   // 倒序：先按 createdAt（提交售后日期）降序，毫秒相同时按 id 降序，让顺序稳定可预期
   filtered = [...filtered].sort((a,b)=>{
@@ -14454,6 +14492,12 @@ function renderAftersales(){
         <input type="date" class="df-input" value="${asStart}" onchange="window._asStart=this.value;renderAftersales()">
         <span class="df-sep">至</span>
         <input type="date" class="df-input" value="${asEnd}" onchange="window._asEnd=this.value;renderAftersales()">
+        <span class="df-sep">来源</span>
+        <select class="df-input" onchange="window._asSourceType=this.value==='all'?'':this.value;renderAftersales()">
+          <option value="all" ${(!window._asSourceType||window._asSourceType==='all')?'selected':''}>全部来源</option>
+          <option value="order" ${window._asSourceType==='order'?'selected':''}>关联订单</option>
+          <option value="walkin" ${window._asSourceType==='walkin'?'selected':''}>无订单客户</option>
+        </select>
         <button class="df-clear" onclick="clearAsDateFilter()">清除</button>
       </div>
       <div class="admin-tab-bar" style="margin-bottom:14px">
@@ -14474,7 +14518,7 @@ function renderAftersales(){
           <tbody>
             ${filtered.length ? filtered.map(a=>`
               <tr>
-                <td>${escapeHtml(a.customerName)}</td>
+                <td>${escapeHtml(a.customerName)}<div style="margin-top:3px"><span style="display:inline-block;padding:1px 6px;border-radius:6px;font-size:11px;${asSourceType(a)==='order'?'background:#E6F1FB;color:#042C53':'background:#FAEEDA;color:#412402'}">${asSourceTypeTag(a)}</span></div></td>
                 <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.items.map(it=>it.name+' x'+it.qty).join('、')}</td>
                 ${showLossCol ? '<td style="color:var(--danger);font-weight:600">'+(a.loss ? money(a.loss) : '-')+'</td>' : ''}
                 <td>${aftersaleStatusTag(a.status)}</td>
@@ -14520,7 +14564,8 @@ function viewAftersale(id){
           <div class="info-grid" style="margin-bottom:16px">
             <div class="info-item"><div class="info-label">状态</div><div class="info-value">${aftersaleStatusTag(as.status)}</div></div>
             <div class="info-item"><div class="info-label">提交售后日期</div><div class="info-value">${fmtDateTime(as.createdAt)}</div></div>
-            <div class="info-item"><div class="info-label">关联订单</div><div class="info-value"><a class="btn-link" onclick="closeModal();viewOrder('${as.orderId}')">${as.orderId}</a></div></div>
+            <div class="info-item"><div class="info-label">售后类型</div><div class="info-value">${asSourceTypeTag(as)}</div></div>
+            <div class="info-item"><div class="info-label">关联订单</div><div class="info-value">${as.orderId ? `<a class="btn-link" onclick="closeModal();viewOrder('${as.orderId}')">${as.orderId}</a>` : '<span style="color:var(--text-muted)">无（无订单客户）</span>'}</div></div>
             <div class="info-item"><div class="info-label">客户</div><div class="info-value">${escapeHtml(as.customerName)}</div></div>
             <div class="info-item"><div class="info-label">电话</div><div class="info-value">${escapeHtml(as.phone)||'-'}</div></div>
           </div>
@@ -14528,7 +14573,7 @@ function viewAftersale(id){
           <div class="form-group">
             <label class="form-label">售后损耗金额（元） <span class="required">*</span></label>
             <input type="number" class="form-control" id="asLossInput" min="0" step="0.01" value="${as.loss||''}" placeholder="填写本次售后亏损金额" oninput="calcDetailLossPreview('${as.orderId}', ${as.loss||0})">
-            <div style="font-size:12px;color:var(--text-muted);margin-top:4px">修改损耗后保存将自动重新核算原订单利润</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:4px">${asSourceType(as)==='order' ? '修改损耗后保存将自动重新核算原订单利润' : '无关联订单，损耗仅作独立记录，不扣减任何订单利润'}</div>
             <div id="detailLossPreview" style="margin-top:6px;font-size:13px"></div>
           </div>
           ` : ''}
@@ -14701,6 +14746,9 @@ function openNewAftersaleModal(){
   const isAdmin = currentUser.role === 'admin';
   aftersaleImages = [];
   window._aftersaleSelectedOrder = null;
+  window._asNewType = 'order';
+  aftersaleWalkinItems = [];
+  aftersaleWalkinSales = null;
   const modalHtml = `
     <div class="modal-mask" onclick="if(event.target===this)closeModal()">
       <div class="modal-box" style="max-width:680px">
@@ -14709,6 +14757,14 @@ function openNewAftersaleModal(){
           <span class="modal-close" onclick="closeModal()">×</span>
         </div>
         <div class="modal-body" style="max-height:70vh;overflow-y:auto">
+          <div class="form-group">
+            <label class="form-label">售后类型</label>
+            <div style="display:flex;gap:10px">
+              <button type="button" class="btn btn-sm btn-primary" id="asTypeOrderBtn" onclick="switchAsType('order')">🔗 关联订单售后</button>
+              <button type="button" class="btn btn-sm btn-secondary" id="asTypeWalkinBtn" onclick="switchAsType('walkin')">🚶 无订单客户售后</button>
+            </div>
+          </div>
+          <div id="asOrderSection">
           <div class="form-group">
             <label class="form-label">检索关联订单 <span class="required">*</span></label>
             <div class="product-search-wrap">
@@ -14725,11 +14781,45 @@ function openNewAftersaleModal(){
               <div style="text-align:center;color:var(--text-muted);padding:10px;font-size:13px">请先选择关联订单</div>
             </div>
           </div>
+          </div><!-- /asOrderSection -->
+          <div id="asWalkinSection" style="display:none">
+            <div class="form-group">
+              <label class="form-label">客户姓名 <span class="required">*</span></label>
+              <input type="text" class="form-control" id="asWalkinName" placeholder="填写客户姓名（无订单号的散客）" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label class="form-label">电话</label>
+              <input type="text" class="form-control" id="asWalkinPhone" placeholder="选填">
+            </div>
+            <div class="form-group">
+              <label class="form-label">售后商品 <span class="required">*</span></label>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                <select class="form-control" id="asWalkinProduct" style="flex:1;min-width:160px">
+                  <option value="">从商品库选择</option>
+                  ${DB.get('products').map(p=>`<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}
+                </select>
+                <input type="text" class="form-control" id="asWalkinProductCustom" placeholder="或手动输入商品名" style="flex:1;min-width:140px">
+                <input type="number" class="form-control" id="asWalkinQty" min="1" step="1" value="1" style="width:80px">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="addWalkinItem()">+ 添加</button>
+              </div>
+              <div id="asWalkinItemsList" style="margin-top:8px"></div>
+            </div>
+            ${isAdmin ? `
+            <div class="form-group">
+              <label class="form-label">归属销售</label>
+              <select class="form-control" id="asWalkinSales" onchange="setWalkinSales(this.value)">
+                <option value="">本人（${escapeHtml(currentUser.name)}）</option>
+                ${DB.get('users').filter(u=>u.role==='sales').map(s=>`<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('')}
+              </select>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:4px">管理员可代任意销售创建；不选则归属本人</div>
+            </div>
+            ` : ''}
+          </div><!-- /asWalkinSection -->
           ${isAdmin ? `
-          <div class="form-group">
+          <div class="form-group" id="asLossBlock">
             <label class="form-label">售后损耗金额（元） <span class="required">*</span></label>
             <input type="number" class="form-control" id="aftersaleLoss" min="0" step="0.01" placeholder="填写本次售后亏损金额" oninput="calcAfterSaleLossPreview()">
-            <div style="font-size:12px;color:var(--text-muted);margin-top:4px;display:none">保存后将自动从原订单利润中扣减此金额</div>
+            <div id="asLossHint" style="font-size:12px;color:var(--text-muted);margin-top:4px">保存后将自动从原订单利润中扣减此金额</div>
             <div id="lossPreview" style="margin-top:6px;font-size:13px;display:none"></div>
           </div>
           ` : ''}
@@ -14762,6 +14852,61 @@ function openNewAftersaleModal(){
     window._aftersaleOrderId = null;
     setTimeout(() => selectOrderForAftersale(preOrderId), 100);
   }
+  renderWalkinItems(); // 初始化无订单客户商品列表（空提示）
+}
+
+// 切换售后类型（关联订单 / 无订单客户）
+function switchAsType(t){
+  window._asNewType = t;
+  const orderSec = document.getElementById('asOrderSection');
+  const walkinSec = document.getElementById('asWalkinSection');
+  const ob = document.getElementById('asTypeOrderBtn');
+  const wb = document.getElementById('asTypeWalkinBtn');
+  if(orderSec) orderSec.style.display = t==='order' ? 'block' : 'none';
+  if(walkinSec) walkinSec.style.display = t==='walkin' ? 'block' : 'none';
+  if(ob) ob.className = 'btn btn-sm ' + (t==='order' ? 'btn-primary' : 'btn-secondary');
+  if(wb) wb.className = 'btn btn-sm ' + (t==='walkin' ? 'btn-primary' : 'btn-secondary');
+  const hint = document.getElementById('asLossHint');
+  if(hint) hint.textContent = t==='order' ? '保存后将自动从原订单利润中扣减此金额' : '无关联订单，损耗仅作独立记录，不扣减任何订单利润';
+}
+function setWalkinSales(id){
+  if(!id){ aftersaleWalkinSales = null; return; }
+  const u = DB.get('users').find(x => x.id === id);
+  aftersaleWalkinSales = u ? { id:u.id, name:u.name } : null;
+}
+function addWalkinItem(){
+  const sel = document.getElementById('asWalkinProduct');
+  const custom = document.getElementById('asWalkinProductCustom');
+  const qtyEl = document.getElementById('asWalkinQty');
+  if(!sel || !custom || !qtyEl) return;
+  const customName = (custom.value||'').trim();
+  const libName = sel.value ? sel.options[sel.selectedIndex].text : '';
+  const name = customName || libName;
+  if(!name || name==='从商品库选择'){ showToast('请选择或输入商品名称','error'); return; }
+  const qty = parseInt(qtyEl.value, 10) || 1;
+  if(qty <= 0){ showToast('数量必须大于0','error'); return; }
+  const productId = (!customName && sel.value) ? sel.value : null;
+  aftersaleWalkinItems.push({ productId, name, qty });
+  custom.value=''; qtyEl.value=1;
+  renderWalkinItems();
+}
+function removeWalkinItem(i){
+  aftersaleWalkinItems.splice(i,1);
+  renderWalkinItems();
+}
+function renderWalkinItems(){
+  const el = document.getElementById('asWalkinItemsList');
+  if(!el) return;
+  if(aftersaleWalkinItems.length === 0){
+    el.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:8px;font-size:13px">尚未添加商品</div>';
+    return;
+  }
+  el.innerHTML = aftersaleWalkinItems.map((it,i)=>`
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+      <div style="flex:1">${escapeHtml(it.name)} <span style="color:var(--text-muted);font-size:12px">×${it.qty}</span></div>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="removeWalkinItem(${i})">删除</button>
+    </div>
+  `).join('');
 }
 
 // 兼容旧路由
@@ -14886,41 +15031,68 @@ function removeAftersaleImage(i){
 // 提交售后（含损耗金额 + 利润联动扣减；销售提交时损耗为0，由管理员后续补充）
 function submitAftersale(){
   const isAdmin = currentUser.role === 'admin';
-  const order = window._aftersaleSelectedOrder;
-  if(!order){ showToast('请选择关联订单','error'); return; }
-  if(!['completed','feedback_done'].includes(order.status)){
-    showToast('只有「已完成」状态的订单才能申请售后','error'); return;
-  }
-  const checkedCbs = Array.from(document.querySelectorAll('.aftersale-item-cb:checked'));
-  if(checkedCbs.length === 0){ showToast('请选择需要售后的商品','error'); return; }
-  const reason = document.getElementById('aftersaleReason').value.trim();
+  const newType = window._asNewType || 'order';
+  const reasonEl = document.getElementById('aftersaleReason');
+  const reason = reasonEl ? reasonEl.value.trim() : '';
   if(!reason){ showToast('请填写售后原因','error'); return; }
   // 销售看不到损耗输入框，默认0；管理员填写损耗
   const lossEl = document.getElementById('aftersaleLoss');
   const loss = lossEl ? (parseFloat(lossEl.value) || 0) : 0;
   if(loss < 0){ showToast('售后损耗不能为负数','error'); return; }
 
-  const selectedItems = checkedCbs.map(cb => {
-    const i = parseInt(cb.value);
-    return { productId: order.items[i].productId, name: order.items[i].name, qty: order.items[i].qty };
-  });
+  let newAS;
+  if(newType === 'order'){
+    const order = window._aftersaleSelectedOrder;
+    if(!order){ showToast('请选择关联订单','error'); return; }
+    if(!['completed','feedback_done'].includes(order.status)){
+      showToast('只有「已完成」状态的订单才能申请售后','error'); return;
+    }
+    const checkedCbs = Array.from(document.querySelectorAll('.aftersale-item-cb:checked'));
+    if(checkedCbs.length === 0){ showToast('请选择需要售后的商品','error'); return; }
+    const selectedItems = checkedCbs.map(cb => {
+      const i = parseInt(cb.value);
+      return { productId: order.items[i].productId, name: order.items[i].name, qty: order.items[i].qty };
+    });
+    newAS = {
+      id: 'AS' + todayStr().replace(/-/g,'') + String(Math.floor(Math.random()*9000)+1000),
+      orderId: order.id,
+      orderType: order.type,
+      customerName: order.customerName,
+      phone: order.phone,
+      salesId: order.salesId,
+      salesName: order.salesName,
+      items: selectedItems,
+      reason,
+      loss,
+      images: aftersaleImages,
+      status: 'pending',
+      createdAt: nowStr()
+    };
+  } else {
+    const name = (document.getElementById('asWalkinName')||{}).value ? document.getElementById('asWalkinName').value.trim() : '';
+    if(!name){ showToast('请填写客户姓名','error'); return; }
+    if(aftersaleWalkinItems.length === 0){ showToast('请至少添加一个售后商品','error'); return; }
+    const phoneVal = (document.getElementById('asWalkinPhone')||{}).value ? document.getElementById('asWalkinPhone').value.trim() : '';
+    let salesId = currentUser.id, salesName = currentUser.name;
+    if(isAdmin && aftersaleWalkinSales){ salesId = aftersaleWalkinSales.id; salesName = aftersaleWalkinSales.name; }
+    newAS = {
+      id: 'AS' + todayStr().replace(/-/g,'') + String(Math.floor(Math.random()*9000)+1000),
+      orderId: '',
+      orderType: 'walkin',
+      customerName: name,
+      phone: phoneVal,
+      salesId,
+      salesName,
+      items: aftersaleWalkinItems.map(it => ({ productId: it.productId, name: it.name, qty: it.qty })),
+      reason,
+      loss,
+      images: aftersaleImages,
+      status: 'pending',
+      createdAt: nowStr()
+    };
+  }
 
   const aftersales = DB.get('aftersales');
-  const newAS = {
-    id: 'AS' + todayStr().replace(/-/g,'') + String(Math.floor(Math.random()*9000)+1000),
-    orderId: order.id,
-    orderType: order.type,
-    customerName: order.customerName,
-    phone: order.phone,
-    salesId: order.salesId,
-    salesName: order.salesName,
-    items: selectedItems,
-    reason,
-    loss,
-    images: aftersaleImages,
-    status: 'pending',
-    createdAt: nowStr()
-  };
   aftersales.push(newAS);
   _setAfterSalesLoss(newAS, loss); // 挂 _lossSync 到 items JSONB，随售后单同步上云（免数据库改动）
   // 售后单备注/物流单号免数据库改动：挂 _afterMeta 到 items JSONB，随售后单同步上云（空值初始化，保存详情时更新）
@@ -14930,15 +15102,17 @@ function submitAftersale(){
   DB.set('aftersales', aftersales);
   if(typeof schedulePushToCloud === 'function') schedulePushToCloud();
 
-  // 财务联动：原销售订单利润扣减售后损耗金额（仅管理员填写损耗时生效）
-  if(isAdmin && loss > 0){
+  // 财务联动：仅「关联订单」售后才扣减原订单利润；无订单客户售后损耗独立记录，不联动任何订单
+  if(newType === 'order' && isAdmin && loss > 0){
     const orders = DB.get('orders');
-    const oIdx = orders.findIndex(o => o.id === order.id);
+    const oIdx = orders.findIndex(o => o.id === newAS.orderId);
     if(oIdx >= 0){
       _setOrderAfterSaleLoss(orders[oIdx], (orders[oIdx].afterSaleLoss || 0) + loss);
       DB.set('orders', orders);
     }
     showToast('售后已创建，原订单利润已扣减损耗 '+money(loss)+' 元','success');
+  }else if(isAdmin && loss > 0){
+    showToast('售后已创建，损耗 '+money(loss)+' 元已独立记录（无关联订单）','success');
   }else{
     showToast('售后已提交，等待管理员处理','success');
   }
@@ -14962,7 +15136,8 @@ function editAftersale(id){
         </div>
         <div class="modal-body" style="max-height:70vh;overflow-y:auto">
           <div class="info-grid" style="margin-bottom:16px">
-            <div class="info-item"><div class="info-label">关联订单</div><div class="info-value">${as.orderId}</div></div>
+            <div class="info-item"><div class="info-label">售后类型</div><div class="info-value">${asSourceTypeTag(as)}</div></div>
+            <div class="info-item"><div class="info-label">关联订单</div><div class="info-value">${as.orderId ? as.orderId : '无（无订单客户）'}</div></div>
             <div class="info-item"><div class="info-label">客户</div><div class="info-value">${escapeHtml(as.customerName)}</div></div>
             <div class="info-item"><div class="info-label">当前状态</div><div class="info-value">${aftersaleStatusTag(as.status)}</div></div>
             <div class="info-item"><div class="info-label">提交售后日期</div><div class="info-value">${fmtDateTime(as.createdAt)}</div></div>
@@ -15886,6 +16061,51 @@ async function renderDashboard2(){
 }
 
 /* ============ 利润报表 ============ */
+
+// 无订单客户售后损耗清单（利润报表专用）
+// 背景：售后分两类——
+//   ① 关联订单售后：损耗在创建/编辑时已写回订单的 afterSaleLoss，利润报表通过 o.afterSaleLoss 自动扣减；
+//   ② 无订单客户售后：没有关联订单，损耗只存在于售后单自身的 loss 字段，不会进入任何订单，
+//      若不单独汇总，这笔真实亏损就会从利润报表里"消失"，导致利润虚高。
+// 因此这里只取 orderId 为空的售后单，按「归属销售 / 发生日期 / 售后商品」三个维度分别计入，
+// 与订单侧 afterSaleLoss 完全不重叠，不会重复扣减。
+function _walkinLossList(startD, endD, salesIdFilter, productKw){
+  const all = DB.get('aftersales') || [];
+  const kw = (productKw || '').trim().toLowerCase();
+  const out = [];
+  (Array.isArray(all) ? all : []).forEach(function(a){
+    if(!a) return;
+    if(a._deleted) return;
+    if(a.orderId) return;                 // 关联订单售后已计入订单 afterSaleLoss，避免重复扣减
+    const loss = Number(a.loss) || 0;
+    if(!(loss > 0)) return;
+    const d = _createdDateStr(a);
+    if(!d) return;
+    if(startD && d < startD) return;
+    if(endD && d > endD) return;
+    if(salesIdFilter && a.salesId !== salesIdFilter) return;
+    let items = a.items;
+    if(typeof items === 'string'){ try{ items = JSON.parse(items); }catch(e){ items = []; } }
+    if(!Array.isArray(items)) items = [];
+    items = items.filter(function(it){ return it && !(it._afterMeta || it._lossSync); });
+    if(kw && !items.some(function(it){ return String((it && it.name) || '').toLowerCase().indexOf(kw) >= 0; })) return;
+    out.push({ salesId: a.salesId, salesName: a.salesName || '', date: d, items: items, loss: loss });
+  });
+  return out;
+}
+
+// 把无订单售后损耗按商品拆分到商品维度：售后 items 无售价，按数量占比分摊（无数量则平均）
+function _splitWalkinLossByItem(w){
+  const its = (w && w.items) ? w.items : [];
+  // 极端兜底：售后单无商品行时，挂在统一的「无订单客户售后」条目下，保证损耗不丢、三维度合计守恒
+  if(!its.length) return [{ key: '__walkin__', name: '无订单客户售后（未填商品）', loss: w.loss || 0 }];
+  const totalQty = its.reduce(function(s, it){ return s + (Number(it.qty) || 0); }, 0);
+  return its.map(function(it){
+    const share = totalQty > 0 ? ((Number(it.qty) || 0) / totalQty) : (1 / its.length);
+    return { key: it.productId || it.name, name: it.name || '-', loss: w.loss * share };
+  });
+}
+
 function renderProfitReport(){
   var isAdmin = currentUser.role === 'admin';
   var users = DB.get('users');
@@ -15949,6 +16169,16 @@ function renderProfitReport(){
     return true;
   });
 
+  // 无订单客户售后损耗：无关联订单，必须单独计入利润报表（否则这笔亏损不进任何统计）
+  var walkinLossRows = _walkinLossList(startD, endD, (isAdmin ? window._prSalesId : currentUser.id), window._prProduct);
+  var walkinLossTotal = walkinLossRows.reduce(function(s, w){ return s + w.loss; }, 0);
+  var walkinTipHtml = walkinLossTotal > 0 ? `
+    <div class="card" style="margin-bottom:14px;padding:10px 14px;font-size:12px;color:var(--text-muted);line-height:1.7;background:#fffbeb;border-left:3px solid #f59e0b">
+      本期含 <b style="color:var(--danger)">无订单客户售后损耗 ${money(walkinLossTotal)}</b>（共 ${walkinLossRows.length} 笔），已并入下方「损耗」与「利润」。
+      该金额无关联订单，按售后发生日期与归属销售计入，<b>不影响提成基数</b>。
+    </div>
+  ` : '';
+
   var tabs = [
     {key:'sales', label:'按销售员'},
     {key:'product', label:'按商品'},
@@ -15985,6 +16215,15 @@ function renderProfitReport(){
       });
       s.loss += o.afterSaleLoss || 0;
       s.profit -= (o.afterSaleLoss || 0);
+    });
+    // 无订单客户售后损耗：归属到对应销售；该销售本期无订单时也要建行，否则亏损凭空消失
+    walkinLossRows.forEach(function(w){
+      if(!salesMap[w.salesId]){
+        var wu = users.find(function(u){ return u.id === w.salesId; });
+        salesMap[w.salesId] = { name: w.salesName || (wu?wu.name:'-'), orderCount:0, revenue:0, cost:0, loss:0, profit:0, commission:0, orderList:[] };
+      }
+      salesMap[w.salesId].loss += w.loss;
+      salesMap[w.salesId].profit -= w.loss;
     });
     Object.keys(salesMap).forEach(function(sid){
       var user = users.find(function(u){ return u.id === sid; });
@@ -16087,6 +16326,16 @@ function renderProfitReport(){
         });
       }
     });
+    // 无订单客户售后损耗：按售后商品分摊到商品维度（无售价，按数量占比）；商品本期无销售时建行显示负利润
+    walkinLossRows.forEach(function(w){
+      _splitWalkinLossByItem(w).forEach(function(seg){
+        if(!productMap[seg.key]){
+          var wprod = products.find(function(p){ return p.id === seg.key; });
+          productMap[seg.key] = { name: seg.name, category: wprod?wprod.category:'-', qty: 0, revenue: 0, cost: 0, profit: 0, pkey: seg.key };
+        }
+        productMap[seg.key].profit -= seg.loss;
+      });
+    });
 
     var totalQty = 0, totalRev2 = 0, totalCost2 = 0, totalProfit2 = 0, totalCommission2 = 0;
     Object.keys(productMap).forEach(function(k){
@@ -16163,6 +16412,12 @@ function renderProfitReport(){
       d.loss += o.afterSaleLoss || 0;
       d.profit -= (o.afterSaleLoss || 0);
     });
+    // 无订单客户售后损耗：按售后发生日期计入（该日无订单时也要建行，趋势图才不会漏天）
+    walkinLossRows.forEach(function(w){
+      if(!dateMap[w.date]) dateMap[w.date] = { date: w.date, orderCount:0, revenue:0, cost:0, loss:0, profit:0, orderList:[] };
+      dateMap[w.date].loss += w.loss;
+      dateMap[w.date].profit -= w.loss;
+    });
 
     sortedDates = Object.keys(dateMap).map(function(k){ return dateMap[k]; }).sort(function(a,b){ return a.date.localeCompare(b.date); });
 
@@ -16225,6 +16480,7 @@ function renderProfitReport(){
     </div>
     ${filterHtml}
     ${tabHtml}
+    ${walkinTipHtml}
     ${contentHtml}
   `;
   document.getElementById('mainContent').innerHTML = html;
@@ -16405,6 +16661,9 @@ function exportProfitCSV(){
     return true;
   });
 
+  // 无订单客户售后损耗：与页面展示同口径，导出时同样计入（否则导出利润会比页面虚高）
+  var walkinLossRows = _walkinLossList(startD, endD, window._prSalesId, window._prProduct);
+
   var csv = '\uFEFF';
 
   if(window._prTab === 'sales'){
@@ -16430,6 +16689,14 @@ function exportProfitCSV(){
       });
       s.loss += o.afterSaleLoss || 0;
       s.profit -= (o.afterSaleLoss || 0);
+    });
+    walkinLossRows.forEach(function(w){
+      if(!salesMap[w.salesId]){
+        var wu = users.find(function(u){ return u.id === w.salesId; });
+        salesMap[w.salesId] = { name: w.salesName || (wu?wu.name:'-'), orderCount:0, revenue:0, cost:0, loss:0, profit:0, commission:0, orderList:[] };
+      }
+      salesMap[w.salesId].loss += w.loss;
+      salesMap[w.salesId].profit -= w.loss;
     });
     Object.keys(salesMap).forEach(function(sid){
       var user = users.find(function(u){ return u.id === sid; });
@@ -16472,6 +16739,15 @@ function exportProfitCSV(){
         });
       }
     });
+    walkinLossRows.forEach(function(w){
+      _splitWalkinLossByItem(w).forEach(function(seg){
+        if(!productMap[seg.key]){
+          var wprod = products.find(function(p){ return p.id === seg.key; });
+          productMap[seg.key] = { name: seg.name, category: wprod?wprod.category:'-', qty:0, revenue:0, cost:0, profit:0 };
+        }
+        productMap[seg.key].profit -= seg.loss;
+      });
+    });
     Object.keys(productMap).map(function(k){ var p = productMap[k]; p.k = k; return p; }).sort(function(a,b){ return b.profit - a.profit; }).forEach(function(p){
       csv += '"' + p.name.replace(/"/g,'""') + '",' + p.category + ',' + p.qty + ',' + Math.round(p.revenue) + ',';
       if(isAdmin) csv += Math.round(p.cost) + ',';
@@ -16495,6 +16771,11 @@ function exportProfitCSV(){
       });
       d.loss += o.afterSaleLoss || 0;
       d.profit -= (o.afterSaleLoss || 0);
+    });
+    walkinLossRows.forEach(function(w){
+      if(!dateMap[w.date]) dateMap[w.date] = { date: w.date, count:0, revenue:0, cost:0, loss:0, profit:0 };
+      dateMap[w.date].loss += w.loss;
+      dateMap[w.date].profit -= w.loss;
     });
     Object.keys(dateMap).map(function(k){ return dateMap[k]; }).sort(function(a,b){ return a.date.localeCompare(b.date); }).forEach(function(d){
       csv += d.date + ',' + d.count + ',' + Math.round(d.revenue) + ',';
