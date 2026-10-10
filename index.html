@@ -1674,7 +1674,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026101001</div>
+          <div class="brand-sub">v2026101002</div>
         </div>
       </div>
     </div>
@@ -4148,9 +4148,33 @@ function fmtDateTime(s){
 // v2026100803：同时兼容 snake_case 行（created_at）——即便某条脏数据以 snake 形式落进本地，
 // 排序仍按真实时间而非空串处理，避免被错判成「最旧」排到列表底部。
 function _createdAtTs(v){
-  if(v && typeof v === 'object') v = v.createdAt || v.created_at || '';
-  const n = v ? Date.parse(('' + v).replace(/ /g, 'T')) : 0;
+  // 单号内嵌创建日期（ORD20261009 / AS20260831）最可信，优先采用；
+  // 仅当单号无日期时回退 createdAt/created_at 字段（仍可防 created_at 被污染/缺失导致失真）。
+  let id = '', cv = '';
+  if(v && typeof v === 'object'){ id = v.id || ''; cv = v.createdAt || v.created_at || ''; }
+  else if(typeof v === 'string'){ cv = v; }
+  const m = ('' + id).match(/(?:ORD|AS)(\d{8})/);
+  if(m){
+    const d8 = m[1];
+    const t = Date.parse(d8.slice(0,4)+'-'+d8.slice(4,6)+'-'+d8.slice(6,8)+'T00:00:00');
+    if(!isNaN(t)) return t;
+  }
+  const n = cv ? Date.parse(('' + cv).replace(/ /g, 'T')) : 0;
   return isNaN(n) ? 0 : n;
+}
+// 降序：新创建的排前面（与旧 (b.createdAt).localeCompare(a.createdAt) 语义一致，但时区/格式安全）。
+function _createdAtDesc(a, b){ return _createdAtTs(b) - _createdAtTs(a); }
+// 售后/订单「创建日期」字符串（YYYY-MM-DD），用于时间范围筛选（v2026101002 改用单号兜底）
+function _createdDateStr(a){
+  const ts = _createdAtTs(a);
+  if(ts > 0){ const dt = new Date(ts), p = n => String(n).padStart(2,'0'); return dt.getFullYear()+'-'+p(dt.getMonth()+1)+'-'+p(dt.getDate()); }
+  return '';
+}
+// 创建时间完整显示（YYYY-MM-DD HH:MM:SS），兜底单号日期（时分秒为 00:00:00）
+function fmtCreatedAt(a){
+  const ts = _createdAtTs(a);
+  if(ts > 0){ const dt = new Date(ts), p = n => String(n).padStart(2,'0'); return dt.getFullYear()+'-'+p(dt.getMonth()+1)+'-'+p(dt.getDate())+' '+p(dt.getHours())+':'+p(dt.getMinutes())+':'+p(dt.getSeconds()); }
+  return '-';
 }
 // 降序：新创建的排前面（与旧 (b.createdAt).localeCompare(a.createdAt) 语义一致，但时区/格式安全）。
 function _createdAtDesc(a, b){ return _createdAtTs(b) - _createdAtTs(a); }
@@ -12260,7 +12284,7 @@ function exportAftersales(){
   }
   if(asStart || asEnd){
     filtered = filtered.filter(a => {
-      const d = (a.createdAt||'').slice(0,10);
+      const d = _createdDateStr(a);
       if(!d) return false;
       if(asStart && d < asStart) return false;
       if(asEnd && d > asEnd) return false;
@@ -12287,7 +12311,7 @@ function exportAftersales(){
         it.name||'', it.qty||0, Math.round(it.price||0),
         (idx === 0 && isAdmin) ? Math.round(a.loss||0) : (isAdmin ? '' : ''),
         statusLabel[a.status]||a.status,
-        a.createdAt||'',
+        fmtCreatedAt(a),
         idx === 0 ? (a.reason||'') : ''
       ]);
     });
@@ -12303,7 +12327,7 @@ function exportAftersales(){
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
-  showToast('售后工单已导出','success');
+  showToast('已导出 '+filtered.length+' 条售后工单'+(hasDateRange?'（筛选后）':''),'success');
 }
 
 // 导出上门订单（与 renderSchedule 使用相同的数据源与筛选逻辑）
@@ -14383,7 +14407,7 @@ function renderAftersales(){
   }
   if(asStart || asEnd){
     filtered = filtered.filter(a => {
-      const d = (a.createdAt||'').slice(0,10);
+      const d = _createdDateStr(a);
       if(!d) return false;
       if(asStart && d < asStart) return false;
       if(asEnd && d > asEnd) return false;
@@ -14412,7 +14436,7 @@ function renderAftersales(){
         <span class="title-text">🔧 售后工单</span>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="exportAftersales()" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;box-shadow:0 2px 6px rgba(59,130,246,0.18)">
-            <span>📥</span><span>${hasDateRange ? '导出全部售后' : '导出售后'}</span>
+            <span>📥</span><span>${hasDateRange ? '导出筛选结果('+filtered.length+')' : '导出售后('+filtered.length+')'}</span>
           </button>` : ''}
           <button class="btn btn-primary btn-sm" onclick="openNewAftersaleModal()">+ 新建售后</button>
         </div>
@@ -14454,7 +14478,7 @@ function renderAftersales(){
                 <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.items.map(it=>it.name+' x'+it.qty).join('、')}</td>
                 ${showLossCol ? '<td style="color:var(--danger);font-weight:600">'+(a.loss ? money(a.loss) : '-')+'</td>' : ''}
                 <td>${aftersaleStatusTag(a.status)}</td>
-                <td>${fmtDateTime(a.createdAt)}</td>
+                <td>${fmtCreatedAt(a)}</td>
                 <td>
                   <button class="btn btn-primary btn-sm" onclick="viewAftersale('${a.id}')">查看</button>
                 </td>
