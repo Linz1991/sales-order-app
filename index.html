@@ -254,7 +254,7 @@ function dismissOrderGapBanner(){
 //   5) 仅在页面可见时执行；无变化时零额外流量；失败单记 30 分钟冷却，避免反复打同一单。
 let _autoReconcileFailed = {};
 // 对账用的时间戳解析：统一走 _parseTsUtc（定义在下方主脚本块，与 DB._tsUtc 同实现）。
-// v2026101103：旧实现 `new Date(s.replace(' ','T'))` 解析不了 Postgres 的「…+00」时区（必须 +00:00），
+// v2026101104：旧实现 `new Date(s.replace(' ','T'))` 解析不了 Postgres 的「…+00」时区（必须 +00:00），
 // 结果 NaN→0，导致云端 updated_at 恒判为 0 —— 销售改价/改状态后管理员端永远拉不到（见 _parseTsUtc 注释）。
 function _autoReconcileTs(s){ return _parseTsUtc(s); }
 async function autoReconcileOrders(){
@@ -288,7 +288,7 @@ async function autoReconcileOrders(){
       if((missing || changed) && !_autoReconcileFailed[id]) need.push(id);
     });
     if(!need.length) return;   // 无变化：零额外流量
-    // v2026101103：时间戳解析修好后，历史脏时间戳（naive 北京时间串 vs 云端 UTC）会在首轮集中
+    // v2026101104：时间戳解析修好后，历史脏时间戳（naive 北京时间串 vs 云端 UTC）会在首轮集中
     // 判成「云端更新」。若一次全拉（实测全表约 731KB）会明显卡顿且短时打爆流量，
     // 故每轮限量 300 单、按云端 updated_at 倒序优先拉最新的，余下留待后续轮次自然收敛。
     const RECONCILE_MAX_PULL = 300;
@@ -1689,7 +1689,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026101103</div>
+          <div class="brand-sub">v2026101104</div>
         </div>
       </div>
     </div>
@@ -1766,7 +1766,7 @@ let currentRoute = 'dashboard'; // 当前页面路由
 
 /* ============ 数据层：Supabase + localStorage 混合缓存 ============ */
 
-// —— 统一时间戳解析（v2026101103 关键修复）——
+// —— 统一时间戳解析（v2026101104 关键修复）——
 // 云端 timestamptz 由 Postgres 以默认 DateStyle 输出为「2026-10-11 04:33:20.073828+00」：
 // 时区部分只有 2 位（+00），JS 的 Date.parse / new Date() 认不了（必须是 +00:00），结果 NaN → 各路比较退化成 0。
 // 实测 978 单里 **929 单（95%）** 的 updated_at 正是这种格式，造成两处致命后果：
@@ -1829,7 +1829,7 @@ const DB = {
             if(r[f] != null && !Array.isArray(r[f])) r[f] = [];
           });
         });
-        // v2026101103（售后删除）：本地缓存行若只带 items[0]._delSync 墓碑而顶层 _deleted 未落盘
+        // v2026101104（售后删除）：本地缓存行若只带 items[0]._delSync 墓碑而顶层 _deleted 未落盘
         // （历史数据 / 合并前中间态），在此补回，保证列表、统计、导出一律按「已删除」处理。
         if(key === 'aftersales') _asRestoreDelFlags(out);
       }
@@ -2513,7 +2513,7 @@ const DB = {
   // 云端同时存在两种写法：带时区（…+00 / …Z）与 naive（无时区，由本地北京时间字符串写入）。
   // 直接字符串比较会出错（'T'(0x54) > ' '(0x20)，导致带 T 的恒大于带空格的），
   // 故统一按 UTC 解析：naive 视为 UTC（与 Postgres 解释行为一致），带时区的按其偏移折算。
-  // v2026101103：实现已提取为全局 _parseTsUtc（供 _mergeById / autoReconcileOrders 共用，避免口径分叉）
+  // v2026101104：实现已提取为全局 _parseTsUtc（供 _mergeById / autoReconcileOrders 共用，避免口径分叉）
   _tsUtc(v){ return _parseTsUtc(v); },
 
   // v20260927 补洞重试限流：补洞是全表拉取（实测 731KB），不能无限重试。
@@ -2761,7 +2761,7 @@ const DB = {
     const ts = r => {
       if(!r) return 0;
       const v = r.updatedAt || r.createdAt || r.orderDate || r.payDate || '';
-      // v2026101103：必须走 _parseTsUtc。旧写法 Date.parse(v.replace(' ','T')) 解析不了 Postgres 的
+      // v2026101104：必须走 _parseTsUtc。旧写法 Date.parse(v.replace(' ','T')) 解析不了 Postgres 的
       // 「…+00」时区（要 +00:00），云端行一律 NaN→0，于是 ct(0) > mt(本地真实时间) 永远为假，
       // 云端永远覆盖不了本地 → 手动「同步到云端」也拉不回别人改的售价/状态（95% 订单命中）。
       return _parseTsUtc(v);
@@ -3032,7 +3032,7 @@ const DB = {
                 const _src = (fm && fm.trackingNo != null) ? fm.trackingNo : ((lm && lm.trackingNo != null) ? lm.trackingNo : ((rm && rm.trackingNo != null) ? rm.trackingNo : null));
                 if(_src != null) _finalRow.trackingNo = _src;
               }
-              // v2026101103：真实提交时间随 _afterMeta 跨端保底——合并结果缺 createdAt 时从本地/云端补回，
+              // v2026101104：真实提交时间随 _afterMeta 跨端保底——合并结果缺 createdAt 时从本地/云端补回，
               // 避免「对方旧副本赢得整行 LWW」把真实时间冲掉（口径与 remark/trackingNo 的「只补不删」一致）。
               const _cm = function(m){ return (m && m.createdAt) ? m.createdAt : null; };
               const _cSrc = _cm(fm) || _cm(lm) || _cm(rm);
@@ -3103,7 +3103,7 @@ const DB = {
         if(keyName === 'orders') o.afterSaleLoss = v; else o.loss = v;
       });
     }
-    // v2026101103（售后删除）：云端 aftersales 无 _deleted 列（实测 PGRST 42703），删除标记只能靠
+    // v2026101104（售后删除）：云端 aftersales 无 _deleted 列（实测 PGRST 42703），删除标记只能靠
     // items[0]._delSync 跨端传输。合并结果统一从墓碑还原顶层 _deleted，使其他设备拉云后同样隐藏/恢复。
     if(keyName === 'aftersales') _asRestoreDelFlags(mergedArr);
     return mergedArr;
@@ -3608,7 +3608,7 @@ const DB = {
     if(key === 'aftersales'){
       // v20260946：tracking_no 不在云端 aftersales 实际列中，推上去会报 schema cache 错误；
       // 该字段已通过 items[0]._afterMeta 塞进 items JSONB 随行同步，这里不推顶层列。
-      // v2026101103 关键修复：白名单此前漏了 created_at → 云端该列只能落数据库默认值（批量插入那一刻，
+      // v2026101104 关键修复：白名单此前漏了 created_at → 云端该列只能落数据库默认值（批量插入那一刻，
       // 整表同一秒），导致「提交售后日期」无法显示真实时分秒。现补上 created_at（本地行 createdAt 为
       // ISO UTC，时区无错位）。created_at 有 NOT NULL 约束：无有效值时剔除该键（让云端默认值兜底），
       // 避免传 null 触发 23502 导致整批 upsert 失败。
@@ -4292,7 +4292,7 @@ function fmtCreatedAt(a){
 // 降序：新创建的排前面（与旧 (b.createdAt).localeCompare(a.createdAt) 语义一致，但时区/格式安全）。
 function _createdAtDesc(a, b){ return _createdAtTs(b) - _createdAtTs(a); }
 
-/* ===== 售后「提交时间」专用解析（v2026101103）=====
+/* ===== 售后「提交时间」专用解析（v2026101104）=====
    背景：售后推送的列白名单曾漏 created_at（见 _pushDirtyRows 的 asCols），云端该列只能落到数据库默认值
    ＝「批量插入那一刻」，整表同一秒、无业务意义（对照 orders 白名单含 created_at，故订单时间是真实的）。
    因此售后时间改用三级可信来源，任一环节缺失都能降级，绝不显示假时间：
@@ -4360,7 +4360,7 @@ function _asCreatedDateStr(a){
   return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());
 }
 // 售后提交时间显示：有真实时分秒 → YYYY-MM-DD HH:MM:SS；只有日期（历史单真实时间已丢）→ 只出日期，
-// 不再输出误导性的 00:00:00（v2026101103 用户确认口径）。
+// 不再输出误导性的 00:00:00（v2026101104 用户确认口径）。
 function _asFmtCreatedAt(a){
   const info = _asTimeInfo(a);
   if(!(info.ts > 0)) return '-';
@@ -4370,7 +4370,7 @@ function _asFmtCreatedAt(a){
   return day + ' ' + p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());
 }
 // 售后「已过天数」：从提交售后日期（自然日）到今天的天数差；无有效时间返回 null。
-// v2026101103 同批：售后列表用它替代原「售后损耗」列。
+// v2026101104 同批：售后列表用它替代原「售后损耗」列。
 function _asElapsedDays(a){
   const day = _asCreatedDateStr(a);
   const m = day && day.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -4390,11 +4390,11 @@ function _asFmtElapsed(a){
   else if(d >= 7) style = ' style="color:#b45309;font-weight:600"';
   return '<span'+style+'>'+d+' 天</span>';
 }
-// 首页「售后工单」卡片计数口径（v2026101103 同批，用户要求全角色统一）：
+// 首页「售后工单」卡片计数口径（v2026101104 同批，用户要求全角色统一）：
 // 未删除 且 状态为「待处理(pending) / 处理中(processing)」的未完结售后单数量。
 // 管理员传入全部售后；销售侧调用前先用 salesId 过滤出本人售后，两边共用本函数，保证口径一致。
 // 注意：卡片数字 = 待处理 + 处理中，而点进去落在「待处理」tab（只含 pending），
-// 故 tab 上的数字可能小于卡片数字——此为 v2026101103 与用户确认过的既定口径，勿"修正"。
+// 故 tab 上的数字可能小于卡片数字——此为 v2026101104 与用户确认过的既定口径，勿"修正"。
 function _openAftersaleCount(list){
   return (Array.isArray(list) ? list : []).filter(function(a){
     return a && !a._deleted && (a.status === 'pending' || a.status === 'processing');
@@ -6053,7 +6053,7 @@ function renderSidebar(){
     !isOrderDeleted(o) &&
     ['pending','confirmed','shipped'].indexOf(o.status) >= 0
   ).length;
-  // v2026101103：已删除售后不计入任何统计/徽标
+  // v2026101104：已删除售后不计入任何统计/徽标
   const allAftersales = (DB.get('aftersales') || []).filter(a => a && !a._deleted);
   const myAs = isAdmin ? allAftersales : allAftersales.filter(a => a.salesId === currentUser.id);
   const asPendingCount = myAs.filter(a => a.status === 'pending').length;
@@ -6374,7 +6374,7 @@ async function renderDashboard(){
   // 渲染函数只负责展示，不自己拉网络：navigate()/Realtime/afterWriteRefresh 已保证数据为云端最新。
   const isAdmin = currentUser.role === 'admin';
   const orders = DB.get('orders') || [];
-  // v2026101103：已删除售后不进首页统计（与售后页列表同源）
+  // v2026101104：已删除售后不进首页统计（与售后页列表同源）
   const aftersales = (DB.get('aftersales') || []).filter(a => a && !a._deleted);
 
   let html = '';
@@ -6500,7 +6500,7 @@ async function renderDashboard(){
     // 待反馈：feedback 状态的订单数（以订单为主体，需全部反馈单号才进入此状态）
     const feedbackOrderCount = myOrders.filter(o=>o.status==='feedback').length;
     // 售后工单：本人名下「待处理 + 处理中」之和（排除已删除）。
-    // 修正前这里是本人「全部」售后数（含已处理），与管理员卡片口径不一致，用户要求统一（v2026101103 同批）。
+    // 修正前这里是本人「全部」售后数（含已处理），与管理员卡片口径不一致，用户要求统一（v2026101104 同批）。
     const myAftersales = aftersales.filter(a => a && !a._deleted && a.salesId === currentUser.id);
     const myAftersalesCount = _openAftersaleCount(myAftersales);
     // 待收尾款：本人（管理员为全部）名下有未结清尾款的订单数（仅定金订单，全款订单无尾款）
@@ -6773,6 +6773,23 @@ async function renderOrders(){
     { const _s = window._expStart, _e = window._expEnd;
       if(_s||_e) baseBeforeType = baseBeforeType.filter(o => { const d = bjDateKey(o.createdAt); return d && (!_s || d >= _s) && (!_e || d <= _e); });
     }
+    // 负责人筛选（= 订单归属销售）：v2026101104 同批，仅管理员可见可用。
+    // 必须放在「类型角标 / 状态Tab计数 / 列表」三者的共同上游（baseBeforeType）过滤，
+    // 否则角标数字与实际列表条数会对不上。
+    const ownerFilter = isAdmin ? (window._expSalesId || '') : '';
+    if(ownerFilter){ baseBeforeType = baseBeforeType.filter(o => _asOwnerKey(o) === ownerFilter); }
+    // 负责人下拉选项：从当前角色可见的全部订单里去重收集，保证切换筛选后选项不闪变。
+    // 键为空（既无 salesId 又无姓名）的订单不生成选项，避免与「全部负责人」的 value="" 撞车。
+    const ownerOptions = [];
+    { const _seenOwner = {};
+      orders.forEach(o => {
+        const k = _asOwnerKey(o);
+        if(!k || _seenOwner[k]) return;
+        _seenOwner[k] = 1;
+        ownerOptions.push({ key:k, name:_asOwnerName(o) || '（未标注）' });
+      });
+      ownerOptions.sort((x,y) => x.name.localeCompare(y.name, 'zh-Hans-CN'));
+    }
     // 类型分段角标（统计各类型总数，不受当前选中类型影响）
     const typeCounts = {
       normal: baseBeforeType.filter(o => o.type !== 'warehouse' && o.type !== 'door').length,
@@ -6819,6 +6836,7 @@ async function renderOrders(){
     const products = DB.get('products');
 
     const hasDateRange = !!(window._expStart || window._expEnd);
+    const hasOwnerFilter = !!window._expSalesId;
     let html = `<div class="card">
       <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
         <span class="title-text">📦 订单管理</span>
@@ -6826,7 +6844,7 @@ async function renderOrders(){
           ${isAdmin ? `<button class="btn btn-danger btn-sm" onclick="openCleanupPanel()">🧹 清理订单</button>` : ''}
           ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="navigate('recycle')">🗑️ 回收站(${recycleCount})</button>` : ''}
           ${isAdmin ? `<button class="btn btn-primary btn-sm" onclick="exportOrders()" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;box-shadow:0 2px 6px rgba(59,130,246,0.25)">
-            <span>📥</span><span>${hasDateRange || activeTab==='all' ? '导出全部订单' : '导出订单'}</span>
+            <span>📥</span><span>${(hasDateRange || hasOwnerFilter) ? '导出筛选结果' : (activeTab==='all' ? '导出全部订单' : '导出订单')}</span>
           </button>` : ''}
         </div>
       </div>`;
@@ -6843,13 +6861,19 @@ async function renderOrders(){
       html += `<button class="btn ${activeTab===t.key?'btn-primary':'btn-secondary'} btn-sm" onclick="switchOrderTab('${t.key}')" style="margin-right:6px">${t.label} (${count})</button>`;
     });
     html += `</div>`;
-    // 时间筛选（下单日期），同时作用于列表与导出
+    // 时间筛选（下单日期），同时作用于列表与导出；负责人筛选紧随其后（仅管理员）
     html += `<div class="date-filter">
       <span class="df-label">📅 下单时间</span>
       <input type="date" class="df-input" value="${window._expStart||''}" onchange="window._expStart=this.value;renderOrders()">
       <span class="df-sep">至</span>
       <input type="date" class="df-input" value="${window._expEnd||''}" onchange="window._expEnd=this.value;renderOrders()">
       <button class="df-clear" onclick="clearExportDateFilter()">清除</button>
+      <span style="flex:1;min-width:8px"></span>
+      <span class="df-sep">负责人</span>
+      <select class="df-input" onchange="window._expSalesId=this.value;renderOrders()">
+        <option value="">全部负责人</option>
+        ${ownerOptions.map(o=>`<option value="${escapeHtml(o.key)}" ${ownerFilter===o.key?'selected':''}>${escapeHtml(o.name)}</option>`).join('')}
+      </select>
     </div>`;
     // Search bar
     html += `<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="orderSearchInput" placeholder="搜索订单号/客户/电话" value="${keyword}" oninput="onOrderSearchInput(this)" oncompositionstart="window._orderSearchComposing=true" oncompositionend="onOrderSearchComposed(this)"></div></div>`;
@@ -6866,6 +6890,7 @@ async function renderOrders(){
               <div class="card-row" style="margin-bottom:6px"><span class="card-label">订单号</span>${orderIdCell(o.id, {clickView:true})}</div>
               <div class="card-customer">${escapeHtml(displayNameOf(o))||'-'}</div>
               <div class="card-row"><span class="card-label">类型</span>${orderTypeTag(o.type)}</div>
+              ${o.salesName ? `<div class="card-row"><span class="card-label">销售</span><span style="text-align:right">${escapeHtml(o.salesName)}</span></div>` : ''}
               <div class="card-row"><span class="card-label">状态</span>${statusTag(o.status)}${paymentSettledTag(o)}</div>
               <div class="card-row"><span class="card-label">金额</span><b style="color:var(--text)">${money(o.total)}</b></div>
               ${o.remark ? `<div class="card-row"><span class="card-label">备注</span><span style="text-align:right">${escapeHtml(o.remark)}</span></div>` : ''}
@@ -6889,7 +6914,7 @@ async function renderOrders(){
           const productList = products || [];
           const itemCols = isAdmin ? 7 : 6;
           html += `<tr>`;
-          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span></td>`;
+          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span>${o.salesName?`<br><span style="font-size:11px;color:var(--text-muted)">销售 ${escapeHtml(o.salesName)}</span>`:''}</td>`;
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/><col/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const prod = productList.find(p => p.id === it.productId);
@@ -6918,7 +6943,7 @@ async function renderOrders(){
       if(filtered.length){
         filtered.forEach(o => {
           html += `<tr>`;
-          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span></td>`;
+          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span>${o.salesName?`<br><span style="font-size:11px;color:var(--text-muted)">销售 ${escapeHtml(o.salesName)}</span>`:''}</td>`;
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/><col/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const prod = (products||[]).find(p => p.id === it.productId);
@@ -6948,7 +6973,7 @@ async function renderOrders(){
       if(filtered.length){
         filtered.forEach(o => {
           html += `<tr>`;
-          html += `<td>${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}</td>`;
+          html += `<td>${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}${o.salesName?`<br><span style="font-size:11px;color:var(--text-muted)">销售 ${escapeHtml(o.salesName)}</span>`:''}</td>`;
           html += `<td style="font-weight:600">${money(o.total)}</td>`;
           html += `<td>${orderTypeTag(o.type)}</td>`;
           html += `<td>${statusTag(o.status)}${paymentSettledTag(o)}</td>`;
@@ -7297,7 +7322,7 @@ function viewOrder(orderId, forceViewOnly){
             const orders = DB.get('orders');
             const i = orders.findIndex(function(o){ return o.id === orderId; });
             if(i < 0) return;
-            // v2026101103：PostgREST 的 select=* 返回 snake_case（customer_name / completion_date），
+            // v2026101104：PostgREST 的 select=* 返回 snake_case（customer_name / completion_date），
             // 旧代码直接拿驼峰 key 去取 → 恒 undefined → 顶层字段**一个都没被覆盖**
             // （只有 items 因为本身是前端写入的驼峰 JSONB，才侥幸生效）。
             // 表现：管理员打开订单详情，客户名/地址/状态等仍是本地旧值，只有商品行是新的。
@@ -8058,7 +8083,7 @@ function confirmAddProducts(){
 // 商品名归一化：只保留「数字 + 英文字母 + 汉字」，其余（空格、连字符、点号、下划线、斜杠、括号等
 // 所有书写符号）一律忽略。保证「iPhone手机」「iphone 手机」「H-CAT 2.0PRO」「H CAT 2.0PRO」
 // 「H.CAT 2.0PRO」「H_CAT 2.0PRO」「H（CAT）2.0PRO」全部视为同一个商品。
-// v2026101103：旧口径只做「转小写 + 去空白」，连字符/点号/括号一个都不忽略 →
+// v2026101104：旧口径只做「转小写 + 去空白」，连字符/点号/括号一个都不忽略 →
 //   销售下单时把「霍尼韦尔 H CAT 2.0PRO 空气净化器」写成「霍尼韦尔H-CAT 2.0PRO 空气净化器」，
 //   归一化后 hcat2.0pro ≠ h-cat2.0pro，被判成新品自动入库，商品库出现"看着一模一样"的重复，
 //   且新品成本默认=售价、带「待校准」，订单利润被算错。故收紧为"只剩字母数字汉字"。
@@ -8096,7 +8121,7 @@ function findProductByName(name){
   const list = DB.get('products') || [];
   const hits = list.filter(p => p && normalizeProductName(p.name) === key);
   if(!hits.length) return null;
-  // v2026101103：归一化收紧后，同一商品很可能同时存在「旧写法（多已下架）+ 新写法（在架）」两条。
+  // v2026101104：归一化收紧后，同一商品很可能同时存在「旧写法（多已下架）+ 新写法（在架）」两条。
   // 必须优先命中在架的那条，否则销售下单时会被已下架的旧记录挡住，提示"请联系管理员上架"，
   // 明明库里有在售的同款却用不了。都不在架时才退回第一条（走"已下架"提示分支）。
   return hits.find(p => p.status === 'on') || hits[0];
@@ -8775,7 +8800,7 @@ async function pushNewOrderToCloudWithRetry(orderId, maxRetries){
   try{
     const localOrder = (DB.get('orders') || []).find(function(o){ return o && o.id === orderId; });
     if(localOrder && localOrder.updatedAt){
-      localUpdatedAt = _parseTsUtc(localOrder.updatedAt); // v2026101103：旧写法解析不了云端「+00」时区
+      localUpdatedAt = _parseTsUtc(localOrder.updatedAt); // v2026101104：旧写法解析不了云端「+00」时区
     }
   }catch(e){}
   for(let attempt = 1; attempt <= maxRetries; attempt++){
@@ -8784,7 +8809,7 @@ async function pushNewOrderToCloudWithRetry(orderId, maxRetries){
     try{
       const { data, error } = await window._sbpbClient.from('orders').select('id,updated_at').eq('id', orderId).maybeSingle();
       if(data && !error && data.id === orderId){
-        // v2026101103：旧写法把云端「…+00」解析成 NaN→0，导致「云端存在即算成功」的验证形同虚设
+        // v2026101104：旧写法把云端「…+00」解析成 NaN→0，导致「云端存在即算成功」的验证形同虚设
         const cloudUpdatedAt = data.updated_at ? _parseTsUtc(data.updated_at) : 0;
         // 云端存在即满足新建订单；编辑场景额外要求云端时间不比本地旧超过 5s（容差：服务端/客户端时钟偏差、毫秒截断）
         if(localUpdatedAt <= 0 || !cloudUpdatedAt || cloudUpdatedAt >= localUpdatedAt - 5000){
@@ -9042,7 +9067,7 @@ function renderOrderDetail(){
   // 销售查看「已下单」订单：专属只读视图，商品明细中展示物流单号与查看按钮
   const isSalesConfirmedView = !isAdmin && isOwner && order.status === 'confirmed';
   // 管理员「查看」订单：统一只读视图——含客户信息/下单人/商品信息/金额/利润，可改损耗与物流，含保存修改（覆盖 待下单/已下单/运输中/待反馈/已完成）
-  // v2026101103 同批修复：状态列表此前漏了 'shipped'（运输中）→ 管理员点开运输中订单时走了旧分支，
+  // v2026101104 同批修复：状态列表此前漏了 'shipped'（运输中）→ 管理员点开运输中订单时走了旧分支，
   // 底部只有「编辑订单」没有「保存修改」，物流区也不给管理员显示「一键复制物流信息」，与「已下单」订单界面不一致。
   // 注意 saveAdminOrder 本身早已支持 shipped（填满单号自动转「待反馈」），此处补齐即可。
   const isAdminOrderView = isAdmin && viewOnly && ['pending','confirmed','shipped','feedback','completed','feedback_done'].includes(order.status);
@@ -9514,7 +9539,7 @@ function renderOrderDetail(){
     html += `<button class="btn btn-secondary" onclick="backToOrders()">返回</button>`;
   } else if(isAdminOrderView){
     // 管理员查看（待下单/已下单/运输中/待反馈）专用：保存修改（损耗+物流），无其余操作。
-    // v2026101103 同批：按钮文案动态化——运单号本身已「失焦即存」，按钮真正负责的是推进状态，
+    // v2026101104 同批：按钮文案动态化——运单号本身已「失焦即存」，按钮真正负责的是推进状态，
     // 所以把「点了会发生什么」直接写在按钮上，避免漏推进、也避免误以为单号没保存。
     const _items = Array.isArray(order.items) ? order.items : [];
     const _filled = _items.filter(function(it){ return (it.trackingNo || '').trim() !== ''; }).length;
@@ -12440,8 +12465,14 @@ function exportOrders(){
   }
   filtered = [...filtered].sort((a,b)=>_createdAtDesc(a,b));
 
+  // 负责人筛选（v2026101104 同批）：导出与列表保持一致，选了谁就只导谁的单
+  const expSalesId = window._expSalesId || '';
+  if(expSalesId){ filtered = filtered.filter(o => _asOwnerKey(o) === expSalesId); }
+
   // 当前标签无数据：自动回退导出全部非上门订单，避免"点了没反应"
   if(!filtered.length){
+    // 但「负责人筛选」是显式意图，空结果不能悄悄回退成全部（否则会导出成别人的单）
+    if(expSalesId){ showToast('该负责人下没有符合条件的订单，请调整筛选后重试','error'); return; }
     const fallback = orders.filter(o => o.type !== 'door').sort((a,b)=>_createdAtDesc(a,b));
     if(fallback.length){
       filtered = fallback;
@@ -12507,14 +12538,15 @@ function exportOrders(){
   showToast('订单已按商品逐行导出：损耗随商品、售后损耗随订单','success');
 }
 
-// 清除订单导出时间筛选
+// 清除订单导出筛选（时间 + 负责人，v2026101104 同批：一并清掉符合"清除"直觉）
 function clearExportDateFilter(){
   window._expStart = '';
   window._expEnd = '';
+  window._expSalesId = '';
   renderOrders();
 }
 
-// 清除售后工单筛选（v2026101103 同批：一并清掉「负责人」与「来源」，符合"清除"直觉）
+// 清除售后工单筛选（v2026101104 同批：一并清掉「负责人」与「来源」，符合"清除"直觉）
 function clearAsDateFilter(){
   window._asStart = '';
   window._asEnd = '';
@@ -12527,7 +12559,7 @@ function clearAsDateFilter(){
 function exportAftersales(){
   if(currentUser.role !== 'admin'){ showToast('仅管理员可导出','error'); return; }
   const isAdmin = currentUser.role === 'admin';
-  // v2026101103：已删除的售后工单不参与导出（与列表「已删除」tab 一样仅管理员可见可恢复）
+  // v2026101104：已删除的售后工单不参与导出（与列表「已删除」tab 一样仅管理员可见可恢复）
   let aftersales = (DB.get('aftersales') || []).filter(a => a && !a._deleted);
   if(!isAdmin){
     aftersales = aftersales.filter(a => a.salesId === currentUser.id);
@@ -12561,14 +12593,14 @@ function exportAftersales(){
   if(asSrc){
     filtered = filtered.filter(a => asSourceType(a) === asSrc);
   }
-  // 负责人筛选（v2026101103 同批）：与列表筛选保持一致，做到「导出当前筛选结果」
+  // 负责人筛选（v2026101104 同批）：与列表筛选保持一致，做到「导出当前筛选结果」
   const asOwner = window._asOwner || '';
   if(asOwner){
     filtered = filtered.filter(a => _asOwnerKey(a) === asOwner);
   }
   filtered = [...filtered].sort((a,b)=>_asCreatedAtDesc(a,b));
 
-  // v2026101103 同批：修掉此处引用未定义变量 hasDateRange 的旧 bug（运行时会抛 ReferenceError、
+  // v2026101104 同批：修掉此处引用未定义变量 hasDateRange 的旧 bug（运行时会抛 ReferenceError、
   // 导致「已导出 N 条」提示丢失）；同时让判断覆盖日期/负责人/来源三类筛选。
   const hasAnyFilter = !!(asStart || asEnd || asSrc || asOwner);
 
@@ -13468,7 +13500,7 @@ function cleanupDuplicateProducts(cloudProducts){
     let products = DB.get('products') || [];
     if(!products.length) return;
 
-    // 名称规范化：v2026101103 起直接复用 normalizeProductName（只保留字母数字汉字），
+    // 名称规范化：v2026101104 起直接复用 normalizeProductName（只保留字母数字汉字），
     // 与 findProductByName / addProductBySales 完全同一口径，避免两条判重规则分叉导致漏合并。
     // 可识别「三头鹰 32cm 炒锅」与「三头鹰32cm炒锅」、以及「H-CAT 2.0PRO」与「H CAT 2.0PRO」这类重复。
     function normName(s){ return normalizeProductName(s); }
@@ -13487,7 +13519,7 @@ function cleanupDuplicateProducts(cloudProducts){
     let keepProducts = [];
     Object.values(byNorm).forEach(arr => {
       arr.sort((a, b) => {
-        // v2026101103：优先保留「在架」的那条。旧逻辑只比时间戳，若已下架的旧写法刚好更新，
+        // v2026101104：优先保留「在架」的那条。旧逻辑只比时间戳，若已下架的旧写法刚好更新，
         // 会把在售商品删掉、留下下架的 → 等于把该商品从销售端"弄丢"（销售下单时命中已下架记录被拒）。
         const ao = (a.status === 'on') ? 1 : 0, bo = (b.status === 'on') ? 1 : 0;
         if(ao !== bo) return bo - ao;
@@ -13551,7 +13583,7 @@ function cleanupDuplicateProducts(cloudProducts){
     Object.keys(idMap).forEach(id => delSet.add(id));
     localStorage.setItem(delKey, JSON.stringify(Array.from(delSet)));
 
-    // v2026101103：本地去重后，把云端对应的重复商品也删掉。
+    // v2026101104：本地去重后，把云端对应的重复商品也删掉。
     // 旧版只删本地 + 记排除集，结果：本机看不见了，但其它设备仍会看到重复，
     // 且云端那条继续占用 products_name_uniq_active 唯一索引（该名字以后再也建不了商品）。
     // 异步执行，失败只告警、不阻断本地结果。
@@ -13936,7 +13968,7 @@ async function saveProduct(){
   try{
   const products = DB.get('products');
   const _nowStr = window.nowStr(); // 必须带毫秒，否则 _mergeById 判本地更旧→云端旧价覆盖刚改的售价/成本
-  // v2026101103：新建商品前置查重。此前管理员在商品管理页手动新建「完全不查重」，
+  // v2026101104：新建商品前置查重。此前管理员在商品管理页手动新建「完全不查重」，
   // 只靠云端唯一索引兜底（而云端索引按原始 name 比对），所以「H-CAT 2.0PRO」与
   // 「H CAT 2.0PRO」这种只差一个符号的名字能同时建出来，商品库出现两条看着一样的记录。
   // 这里补两道闸：① 归一化后完全相同 → 直接拒绝；② 疑似相同（一方包含另一方）→ 弹确认。
@@ -14382,6 +14414,70 @@ function calcCommission(order, salesRate){
   return Math.round(profit * (salesRate / 100));
 }
 
+// —— 跨期售后损耗（结算口径），v2026101104 ——
+// 业务场景：1月的订单已完成并结算了提成，2月才产生售后损耗。
+//   财务口径：损耗仍写回原订单 afterSaleLoss，按「原订单利润日期」归属 → 利润报表历史不追溯、不跳动。
+//   结算口径：那笔损耗扣在已结算的 1 月，钱已经发出去了，等于没人承担 → 必须在「售后发生当期」补扣。
+// 判定规则（按结算区间，不按自然月——用户结算周期是每月 10 号到次月 9 号，靠日期筛选切）：
+//   A 关联订单售后：售后发生日 ∈ [start,end]，且原订单利润日 ∉ [start,end] → 跨期，当期补扣；
+//     若原订单利润日也落在本区间，说明已随「提成基数」扣过，直接跳过（防重复扣）。
+//   B 无订单客户售后(walkin)：没有订单承载，一律按售后发生日计入当期（2026-10-11 用户决定参与扣减）。
+// 扣减额 = 损耗 × 该销售的提成比例（用户 2026-10-11 选定「按提成比例扣」，与「利润×比例」口径等价）。
+// 注意：本函数返回的 loss 属敏感金额，调用处必须 isAdmin 守卫后才可展示。
+function _crossPeriodLossList(startD, endD, salesIdFilter){
+  var out = [];
+  if(!startD || !endD) return out;
+  var all = DB.get('aftersales') || [];
+  var orders = DB.get('orders') || [];
+  (Array.isArray(all) ? all : []).forEach(function(a){
+    if(!a || a._deleted) return;
+    var loss = Number(a.loss) || 0;
+    if(!(loss > 0)) return;
+    var d = _asCreatedDateStr(a);
+    if(!d || d < startD || d > endD) return;            // 只看本结算期内发生的售后
+    if(salesIdFilter && a.salesId && a.salesId !== salesIdFilter) return;
+    var order = null, pd = '';
+    if(a.orderId){
+      order = orders.filter(function(o){ return o && o.id === a.orderId; })[0] || null;
+      pd = order ? (getProfitDate(order) || '') : '';
+      if(pd && pd >= startD && pd <= endD) return;      // 原订单也在本期 → 已扣过，不重复
+    }
+    out.push({
+      id: a.id,
+      date: d,
+      orderId: a.orderId || '',
+      orderProfitDate: pd,
+      customerName: a.customerName || (order ? order.customerName : '') || '-',
+      salesId: a.salesId || (order ? order.salesId : '') || '',
+      salesName: _asOwnerName(a) || (order ? order.salesName : '') || '-',
+      loss: loss,
+      walkin: !a.orderId,
+      rate: 9,
+      deduction: 0
+    });
+  });
+  return out;
+}
+
+// 结算周期快捷区间：每月 10 号 ~ 次月 9 号（用户做账口径）
+function setComPeriodRange(){
+  var t = new Date();
+  var y = t.getFullYear(), m = t.getMonth() + 1, dd = t.getDate();
+  var sy, sm, ey, em;
+  if(dd >= 10){
+    sy = y; sm = m;
+    var nm = (m === 12) ? 1 : m + 1, ny = (m === 12) ? y + 1 : y;
+    ey = ny; em = nm;
+  } else {
+    var pm = (m === 1) ? 12 : m - 1, py = (m === 1) ? y - 1 : y;
+    sy = py; sm = pm; ey = y; em = m;
+  }
+  var p2 = function(n){ return n < 10 ? '0'+n : ''+n; };
+  window._comStart = sy + '-' + p2(sm) + '-10';
+  window._comEnd = ey + '-' + p2(em) + '-09';
+  renderCommissions();
+}
+
 function renderCommissions(){
   var isAdmin = currentUser.role === 'admin';
   var users = DB.get('users');
@@ -14445,6 +14541,7 @@ function renderCommissions(){
           </div>
         </div>
         <button class="btn btn-primary btn-sm" onclick="renderCommissions()">查询</button>
+        <button class="btn btn-sm btn-secondary" onclick="setComPeriodRange()">本期(10日~次月9日)</button>
         ${isAdmin ? '<button class="btn btn-secondary btn-sm" onclick="exportCommissionCSV()">📥 导出CSV</button>' : ''}
       </div>
     </div>
@@ -14498,6 +14595,23 @@ function renderCommissions(){
   var totalBase = filteredDetails.reduce(function(s,d){ return s + d.commissionBase; }, 0);
   var totalCommission = filteredDetails.reduce(function(s,d){ return s + d.commission; }, 0);
 
+  // —— 跨期售后损耗补扣（v2026101104）——
+  // 只影响「结算口径」：本结算期内发生、但原订单利润日不在本期（或压根没有订单）的售后损耗，
+  // 在已结算的往期扣了也收不回，所以改在本期提成里按提成比例补扣。订单数据本身不动。
+  var crossRows = _crossPeriodLossList(startD, endD, isAdmin ? (window._comSalesId || '') : currentUser.id);
+  var crossLossTotal = 0, crossDeduction = 0;
+  crossRows.forEach(function(r){
+    var cu = users.filter(function(x){ return x.id === r.salesId; })[0];
+    var crt = (cu && cu.commission_rate != null) ? cu.commission_rate : 9;
+    r.rate = crt;
+    r.deduction = Math.round(r.loss * (crt / 100));
+    crossLossTotal += r.loss;
+    crossDeduction += r.deduction;
+  });
+  var payableCommission = totalCommission - crossDeduction;
+  window._comCrossRows = crossRows;
+  window._comCrossDeduction = crossDeduction;
+
   var summaryHtml = `
     <div class="stat-grid" style="margin-bottom:16px">
       ${isAdmin ? `
@@ -14505,8 +14619,18 @@ function renderCommissions(){
       <div class="stat-card"><div class="stat-label">售后损耗</div><div class="stat-value" style="color:var(--danger)">${money(totalLoss)}</div></div>
       ` : ''}
       <div class="stat-card"><div class="stat-label">${isAdmin?'提成基数':'我的提成基数'}</div><div class="stat-value">${money(totalBase)}</div></div>
-      <div class="stat-card"><div class="stat-label">${isAdmin?'总提成金额':'我的总提成'}</div><div class="stat-value" style="color:var(--primary)">${money(totalCommission)}</div></div>
+      ${isAdmin ? '<div class="stat-card"><div class="stat-label">本期订单提成</div><div class="stat-value" style="color:var(--primary)">'+money(totalCommission)+'</div></div>' : ''}
+      ${isAdmin ? '<div class="stat-card"><div class="stat-label">跨期售后损耗</div><div class="stat-value" style="color:var(--danger)">-'+money(crossDeduction)+'</div></div>' : ''}
+      <div class="stat-card"><div class="stat-label">${isAdmin?'本期应付提成':'我的提成'}</div><div class="stat-value" style="color:var(--primary)">${money(payableCommission)}</div></div>
     </div>
+    ${isAdmin && crossRows.length ? `
+      <div class="card" style="margin-bottom:14px;padding:10px 14px;font-size:12px;color:var(--text-muted);line-height:1.7;background:#fffbeb;border-left:3px solid #f59e0b">
+        本期（${startD} ~ ${endD}）内有 <b>${crossRows.length}</b> 笔售后损耗属于<b>跨期损耗</b>：
+        损耗发生在本期，但原订单的利润日期在往期（已结算过）。历史账目<b>不追溯</b>，
+        改在本期按提成比例补扣，合计 <b style="color:var(--danger)">-${money(crossDeduction)}</b>（损耗本金 ${money(crossLossTotal)}）。
+        ${payableCommission < 0 ? '<div style="margin-top:6px;color:var(--danger)">⚠ 本期订单提成不足以抵扣，还差 <b>'+money(-payableCommission)+'</b> 元。请与销售确认后手动顺延到下期继续扣（系统不会自动挂账）。</div>' : ''}
+      </div>
+    ` : ''}
   `;
 
   var cols = isAdmin ? 9 : 6;
@@ -14546,6 +14670,51 @@ function renderCommissions(){
     </div>
   `;
 
+  // 跨期损耗明细表：金额属敏感财务数据，仅管理员可见（销售连这段 HTML 都不会生成）
+  var crossHtml = (isAdmin && crossRows.length) ? `
+    <div class="card">
+      <div class="card-title"><span class="title-text">🔁 跨期售后损耗补扣（${startD} ~ ${endD}）</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>发生日期</th>
+              <th>售后单号</th>
+              <th>客户</th>
+              <th>销售</th>
+              <th>原订单</th>
+              <th>原订单利润日期</th>
+              <th>损耗</th>
+              <th>比例</th>
+              <th>补扣</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${crossRows.slice().sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); }).map(function(r){
+              return '<tr>' +
+                '<td>'+r.date+'</td>' +
+                '<td><a class="btn-link" onclick="viewAftersale(\''+r.id+'\')">'+r.id+'</a></td>' +
+                '<td>'+escapeHtml(r.customerName)+'</td>' +
+                '<td>'+escapeHtml(r.salesName)+'</td>' +
+                '<td>'+(r.walkin ? '<span class="tag tag-unsettled">无订单客户</span>' : (r.orderId ? '<a class="btn-link" onclick="viewOrder(\''+r.orderId+'\')">'+r.orderId+'</a>' : '-'))+'</td>' +
+                '<td>'+(r.orderProfitDate || '-')+'</td>' +
+                '<td style="color:var(--danger)">'+money(r.loss)+'</td>' +
+                '<td>'+r.rate+'%</td>' +
+                '<td style="font-weight:600;color:var(--danger)">-'+money(r.deduction)+'</td>' +
+                '</tr>';
+            }).join('')}
+            <tr style="font-weight:bold;background:#f9fafb">
+              <td colspan="6">合计</td>
+              <td style="color:var(--danger)">${money(crossLossTotal)}</td>
+              <td>-</td>
+              <td style="color:var(--danger)">-${money(crossDeduction)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  ` : '';
+
   var html = `
     <div class="card">
       <div class="card-title"><span class="title-text">🏆 销售提成</span></div>
@@ -14553,6 +14722,7 @@ function renderCommissions(){
     ${rateMgmtHtml}
     ${filterHtml}
     ${summaryHtml}
+    ${crossHtml}
     ${detailHtml}
   `;
   document.getElementById('mainContent').innerHTML = html;
@@ -14576,7 +14746,8 @@ function saveCommissionRate(userId){
 function exportCommissionCSV(){
   if(currentUser.role !== 'admin'){ showToast('仅管理员可导出','error'); return; }
   var details = window._comDetails || [];
-  if(!details.length){ showToast('暂无可导出数据','error'); return; }
+  var cross = window._comCrossRows || [];
+  if(!details.length && !cross.length){ showToast('暂无可导出数据','error'); return; }
 
   var csv = '\uFEFF销售,订单号,客户,完成日期,原始利润,损耗扣减,提成基数,比例(%),提成金额\n';
   details.forEach(function(d){
@@ -14588,7 +14759,21 @@ function exportCommissionCSV(){
   var totalLoss = details.reduce(function(s,d){ return s + d.lossDeduction; }, 0);
   var totalBase = details.reduce(function(s,d){ return s + d.commissionBase; }, 0);
   var totalCommission = details.reduce(function(s,d){ return s + d.commission; }, 0);
-  csv += '合计,,,,,' + Math.round(totalProfit) + ',' + Math.round(totalLoss) + ',' + Math.round(totalBase) + ',' + Math.round(totalCommission) + '\n';
+  csv += '合计,,,' + Math.round(totalProfit) + ',' + Math.round(totalLoss) + ',' + Math.round(totalBase) + ',' + Math.round(totalCommission) + '\n';
+
+  // 跨期售后损耗补扣（管理员专属，敏感金额不进销售可见范围）
+  if(cross.length){
+    var crossLossSum = cross.reduce(function(s,r){ return s + r.loss; }, 0);
+    var crossDedSum = cross.reduce(function(s,r){ return s + r.deduction; }, 0);
+    csv += '\n\n跨期售后损耗补扣\n';
+    csv += '发生日期,售后单号,客户,销售,原订单,原订单利润日期,损耗,比例(%),补扣\n';
+    cross.forEach(function(r){
+      csv += [r.date, r.id, r.customerName||'-', r.salesName||'-', r.orderId||'无订单客户', r.orderProfitDate||'-',
+              Math.round(r.loss), r.rate, '-'+Math.round(r.deduction)].join(',') + '\n';
+    });
+    csv += '合计,,,,,' + Math.round(crossLossSum) + ',,-' + Math.round(crossDedSum) + '\n';
+    csv += '\n本期应付提成,,,' + Math.round(totalCommission - crossDedSum) + '\n';
+  }
 
   var blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
   var url = URL.createObjectURL(blob);
@@ -14669,16 +14854,22 @@ function generateCommissions(){
   selected.forEach(orderId => {
     const order = orders.find(o => o.id === orderId);
     if(order){
+      // v2026101104：口径统一为「利润 × 比例」，与提成明细页 calcCommission 一致。
+      // 旧写法用 order.total（订单总额）算，导致同一个订单在「生成提成」与「提成明细」两个页面
+      // 得出完全不同的金额；跨期损耗补扣是按提成比例算的，只有两边同口径才对得上。
+      const _profit = calcOrderProfit(order);
       commissions.push({
         id: DB.uid('com_'),
         salesId: order.salesId,
         salesName: order.salesName,
         orderId: order.id,
         customerName: order.customerName,
-        amount: Math.round(order.total * rate / 100),
+        amount: Math.round(_profit * rate / 100),
         rate,
         period,
         status: 'unsettled',
+        profit: Math.round(_profit),
+        orderTotal: Math.round(order.total || 0),
         createdAt: nowStr()
       });
     }
@@ -14708,7 +14899,7 @@ let aftersaleWalkinSales = null; // 管理员代建时选择的归属销售 {id,
 // 售后来源类型：order=关联订单售后（orderId 有值）；walkin=无订单客户售后（orderId 为空）
 function asSourceType(a){ return (a && a.orderId) ? 'order' : 'walkin'; }
 function asSourceTypeTag(a){ return asSourceType(a) === 'order' ? '关联订单' : '无订单客户'; }
-// 负责人（= 订单归属人员）显示名与筛选键（v2026101103 同批）
+// 负责人（= 订单归属人员）显示名与筛选键（v2026101104 同批）
 // 优先取记录自身 salesName；缺失时按 salesId 到 users 表查名字兜底。
 function _asOwnerName(a){
   if(!a) return '';
@@ -14728,11 +14919,11 @@ function _asOwnerKey(a){
 
 function renderAftersales(){
   const isAdmin = currentUser.role === 'admin';
-  // v2026101103 同批：先剔除已删除售后，使「tab 计数 / 列表内容」与首页卡片数字同源，
+  // v2026101104 同批：先剔除已删除售后，使「tab 计数 / 列表内容」与首页卡片数字同源，
   // 避免云端带 _deleted 标记的记录被计入 tab 数、或渲染成幽灵行。
   const _asAll = DB.get('aftersales') || [];
   let aftersales = _asAll.filter(a => a && !a._deleted);
-  // 已删除工单：仅管理员可见可恢复（v2026101103）。与在用工单同源、独立成表，绝不混入上方 aftersales。
+  // 已删除工单：仅管理员可见可恢复（v2026101104）。与在用工单同源、独立成表，绝不混入上方 aftersales。
   const deletedList = isAdmin ? _asAll.filter(a => a && a._deleted) : [];
   // 销售账号仅查看自己创建的售后记录
   if(!isAdmin){
@@ -14774,7 +14965,7 @@ function renderAftersales(){
   if(asSrc){
     filtered = filtered.filter(a => asSourceType(a) === asSrc);
   }
-  // 负责人筛选（= 订单归属人员）：v2026101103 同批，仅管理员可见可用
+  // 负责人筛选（= 订单归属人员）：v2026101104 同批，仅管理员可见可用
   // 非管理员强制忽略（防止管理员选过某人后，销售登录时残留筛选把列表过滤成空）
   const asOwner = isAdmin ? (window._asOwner || '') : '';
   if(asOwner){
@@ -14806,8 +14997,8 @@ function renderAftersales(){
     ownerOptions.sort((x,y) => x.name.localeCompare(y.name, 'zh-Hans-CN'));
   }
 
-  // 「已过天数」列：v2026101103 用户要求替代原「售后损耗」列；不再涉及金额，故所有角色可见。
-  // v2026101103 同批：管理员视角在「客户」后增加「负责人」列（订单归属人员），故管理员 7 列。
+  // 「已过天数」列：v2026101104 用户要求替代原「售后损耗」列；不再涉及金额，故所有角色可见。
+  // v2026101104 同批：管理员视角在「客户」后增加「负责人」列（订单归属人员），故管理员 7 列。
   const cols = isAdmin ? 7 : 6;
   // 是否有生效中的筛选（日期/负责人/来源），用于导出按钮文案
   const hasAnyFilter = !!(asStart || asEnd || asOwner || asSrc);
@@ -15041,7 +15232,7 @@ function saveAftersaleDetail(id){
   // 售后单备注/物流单号免数据库改动：双写到 items[0]._afterMeta 隐藏键，随 items 同步上云（与售后损耗同机制）
   if(!Array.isArray(aftersales[idx].items)) aftersales[idx].items = [{}];
   if(!aftersales[idx].items[0]) aftersales[idx].items[0] = {};
-  // v2026101103：整对象重写 _afterMeta 时必须带回 createdAt，否则「编辑备注/单号」会把真实提交时间清掉。
+  // v2026101104：整对象重写 _afterMeta 时必须带回 createdAt，否则「编辑备注/单号」会把真实提交时间清掉。
   // 仅当原 meta 已有真实值才带回；历史单没有真实时间就留空（不臆造，显示按单号日期兜底）。
   const _oldMeta = (aftersales[idx].items[0]._afterMeta && typeof aftersales[idx].items[0]._afterMeta === 'object') ? aftersales[idx].items[0]._afterMeta : {};
   const _newMeta = { remark: aftersales[idx].remark || '', trackingNo: aftersales[idx].trackingNo || '' };
@@ -15073,7 +15264,7 @@ function saveAftersaleDetail(id){
   renderAftersales();
 }
 
-// ============ 售后工单 删除 / 恢复（v2026101103 新增，仅管理员）============
+// ============ 售后工单 删除 / 恢复（v2026101104 新增，仅管理员）============
 // 机制与订单软删除同源，但云端 aftersales 表没有 _deleted 列（实测：column aftersales._deleted does not exist），
 // 故：本机渲染/统计用顶层 _deleted；跨端同步靠 items[0]._delSync 墓碑（随 items JSONB 上云），
 // 由 _mergeById 的「软删除权威合并」+ 下方 _asRestoreDelFlags 还原，实现多端一致隐藏 / 恢复。
@@ -15336,7 +15527,7 @@ function setWalkinSales(id){
   const u = DB.get('users').find(x => x.id === id);
   aftersaleWalkinSales = u ? { id:u.id, name:u.name } : null;
 }
-// v2026101103：无订单客户售后的商品选择由「原生下拉」升级为「可检索下拉」。
+// v2026101104：无订单客户售后的商品选择由「原生下拉」升级为「可检索下拉」。
 // 复用全局 productMatchesKeyword（忽略大小写 + 忽略空格，见 12713 行），避免自己再写一套匹配口径。
 function searchWalkinProducts(keyword){
   const box = document.getElementById('asWalkinProductResults');
@@ -15615,7 +15806,7 @@ function submitAftersale(){
   // 售后单备注/物流单号免数据库改动：挂 _afterMeta 到 items JSONB，随售后单同步上云（空值初始化，保存详情时更新）
   if(!Array.isArray(newAS.items) || !newAS.items.length) newAS.items = [{}];
   if(!newAS.items[0]) newAS.items[0] = {};
-  // v2026101103：同时写入真实提交时间（随 items JSONB 上云，不依赖 created_at 列白名单，跨端最稳）
+  // v2026101104：同时写入真实提交时间（随 items JSONB 上云，不依赖 created_at 列白名单，跨端最稳）
   newAS.items[0]._afterMeta = { remark: newAS.remark || '', trackingNo: newAS.trackingNo || '', createdAt: newAS.createdAt || nowStr() };
   DB.set('aftersales', aftersales);
   if(typeof schedulePushToCloud === 'function') schedulePushToCloud();
