@@ -1689,7 +1689,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026101104</div>
+          <div class="brand-sub">v2026101106</div>
         </div>
       </div>
     </div>
@@ -14459,6 +14459,33 @@ function _crossPeriodLossList(startD, endD, salesIdFilter){
   return out;
 }
 
+// 方案A（v2026101105）：本期提交的售后损耗（按售后提交日归集，纯展示，不进利润计算）
+// 与 _crossPeriodLossList 同源（都读 a.loss 与 _asCreatedDateStr），但显示本期发生且有损耗的全部工单
+// （含原订单利润日也在本期的），用于利润报表顶部「本期提交售后损耗」卡片，补齐管理视角的缺口。
+function _periodSubmittedLossList(startD, endD, salesIdFilter){
+  var out = [];
+  if(!startD || !endD) return out;
+  var all = DB.get('aftersales') || [];
+  (Array.isArray(all) ? all : []).forEach(function(a){
+    if(!a || a._deleted) return;
+    var loss = Number(a.loss) || 0;
+    if(!(loss > 0)) return;
+    var d = _asCreatedDateStr(a);
+    if(!d || d < startD || d > endD) return;
+    if(salesIdFilter && a.salesId && a.salesId !== salesIdFilter) return;
+    out.push({
+      id: a.id,
+      date: d,
+      orderId: a.orderId || '',
+      customerName: a.customerName || '-',
+      salesId: a.salesId || '',
+      salesName: _asOwnerName(a) || '-',
+      loss: loss
+    });
+  });
+  return out;
+}
+
 // 结算周期快捷区间：每月 10 号 ~ 次月 9 号（用户做账口径）
 function setComPeriodRange(){
   var t = new Date();
@@ -15163,7 +15190,7 @@ function viewAftersale(id){
           <div class="form-group">
             <label class="form-label">修改状态</label>
             <select class="form-control" id="asStatus" style="width:auto;padding:6px 10px" onchange="updateAftersaleStatus('${as.id}',this.value)">
-              ${statusOptions.map(s=>`<option value="${s[0]}" ${as.status===s[0]?'selected':''}>${s[1]}</option>`).join('')}
+              ${statusOptions.map(s=>`<option value="${s[0]}" ${as.status===s[0]?'selected':''} ${(!isAdmin && s[0]==='resolved')?'disabled':''}>${s[1]}</option>`).join('')}
             </select>
           </div>
         </div>
@@ -15418,7 +15445,7 @@ function openNewAftersaleModal(){
             <label class="form-label">检索关联订单 <span class="required">*</span></label>
             <div class="product-search-wrap">
               <input type="text" class="form-control" id="aftersaleOrderSearch"
-                placeholder="${isAdmin ? '搜索订单号/客户姓名/电话（仅已完成订单）' : '搜索我的订单号/客户姓名/电话（仅已完成订单）'}" autocomplete="off"
+                placeholder="${isAdmin ? '搜索订单号/客户姓名/电话（支持所有状态订单）' : '搜索我的订单号/客户姓名/电话（支持所有状态订单）'}" autocomplete="off"
                 oninput="searchOrdersForAftersale(this.value)">
               <div class="product-search-results" id="orderSearchResults" style="display:none"></div>
             </div>
@@ -15644,8 +15671,7 @@ function searchOrdersForAftersale(keyword){
   if(!isAdmin){
     orders = orders.filter(o => o.salesId === currentUser.id);
   }
-  // 仅「已完成」状态的订单可发起售后（已完成 / 售后完成）
-  orders = orders.filter(o => ['completed','feedback_done'].includes(o.status));
+  // v2026101105：放开订单状态限制，任何状态订单都可发起售后（待下单/已下单/待反馈/已完成等均可）
   const matched = orders.filter(o =>
     (o.id||'').toLowerCase().includes(keyword.toLowerCase()) ||
     (o.customerName||'').includes(keyword) ||
@@ -15677,9 +15703,6 @@ function selectOrderForAftersale(orderId){
   let orders = DB.get('orders');
   const order = orders.find(o => o.id === orderId);
   if(!order){ showToast('订单不存在','error'); return; }
-  if(!['completed','feedback_done'].includes(order.status)){
-    showToast('只有「已完成」状态的订单才能申请售后','error'); return;
-  }
 
   document.getElementById('aftersaleOrderSearch').value = orderId;
   document.getElementById('orderSearchResults').style.display = 'none';
@@ -15752,9 +15775,6 @@ function submitAftersale(){
   if(newType === 'order'){
     const order = window._aftersaleSelectedOrder;
     if(!order){ showToast('请选择关联订单','error'); return; }
-    if(!['completed','feedback_done'].includes(order.status)){
-      showToast('只有「已完成」状态的订单才能申请售后','error'); return;
-    }
     const checkedCbs = Array.from(document.querySelectorAll('.aftersale-item-cb:checked'));
     if(checkedCbs.length === 0){ showToast('请选择需要售后的商品','error'); return; }
     const selectedItems = checkedCbs.map(cb => {
@@ -15835,6 +15855,7 @@ function editAftersale(id){
   const aftersales = DB.get('aftersales');
   const as = aftersales.find(a => a.id === id);
   if(!as){ showToast('售后记录不存在','error'); return; }
+  const isAdmin = currentUser.role === 'admin';
 
   const modalHtml = `
     <div class="modal-mask" onclick="if(event.target===this)closeModal()">
@@ -15874,7 +15895,7 @@ function editAftersale(id){
             <select class="form-control" id="editAsStatus">
               <option value="pending" ${as.status==='pending'?'selected':''}>待处理</option>
               <option value="processing" ${as.status==='processing'?'selected':''}>处理中</option>
-              <option value="resolved" ${as.status==='resolved'?'selected':''}>已处理</option>
+              <option value="resolved" ${as.status==='resolved'?'selected':''} ${!isAdmin?'disabled':''}>已处理</option>
             </select>
           </div>
         </div>
@@ -15917,6 +15938,13 @@ function saveAftersaleEdit(id){
   const oldLoss = aftersales[idx].loss || 0;
   const orderId = aftersales[idx].orderId;
 
+  // 角色校验：只有管理员才能将售后标记为「已处理」
+  // 例外：工单原本已是「已处理」（管理员设的），销售仅修改原因/损耗时放行，不拦
+  const isAdmin = currentUser.role === 'admin';
+  if(!isAdmin && newStatus === 'resolved' && aftersales[idx].status !== 'resolved'){
+    showToast('只有管理员才能将售后标记为「已处理」','error'); return;
+  }
+
   aftersales[idx].reason = reason;
   _setAfterSalesLoss(aftersales[idx], newLoss);
   aftersales[idx].status = newStatus;
@@ -15943,6 +15971,11 @@ function updateAftersaleStatus(id, status){
   if(idx < 0){ showToast('售后记录不存在','error'); return; }
   const isAdmin = currentUser.role === 'admin';
   const oldLoss = aftersales[idx].loss || 0;
+
+  // 角色校验：只有管理员才能将售后标记为「已处理」
+  if(!isAdmin && status === 'resolved'){
+    showToast('只有管理员才能将售后标记为「已处理」','error'); return;
+  }
 
   // 更新状态
   aftersales[idx].status = status;
@@ -16891,6 +16924,22 @@ function renderProfitReport(){
     </div>
   ` : '';
 
+  // 方案A（v2026101105）：本期提交的售后损耗（按售后提交日归集，纯展示，不进利润计算）
+  var submittedLossRows = _periodSubmittedLossList(startD, endD, isAdmin ? window._prSalesId : currentUser.id);
+  var submittedLossTotal = submittedLossRows.reduce(function(s,r){ return s + r.loss; }, 0);
+  var submittedLossBySales = {};
+  submittedLossRows.forEach(function(r){ submittedLossBySales[r.salesId] = (submittedLossBySales[r.salesId] || 0) + r.loss; });
+  var submittedTipHtml = submittedLossTotal > 0 ? `
+    <div class="card" style="margin-bottom:14px;padding:12px 16px;font-size:13px;line-height:1.7;background:#f0f7ff;border-left:3px solid #2563eb">
+      <div style="font-weight:600"><b>本期提交售后损耗 ${money(submittedLossTotal)}</b>（共 ${submittedLossRows.length} 笔，按售后提交日归集）</div>
+      <div style="margin-top:8px;color:var(--text-muted)">
+        ${submittedLossRows.slice(0,8).map(function(r){ return escapeHtml(r.salesName)+' '+money(r.loss)+(r.orderId?('（订单 '+escapeHtml(r.orderId)+'）'):'（无订单）'); }).join('　·　')}
+        ${submittedLossRows.length>8 ? '　·　…' : ''}
+      </div>
+      <div style="margin-top:6px;color:var(--text-muted);font-size:12px">此金额按售后<b>提交日</b>计入本期，仅作展示；上方「总损耗」仍按订单<b>归属日</b>计算（两种口径不同，不重复计、不进利润与提成）。</div>
+    </div>
+  ` : '';
+
   var tabs = [
     {key:'sales', label:'按销售员'},
     {key:'product', label:'按商品'},
@@ -16963,6 +17012,7 @@ function renderProfitReport(){
         '<td>'+money(s.revenue)+'</td>' +
         (isAdmin ? '<td>'+money(s.cost)+'</td>' : '') +
         '<td style="color:var(--danger)">'+money(s.loss)+'</td>' +
+        '<td style="color:var(--danger)">'+money(submittedLossBySales[s._sid]||0)+'</td>' +
         '<td style="font-weight:600;color:var(--success)">'+money(s.profit)+'</td>' +
         '<td style="font-weight:600;color:var(--primary)">'+money(s.commission)+'</td>' +
         '</tr>';
@@ -16987,6 +17037,7 @@ function renderProfitReport(){
                 <th>营业额</th>
                 ${isAdmin ? '<th>成本</th>' : ''}
                 <th>损耗</th>
+                <th>本期提交售后损耗</th>
                 <th>利润</th>
                 <th>提成</th>
               </tr>
@@ -16999,6 +17050,7 @@ function renderProfitReport(){
                 <td>${money(totalRevenue)}</td>
                 ${isAdmin ? '<td>'+money(totalCost)+'</td>' : ''}
                 <td>${money(totalLoss)}</td>
+                <td>${money(submittedLossTotal)}</td>
                 <td>${money(totalProfit)}</td>
                 <td>${money(totalCommission)}</td>
               </tr>
@@ -17193,6 +17245,7 @@ function renderProfitReport(){
     ${filterHtml}
     ${tabHtml}
     ${walkinTipHtml}
+    ${submittedTipHtml}
     ${contentHtml}
   `;
   document.getElementById('mainContent').innerHTML = html;
