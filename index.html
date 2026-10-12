@@ -1689,7 +1689,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026101106</div>
+          <div class="brand-sub">v2026101108</div>
         </div>
       </div>
     </div>
@@ -11566,6 +11566,109 @@ function saveItemStock(orderId, itemIndex, value) {
 }
 
 // 上门订单：填写「订货到店」物流单号（管理员/销售可编辑），即时保存并同步；填满后可能触发全绿自动转「已下单」
+// ============ 批量标记上门订单商品「已备货」（v2026101108）============
+// 仅管理员可触发；按上门月份(completionDate)筛选 type=door 且存在未备货商品的订单
+function _batchStockTargets(month){
+  const orders = DB.get('orders');
+  const deletedIds = (DB.get('_deletedOrderIds') || []);
+  const list = orders.filter(function(o){
+    return o.type === 'door' && o.completionDate && o.completionDate.slice(0,7) === month
+      && deletedIds.indexOf(o.id) < 0 && !isOrderDeleted(o);
+  });
+  const targets = [];
+  list.forEach(function(o){
+    const items = o.items || [];
+    const unstocked = items.filter(function(it){ return it.stock !== '有' && it.stock !== '是'; });
+    if(unstocked.length > 0){
+      targets.push({
+        id: o.id, customer: o.customer || '(未知客户)', completionDate: o.completionDate,
+        status: o.status, total: items.length, unstocked: unstocked.length,
+        willFlow: (o.status === 'pending')
+      });
+    }
+  });
+  return targets;
+}
+
+function openBatchStockModal(){
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可执行批量备货', 'error'); return; }
+  const month = (window._batchStockMonth || '2026-09');
+  const html =
+    '<div class="modal-overlay" onclick="closeModal()" style="z-index:10000">' +
+      '<div class="modal" style="max-width:760px;width:92%;max-height:82vh;overflow-y:auto" onclick="event.stopPropagation()">' +
+        '<div class="modal-header"><h3>📦 批量标记已备货</h3><button class="modal-close" onclick="closeModal()">✕</button></div>' +
+        '<div class="modal-body">' +
+          '<div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">' +
+            '<span>上门月份：</span>' +
+            '<input type="month" id="batchStockMonth" value="'+month+'" class="form-input" style="width:auto">' +
+            '<button class="btn btn-sm btn-secondary" onclick="renderBatchStockPreview()">统计预览</button>' +
+          '</div>' +
+          '<div id="batchStockPreview" style="margin-top:6px"></div>' +
+        '</div>' +
+        '<div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;padding:14px 16px;border-top:1px solid var(--border)">' +
+          '<button class="btn btn-sm btn-secondary" onclick="closeModal()">取消</button>' +
+          '<button class="btn btn-sm btn-success" onclick="confirmBatchStock()">确认标记已备货</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  openModal(html);
+  renderBatchStockPreview();
+}
+
+function renderBatchStockPreview(){
+  const monthEl = document.getElementById('batchStockMonth');
+  const month = monthEl ? monthEl.value : '2026-09';
+  window._batchStockMonth = month;
+  const targets = _batchStockTargets(month);
+  const box = document.getElementById('batchStockPreview');
+  if(!box) return;
+  function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  if(targets.length === 0){
+    box.innerHTML = '<div class="table-empty">该月份没有「存在未备货商品」的上门订单 ✅</div>';
+    return;
+  }
+  let totalItems = 0, willFlow = 0;
+  targets.forEach(function(t){ totalItems += t.unstocked; if(t.willFlow) willFlow++; });
+  let h = '<div style="padding:10px 12px;background:#e0f2f1;border:1px solid #b8d8d6;border-radius:8px;margin-bottom:10px">' +
+          '共 <b>'+targets.length+'</b> 笔上门订单、<b>'+totalItems+'</b> 件商品将被标记为已备货；其中 <b>'+willFlow+'</b> 笔原「待下单」订单备齐后将<b>自动转「已下单」</b>。</div>';
+  h += '<div style="max-height:42vh;overflow-y:auto"><table class="data-table" style="width:100%"><thead><tr>' +
+       '<th>上门日期</th><th>客户</th><th>订单ID</th><th>状态</th><th>未备货/总</th><th>备齐后</th></tr></thead><tbody>';
+  targets.forEach(function(t){
+    h += '<tr><td>'+esc(t.completionDate)+'</td><td>'+esc(t.customer)+'</td><td>'+esc(t.id)+'</td><td>'+esc(t.status)+'</td><td>'+t.unstocked+'/'+t.total+'</td><td>'+(t.willFlow?'自动转已下单':'保持')+'</td></tr>';
+  });
+  h += '</tbody></table></div>';
+  h += '<div style="margin-top:8px;color:var(--text-muted);font-size:12px">说明：商品 stock 改为「有」即视为已备货；只改「未备货」商品，已备货的不动。</div>';
+  box.innerHTML = h;
+}
+
+function confirmBatchStock(){
+  const month = window._batchStockMonth || '2026-09';
+  const targets = _batchStockTargets(month);
+  if(targets.length === 0){ showToast('没有需要标记的订单', 'info'); closeModal(); return; }
+  const itemSum = targets.reduce(function(a,b){ return a + b.unstocked; }, 0);
+  const flowTxt = targets.some(function(t){ return t.willFlow; }) ? '（其中部分订单会自动转「已下单」）' : '';
+  showConfirm('确认将这 '+targets.length+' 笔上门订单的共 '+itemSum+' 件商品标记为已备货？'+flowTxt, function(){
+    const orders = DB.get('orders');
+    let done = 0;
+    targets.forEach(function(t){
+      const idx = orders.findIndex(function(o){ return o.id === t.id; });
+      if(idx < 0) return;
+      const o = orders[idx];
+      (o.items || []).forEach(function(it){ if(it.stock !== '有' && it.stock !== '是') it.stock = '有'; });
+      autoDoorConfirmIfAllStocked(o); // 接受自动流转（pending 且全绿 → confirmed）
+      o.updatedAt = nowStr();
+      _pinWriteLock(o.id);
+      done++;
+    });
+    DB.set('orders', orders);
+    syncOrdersNow().catch(function(){});
+    closeModal();
+    if(typeof renderSchedule === 'function') renderSchedule();
+    if(typeof renderSidebar === 'function') renderSidebar();
+    showToast('已标记 '+done+' 笔上门订单的商品为已备货', 'success');
+  });
+}
+
 function saveItemStockOrderNo(orderId, itemIndex, value) {
   if (currentUser.role !== 'admin') {
     showToast('仅管理员可填写订货单号', 'error');
@@ -16071,7 +16174,8 @@ async function renderSchedule(){
     orders = orders.filter(function(o){ var d = doorDateOf(o); return d <= schDateEnd; });
   }
 
-  var html = '<div class="card"><div class="card-title"><span class="title-text">📅 上门订单</span><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="gotoNewOrder(\'door\')">+ 新建上门订单</button><button class="btn btn-sm '+(viewMode==='calendar'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'calendar\';renderSchedule()">日历视图</button><button class="btn btn-sm '+(viewMode==='list'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'list\';renderSchedule()">列表视图</button>'+(isAdmin?'<button class="btn btn-primary btn-sm" onclick="exportScheduleOrders()" style="display:inline-flex;align-items:center;gap:4px">📥 导出</button>':'')+'</div></div>';
+  var html = '<div class="card"><div class="card-title"><span class="title-text">📅 上门订单</span><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="gotoNewOrder(\'door\')">+ 新建上门订单</button><button class="btn btn-sm '+(viewMode==='calendar'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'calendar\';renderSchedule()">日历视图</button><button class="btn btn-sm '+(viewMode==='list'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'list\';renderSchedule()">列表视图</button>'+(isAdmin?'<button class="btn btn-sm btn-success" onclick="openBatchStockModal()">批量标记已备货</button>':'')+
+    +(isAdmin?'<button class="btn btn-primary btn-sm" onclick="exportScheduleOrders()" style="display:inline-flex;align-items:center;gap:4px">📥 导出</button>':'')+'</div></div>';
   html += '<div class="admin-tab-bar" style="margin-bottom:14px">';
   schTabs.forEach(function(t){
     // 状态角标统一基于全部非删除上门订单，不受关键词/日期筛选影响
@@ -17003,15 +17107,17 @@ function renderProfitReport(){
     });
 
     window._prDrillDownKeys = [];
+    window._prLossDrillKeys = [];
     var sortedSalesRows = Object.keys(salesMap).map(function(sid){ var s = salesMap[sid]; s._sid = sid; return s; }).sort(function(a,b){ return b.profit - a.profit; });
     var sortedSalesHtml = sortedSalesRows.map(function(s){
       var idx = window._prDrillDownKeys.push({type:'sales', key:s._sid, title:'销售员: '+s.name}) - 1;
+      var lidx = window._prLossDrillKeys.push({salesId:s._sid, name:s.name}) - 1;
       return '<tr style="cursor:pointer" onclick="showProfitDrillDown('+idx+')">' +
         '<td>'+s.name+'</td>' +
         '<td>'+s.orderCount+'</td>' +
         '<td>'+money(s.revenue)+'</td>' +
         (isAdmin ? '<td>'+money(s.cost)+'</td>' : '') +
-        '<td style="color:var(--danger)">'+money(s.loss)+'</td>' +
+        '<td style="color:var(--danger);cursor:pointer;text-decoration:underline;text-decoration-style:dotted" onclick="event.stopPropagation();showLossDrillDown('+lidx+')" title="点击查看损耗明细">'+money(s.loss)+'</td>' +
         '<td style="color:var(--danger)">'+money(submittedLossBySales[s._sid]||0)+'</td>' +
         '<td style="font-weight:600;color:var(--success)">'+money(s.profit)+'</td>' +
         '<td style="font-weight:600;color:var(--primary)">'+money(s.commission)+'</td>' +
@@ -17368,6 +17474,115 @@ function showProfitDrillDown(idx){
               </table>
             </div>
           ` : '<div style="padding:40px;text-align:center;color:var(--text-muted)">暂无订单数据</div>'}
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal()">关闭</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById('modalContainer').innerHTML = modalHtml;
+}
+
+// 损耗明细下钻（点击「损耗」列）：按订单归属日列出本期损耗
+//   ① 有订单：商品安装损耗(it.waste) + 订单售后损耗(o.afterSaleLoss)，一行一单
+//   ② 无订单客户售后(walkin)：按售后发生日单独列出，避免"点开空白"
+function showLossDrillDown(idx){
+  var info = (window._prLossDrillKeys || [])[idx];
+  if(!info) return;
+  var isAdmin = currentUser.role === 'admin';
+  var startD = window._prStart, endD = window._prEnd;
+  var sid = info.salesId;
+  var orders = DB.get('orders');
+  var kw = String(window._prProduct || '').toLowerCase();
+  var rows = [];
+
+  // ① 本期归属订单的损耗
+  orders.forEach(function(o){
+    if(o._deleted) return;
+    if(o.salesId !== sid) return;
+    var pd = getProfitDate(o);
+    if(!pd || pd < startD || pd > endD) return;
+    var items = Array.isArray(o.items) ? o.items : [];
+    if(kw && !items.some(function(it){ return String((it && it.name) || '').toLowerCase().indexOf(kw) >= 0; })) return;
+    var wasteSum = 0, saleSum = 0, costSum = 0;
+    items.forEach(function(it){
+      var q = Number(it.qty) || 0;
+      wasteSum += Number(it.waste) || 0;
+      saleSum += (Number(it.price) || 0) * q;
+      costSum += effectiveItemCost(o, it) * q;
+    });
+    var loss = wasteSum + (Number(o.afterSaleLoss) || 0);
+    if(!(loss > 0)) return;
+    var names = items.map(function(it){ return String((it && it.name) || '').trim(); }).filter(Boolean);
+    var nm = names.length ? (names.length > 2 ? names.slice(0,2).join('、') + ' 等' + names.length + '件' : names.join('、')) : '（未填商品）';
+    rows.push({ date: pd, name: nm, sale: saleSum, cost: costSum, loss: loss, orderId: o.id, walkin: false });
+  });
+
+  // ② 无订单客户售后损耗（walkin）：按售后发生日计入，必须显示，不能空白
+  _walkinLossList(startD, endD, sid, window._prProduct).forEach(function(w){
+    var wItems = Array.isArray(w.items) ? w.items : [];
+    var names = wItems.map(function(it){ return String((it && it.name) || '').trim(); }).filter(Boolean);
+    rows.push({ date: w.date, name: names.length ? names.join('、') : '无订单客户售后（未填商品）', sale: null, cost: null, loss: Number(w.loss) || 0, orderId: '', walkin: true });
+  });
+
+  rows.sort(function(a,b){ return String(a.date || '').localeCompare(String(b.date || '')); });
+
+  var totalLoss = rows.reduce(function(s,r){ return s + (Number(r.loss) || 0); }, 0);
+  var totalSale = rows.reduce(function(s,r){ return s + (Number(r.sale) || 0); }, 0);
+  var totalCost = rows.reduce(function(s,r){ return s + (Number(r.cost) || 0); }, 0);
+  var hasSale = rows.some(function(r){ return r.sale != null; });
+
+  var bodyHtml = rows.length ? (`
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>订单日期</th>
+            <th>商品名称</th>
+            <th>售价</th>
+            ${isAdmin ? '<th>成本</th>' : ''}
+            <th>损耗</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(function(r){
+            var nameCell = r.walkin
+              ? escapeHtml(r.name) + ' <span style="font-size:11px;color:var(--text-muted)">（无订单售后）</span>'
+              : (r.orderId ? '<a class="btn-link" onclick="closeModal();viewOrder(\'' + r.orderId + '\')">' + escapeHtml(r.name) + '</a>' : escapeHtml(r.name));
+            return '<tr>' +
+              '<td>' + (r.date || '-') + '</td>' +
+              '<td>' + nameCell + '</td>' +
+              '<td>' + (r.sale == null ? '-' : money(r.sale)) + '</td>' +
+              (isAdmin ? '<td>' + (r.cost == null ? '-' : money(r.cost)) + '</td>' : '') +
+              '<td style="color:var(--danger);font-weight:600">' + money(r.loss) + '</td>' +
+              '</tr>';
+          }).join('')}
+        </tbody>
+        <tfoot>
+          <tr style="font-weight:bold;background:#f9fafb">
+            <td colspan="2">合计</td>
+            <td>${hasSale ? money(totalSale) : '-'}</td>
+            ${isAdmin ? '<td>' + (hasSale ? money(totalCost) : '-') + '</td>' : ''}
+            <td style="color:var(--danger)">${money(totalLoss)}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    <div style="margin-top:10px;font-size:12px;color:var(--text-muted);line-height:1.6">
+      按订单<b>归属日</b>列出本期损耗（含商品安装损耗与订单售后损耗）；无订单客户售后按<b>售后发生日</b>单独列出。损耗合计 ${money(totalLoss)}。
+    </div>
+  `) : '<div style="padding:40px;text-align:center;color:var(--text-muted)">本期该销售无损耗记录</div>';
+
+  var modalHtml = `
+    <div class="modal-mask" onclick="if(event.target===this)closeModal()">
+      <div class="modal lg">
+        <div class="modal-header">
+          <h3>🔻 销售员: ${escapeHtml(info.name)} - 损耗明细</h3>
+          <button class="modal-close" onclick="closeModal()">×</button>
+        </div>
+        <div class="modal-body">
+          ${bodyHtml}
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" onclick="closeModal()">关闭</button>
