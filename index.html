@@ -1696,7 +1696,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026101303</div>
+          <div class="brand-sub">v2026101401</div>
         </div>
       </div>
     </div>
@@ -4268,19 +4268,36 @@ function fmtDateTime(s){
 // v2026100803：同时兼容 snake_case 行（created_at）——即便某条脏数据以 snake 形式落进本地，
 // 排序仍按真实时间而非空串处理，避免被错判成「最旧」排到列表底部。
 function _createdAtTs(v){
-  // 单号内嵌创建日期（ORD20261009 / AS20260831）最可信，优先采用；
-  // 仅当单号无日期时回退 createdAt/created_at 字段（仍可防 created_at 被污染/缺失导致失真）。
+  // v2026101401 修复「同一天内新订单反而排到列表底部」：
+  //   旧逻辑把单号内嵌日期（ORD20261014）当成最可信来源并直接 return 当天 00:00:00，
+  //   于是同一天所有订单的排序键完全相等 → 稳定排序不交换 → 实际呈现的是数组插入顺序
+  //   （新建订单 push 到末尾，故越晚建越靠下）。
+  //   单号兜底本是为「售后表 created_at 被批量插入污染成整表同一秒」加的，误伤了订单表
+  //   （orders 的 created_at 是真实写入时间，代码注释亦如此认定）。
+  // 现按可信度分级，尽量保留真实时分秒：
+  //   ① 售后(AS)：仍以单号内嵌日期为准（只有日期粒度），避免污染时间戳；
+  //   ② 订单(ORD)：优先采用 createdAt/created_at 真实时间戳（含时分秒，同天内可精确排序）；
+  //      仅当字段缺失/无法解析，或与单号内嵌日期相差超过 36 小时（异常脏值）时才回退单号日期。
   let id = '', cv = '';
   if(v && typeof v === 'object'){ id = v.id || ''; cv = v.createdAt || v.created_at || ''; }
   else if(typeof v === 'string'){ cv = v; }
+  // 单号内嵌日期（ORD20261014 / AS20260831）：仅日期粒度，作兜底基准
+  let dTs = 0;
   const m = ('' + id).match(/(?:ORD|AS)(\d{8})/);
   if(m){
     const d8 = m[1];
     const t = Date.parse(d8.slice(0,4)+'-'+d8.slice(4,6)+'-'+d8.slice(6,8)+'T00:00:00');
-    if(!isNaN(t)) return t;
+    if(!isNaN(t)) dTs = t;
   }
+  if(m && ('' + m[0]).indexOf('AS') === 0) return dTs;
   const n = cv ? Date.parse(('' + cv).replace(/ /g, 'T')) : 0;
-  return isNaN(n) ? 0 : n;
+  if(!isNaN(n) && n > 0){
+    if(!(dTs > 0)) return n;
+    // 与单号日期相差 36 小时内视为可信（兼容跨时区/零点边界），否则判为脏值回退单号日期
+    if(Math.abs(n - dTs) < 36 * 3600 * 1000) return n;
+    return dTs;
+  }
+  return dTs;
 }
 // 降序：新创建的排前面（与旧 (b.createdAt).localeCompare(a.createdAt) 语义一致，但时区/格式安全）。
 function _createdAtDesc(a, b){ return _createdAtTs(b) - _createdAtTs(a); }
@@ -4296,8 +4313,6 @@ function fmtCreatedAt(a){
   if(ts > 0){ const dt = new Date(ts), p = n => String(n).padStart(2,'0'); return dt.getFullYear()+'-'+p(dt.getMonth()+1)+'-'+p(dt.getDate())+' '+p(dt.getHours())+':'+p(dt.getMinutes())+':'+p(dt.getSeconds()); }
   return '-';
 }
-// 降序：新创建的排前面（与旧 (b.createdAt).localeCompare(a.createdAt) 语义一致，但时区/格式安全）。
-function _createdAtDesc(a, b){ return _createdAtTs(b) - _createdAtTs(a); }
 
 /* ===== 售后「提交时间」专用解析（v2026101104）=====
    背景：售后推送的列白名单曾漏 created_at（见 _pushDirtyRows 的 asCols），云端该列只能落到数据库默认值
@@ -9142,7 +9157,7 @@ function renderOrderDetail(){
         <div class="edit-customer-block">
           <div class="form-group">
             <label class="form-label">客户姓名 <span class="required">*</span></label>
-            <input type="text" class="form-control" id="custContact" value="${(order.contact||order.customerName||'').replace(/"/g,'&quot;')}" placeholder="收件人姓名">
+            <input type="text" class="form-control" id="custContact" value="${escAttr(order.contact||order.customerName||'')}" placeholder="收件人姓名">
           </div>
           <div class="form-group">
             <label class="form-label">联系电话 <span class="required">*</span></label>
@@ -9158,7 +9173,7 @@ function renderOrderDetail(){
           </div>
           <div class="form-group">
             <label class="form-label">街道/乡镇（选填）</label>
-            <input type="text" class="form-control" id="custRegion" value="${(order.region||'').replace(/"/g,'&quot;')}" placeholder="街道/乡镇/小区等">
+            <input type="text" class="form-control" id="custRegion" value="${escAttr(order.region||'')}" placeholder="街道/乡镇/小区等">
           </div>
           <div class="form-group">
             <label class="form-label">详细地址</label>
