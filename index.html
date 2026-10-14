@@ -1696,7 +1696,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026101401</div>
+          <div class="brand-sub">v2026101402</div>
         </div>
       </div>
     </div>
@@ -13060,12 +13060,16 @@ function isUncalibrated(p){
   //   历史 auto_added 商品 need_calibration 全为 false → 被误判为已校准、永远不显示待校准也不置顶
   //   （实测云端 6 个 auto_added 商品全部如此）。管理员保存商品时 saveProduct 会 delete auto_added，
   //   届时自然移出待校准，不会重复提示。
+  // v2026101402 修复「校准后又反复提示」：auto_added 是纯本地标记（云端无此列），同步合并会永久保留它；
+  //   原优先级 auto_added > need_calibration===false，导致管理员在某台设备保存校准后，
+  //   其他设备（或同机另一标签页/保存瞬间在途的同步拉取）本机仍带 auto_added=true → 待校准永远翻回来。
+  //   改为：云端 need_calibration 显式值（true/false）优先于本地 auto_added——
+  //   need_calibration 只有管理员 saveProduct 才会写 false，false 即「管理员已校准」的权威结论；
+  //   云端无值(undefined，本地新建未推云) 时才回落到 auto_added / 成本判定，销售新增提醒不受影响。
   if(_isLocallyCalibrated(p.id)) return false;       // ① 本机已确认校准（无列时的降级）
-  if(p.auto_added === true) return true;             // ② 销售新增且管理员尚未保存 → 待校准（优先）
-  if(window._prodHasCalibCol === true){
-    if(p.need_calibration === true) return true;     // ③ 云端显式待校准
-    if(p.need_calibration === false) return false;   // ④ 云端已明确校准
-  }
+  if(window._prodHasCalibCol === true && p.need_calibration === true) return true;  // ② 云端显式待校准
+  if(window._prodHasCalibCol === true && p.need_calibration === false) return false; // ③ 云端已明确校准（管理员保存过）→ 压过本地 auto_added
+  if(p.auto_added === true) return true;             // ④ 销售新增且云端无校准结论 → 待校准
   const c = Number(p.cost);
   return !c;                                         // ⑤ 成本未录（0/空/缺失）
 }
@@ -13078,8 +13082,15 @@ function isUncalibrated(p){
 // 若按成本判定会永远不显示待校准（即 2026-0813 修复 inadvertently 抹掉本功能的原因）。
 function itemIsUncalibrated(it){
   if(!it) return false;
-  if(it.auto_added === true) return true;
+  if(it.auto_added === true){
+    // v2026101402：商品已被管理员校准（云端 need_calibration===false）→ 快照标记视为已失效
+    const _p = DB.get('products').find(p => p && it.productId && p.id === it.productId);
+    if(_p && window._prodHasCalibCol === true && _p.need_calibration === false) return false;
+    return true;
+  }
   const prod = DB.get('products').find(p => p && it.productId && p.id === it.productId);
+  // v2026101402：need_calibration===false（管理员已校准）优先于本机残留的 auto_added
+  if(prod && window._prodHasCalibCol === true && prod.need_calibration === false) return false;
   return !!(prod && (prod.auto_added === true || prod.need_calibration === true)); // v20260917：兼容云端标记
 }
 
