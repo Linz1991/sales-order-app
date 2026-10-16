@@ -164,8 +164,10 @@ async function findOrderGapIds(){
   try{
     let query = window._sbpbClient.from('orders').select('id').eq('_deleted', false);
     if(!isAdmin && !isOperator) query = query.eq('sales_id', currentUser.id);
-    const { data, error } = await withTimeout(query.order('created_at', { ascending: true }), 15000, 'findOrderGapIds');
-    if(error || !Array.isArray(data)) return [];
+    // v2026101601：改走分页拉全——当前未删订单 968 行已逼近 1000 截断线，超过后最新单将查不出，
+    // 漏单自检会漏报（select 仅 id，分页代价极小）。
+    const data = await DB._fetchPaged(query.order('created_at', { ascending: true }), 'findOrderGapIds');
+    if(!Array.isArray(data)) return [];
     const cloudIds = new Set(data.map(function(r){ return r && r.id; }).filter(Boolean));
     const local = (DB.get('orders', []) || []).filter(function(o){
       if(o && o._deleted) return false;
@@ -1696,7 +1698,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026101403</div>
+          <div class="brand-sub">v2026101601</div>
         </div>
       </div>
     </div>
@@ -2642,11 +2644,33 @@ const DB = {
 
   // v20260925 全量补洞：拉云端 orders 全表，与本地做「并集合并」（_mergeById 保证本地新增不丢、
   // 云端较新才覆盖），用于修复「某行 updated_at 落后于增量游标 → 该行永远拉不到」的漏拉问题。
+  // v2026101601 分页拉取辅助：云端 orders 已超 1000 行（2026-10-16 实测 1047），而 PostgREST
+  // 单次请求最多返回 1000 条——不分页的「全量」查询只会拿到 created_at 升序下最老的 1000 条，
+  // 最新订单永远不在结果里（2026-10-15 两单反复提示漏单、补拉不回的根因）。
+  // baseQuery：已含 select/order/过滤条件的查询构建器（supabase-js 构建器不可变，可反复链 .range）；
+  // 按 range 分页循环拉全，单页不足 pageSize 即结束；硬上限 50 页（5 万行）防失控。
+  async _fetchPaged(baseQuery, label, pageSize){
+    pageSize = pageSize || 1000;
+    const all = [];
+    for(let page = 0; page < 50; page++){
+      const { data, error } = await withTimeout(
+        baseQuery.range(page * pageSize, (page + 1) * pageSize - 1),
+        30000, label + '#p' + (page + 1));
+      if(error) throw error;
+      const rows = data || [];
+      all.push.apply(all, rows);
+      if(rows.length < pageSize) break;
+    }
+    return all;
+  },
+
   // 返回 true 表示补洞成功；调用方必须仅在成功后才写「已执行」标记，
   // 否则失败也会留下标记，该设备将永久失去补洞机会（v20260923 正是败在这里）。
   // v20260911 两阶段压缩：阶段一仅拉 id+updated_at（约几十KB，无 items 重字段），本地比对出
   // 真正缺失/有更新的单，阶段二再只全量拉这几单（select('*')）。正常运行缺口极少 → 单次 ~20KB，
   // 不再每次无脑全表 809KB，避免多设备高频补洞打爆免费版 egress。
+  // v2026101601 阶段一/阶段二改走 _fetchPaged 分页拉全——此前单次请求被 1000 行截断，
+  // 索引里永远缺最新订单 → 缺失单判不出来 → 补拉「成功」却永远拉不回（漏单死循环）。
   async repairMissingOrders(tag){
     if(!window._sbpbClient) return false;
     // 统一限流：所有调用路径（首次补洞 / 每日对账触发）共享「每台设备每天 10 次」配额
@@ -2656,10 +2680,13 @@ const DB = {
     }
     try{
       // 阶段一：仅取 id + updated_at（无 items 等重字段），用于本地比对与游标计算（egress 极小）
-      const { data: _idx, error: _idxErr } = await withTimeout(
-        window._sbpbClient.from('orders').select('id, updated_at').order('created_at', { ascending: true }),
-        30000, 'repairMissingOrdersIdx');
-      if(_idxErr || !Array.isArray(_idx)) return false;
+      let _idx;
+      try{
+        _idx = await this._fetchPaged(
+          window._sbpbClient.from('orders').select('id, updated_at').order('created_at', { ascending: true }),
+          'repairMissingOrdersIdx');
+      }catch(_idxE){ return false; }
+      if(!Array.isArray(_idx)) return false;
 
       const _localNow = this.get('orders', []) || [];
       const _exclude = new Set(this.get('_deletedOrderIds', []) || []);
@@ -2686,10 +2713,14 @@ const DB = {
       let _gapFilled = [];
       if(_needIds.length){
         if(_needIds.length > 300){
-          const { data: _all, error: _err } = await withTimeout(
-            window._sbpbClient.from('orders').select('*').order('created_at', { ascending: true }),
-            30000, 'repairMissingOrders');
-          if(_err || !Array.isArray(_all) || !_all.length) return false;
+          // v2026101601：全表退化分支同样改分页拉全（此前同样被 1000 行截断）
+          let _all;
+          try{
+            _all = await this._fetchPaged(
+              window._sbpbClient.from('orders').select('*').order('created_at', { ascending: true }),
+              'repairMissingOrders');
+          }catch(_err){ return false; }
+          if(!Array.isArray(_all) || !_all.length) return false;
           _gapFilled = this._toCamel(_all);
         } else {
           const { data: _gap, error: _err } = await withTimeout(
@@ -3911,8 +3942,9 @@ const DB = {
       const _since = new Date(Date.now() - this._initialSyncWindowDays*24*60*60*1000).toISOString();
       query = query.gte('created_at', _since);
     }
-    const { data, error } = await withTimeout(query, 20000, 'loadOrdersFromCloud' + (useInc ? ' inc' : ' full'));
-    if(error) throw error;
+    // v2026101601：改走分页拉全——orders 已 1047 行，不分页的查询（无论全量还是增量窗口）
+    // 都只拿到 created_at 升序下最老的 1000 条，首拉设备将永远缺最新订单。
+    const data = await this._fetchPaged(query, 'loadOrdersFromCloud' + (useInc ? ' inc' : ' full'));
     const cloud = this._toCamel(data || []);
     // v20260947 防护：items 可能是 JSON 字符串（如 ORD20260913-verifytest01 的 '[]'），
     // 导致渲染时 (o.items||[]).some() 炸「some is not a function」。统一归一化为数组。
