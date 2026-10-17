@@ -1698,7 +1698,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026101604</div>
+          <div class="brand-sub">v2026101605</div>
         </div>
       </div>
     </div>
@@ -14600,8 +14600,33 @@ function showPendingFinalPayments(){
 
 function openAddPayment(orderId, forceBalance){
   window._collectBalancePayment = !!forceBalance;
-  const order = DB.get('orders').find(o => o.id === orderId);
+  const _ordersArr = DB.get('orders');
+  const order = _ordersArr.find(o => o.id === orderId);
   if(!order) return;
+  // v2026101605：详情页若有可编辑收款卡（上门管理员视图），先把卡片当前值按「保存修改」同口径同步进订单，
+  // 再计算弹窗默认值。否则用户改了定金（如 7290）但尚未点「保存修改」时，弹窗仍按旧数据
+  // （提交时自动登记的全款）计算 → 出现「弹窗默认总价、尾款不算」的现象。
+  (function(){
+    const modeEl = document.querySelector('input[name="doorPayMode"]:checked');
+    const dpEl = document.getElementById('doorDeposit');
+    const colEl = document.getElementById('doorCollected');
+    if(!modeEl && !colEl) return;
+    const t = parseInt(order.total) || 0;
+    const mode = modeEl ? modeEl.value : 'full';
+    const dp = (mode === 'deposit' && dpEl) ? (parseInt(dpEl.value) || 0) : 0;
+    if(dp > t) return; // 非法输入不同步，交给「保存修改」的校验提示
+    const col = colEl ? (parseInt(colEl.value) || 0) : 0;
+    const maxC = dp > 0 ? dp : t;
+    if(col > maxC) return;
+    const methodEl = document.querySelector('input[name="doorPayMethod"]:checked');
+    order.fullPayment = mode === 'full' ? t : 0;
+    order.deposit = dp;
+    order.finalPayment = Math.max(0, t - dp);
+    if(methodEl) order.paymentMethod = methodEl.value;
+    order.collectedAmount = (!col && dp > 0) ? dp : col;
+    order.updatedAt = nowStr();
+    DB.set('orders', _ordersArr); // 持久化同步值，后续 savePayment 的结清判定也用同一口径
+  })();
   // 已收（已到账）合计，用于推算尾款余额
   const remaining = getOrderRemaining(order);
   const total = parseInt(order.total) || 0;
@@ -14627,7 +14652,7 @@ function openAddPayment(orderId, forceBalance){
           </div>
           <div class="form-group">
             <label class="form-label">收款阶段</label>
-            <select class="form-control" id="payStage">
+            <select class="form-control" id="payStage" onchange="onPayStageChange('${orderId}')">
               <option value="定金" ${defaultStage==='定金'?'selected':''}>定金</option>
               <option value="尾款" ${defaultStage==='尾款'?'selected':''}>尾款</option>
               <option value="还价">还价</option>
@@ -14666,6 +14691,22 @@ function openAddPayment(orderId, forceBalance){
     </div>
   `;
   document.getElementById('modalContainer').innerHTML = modalHtml;
+  updatePayModalWechat(orderId);
+}
+
+// v2026101605：切换收款阶段时自动带出对应金额（尾款=待收余额，定金=定金额/全额），不再手算
+function onPayStageChange(orderId){
+  const order = DB.get('orders').find(o => o.id === orderId);
+  const stageEl = document.getElementById('payStage');
+  const amountEl = document.getElementById('payAmount');
+  if(!order || !stageEl || !amountEl) return;
+  const total = parseInt(order.total) || 0;
+  const deposit = parseInt(order.deposit) || 0;
+  if(stageEl.value === '尾款'){
+    amountEl.value = getOrderRemaining(order);
+  }else if(stageEl.value === '定金'){
+    amountEl.value = deposit > 0 ? deposit : total;
+  }
   updatePayModalWechat(orderId);
 }
 
