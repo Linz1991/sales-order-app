@@ -1698,7 +1698,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026101605</div>
+          <div class="brand-sub">v2026101901</div>
         </div>
       </div>
     </div>
@@ -5655,7 +5655,7 @@ function startAutoSync(){
   const routeRenderers = {
     orders: renderOrders, schedule: renderSchedule, warehouse: renderWarehouse,
     customers: renderCustomers, products: renderProducts, aftersales: renderAftersales,
-    commissions: renderCommissions, payments: renderPayments,
+    commissions: renderCommissions, freight: renderFreightReconcile, payments: renderPayments,
     dashboard: renderDashboard, dashboard2: renderDashboard2, recycle: renderRecycleBin
   };
   window._routeRenderers = routeRenderers;
@@ -6101,6 +6101,7 @@ function renderSidebar(){
       {route:'products', icon:'🛒', name:'商品管理'},
       {route:'customers', icon:'👥', name:'客户管理'},
       {route:'commissions', icon:'🏆', name:'销售提成'},
+      {route:'freight', icon:'🚚', name:'运费对账'},
       {route:'profit-report', icon:'📈', name:'多维度利润报表'},
       {route:'audit', icon:'📝', name:'操作日志'},
       {route:'settings', icon:'⚙️', name:'系统设置'}
@@ -6188,6 +6189,7 @@ const routeTitles = {
   'collect-balance': ['待收尾款','待收客户未结清尾款'],
   'aftersale-new': ['新建售后','提交售后申请'],
   'aftersale-detail': ['售后详情','查看售后详情'],
+  'freight': ['运费对账','导入运费账单与对账'],
   'profit-report': ['多维度利润报表','多维度利润分析'],
   settings: ['系统设置','账号与权限管理'],
   audit: ['操作日志','查看操作审计记录']
@@ -9468,6 +9470,7 @@ function renderOrderDetail(){
         <div style="display:flex;flex-wrap:wrap;gap:10px 24px;justify-content:flex-end;margin-top:6px;padding-top:10px;border-top:1px solid var(--border);font-weight:700">
           <span>商品总金额：<span style="color:var(--primary)" id="editTotalCell">${money(order.total)}</span></span>
           ${isAdmin ? `<span>订单利润：<span style="color:${calcOrderProfit(order)>=0?'var(--success)':'var(--danger)'}" id="adminProfitCell">${money(calcOrderProfit(order))}</span></span>` : ''}
+          ${isAdmin ? (function(){ const f = getOrderFreightSum(order.id); return (f.freight + f.loss) > 0 ? `<span style="margin-left:8px;color:#b45309">运费：${money(f.freight + f.loss)}${f.loss>0 ? '（含损耗'+money(f.loss)+'）' : ''}</span>` : ''; })() : ''}
         </div>
         ` : ''}
       </div>
@@ -11380,6 +11383,67 @@ function freezeOrderItemCosts(order){
 }
 
 // 利润计算
+// ============ 运费对账 · 数据层（v2026101901） ============
+// freights 表按 order_id 聚合；全量缓存到本地，供利润扣减 / 对账页匹配使用
+window._freightsCache = null;     // null=尚未加载；数组=已加载（可能为空）
+window._freightsLoading = null;   // 进行中的加载 Promise，避免并发重复拉取
+
+async function loadFreightsFromCloud(force){
+  if(window._freightsCache && !force) return window._freightsCache;
+  if(window._freightsLoading) return window._freightsLoading;
+  window._freightsLoading = (async function(){
+    const all = [];
+    let offset = 0; const limit = 1000;
+    while(true){
+      const url = SUPABASE_URL + '/rest/v1/freights?_deleted=eq.false&select=*&order=created_at.asc&limit=' + limit + '&offset=' + offset;
+      const res = await fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'x-app-secret': APP_SECRET } });
+      if(!res.ok) throw new Error('运费数据加载失败：HTTP ' + res.status);
+      const rows = await res.json();
+      if(!Array.isArray(rows) || !rows.length) break;
+      for(let i=0;i<rows.length;i++) all.push(rows[i]);
+      if(rows.length < limit) break;
+      offset += limit;
+    }
+    window._freightsCache = all;
+    return all;
+  })();
+  try{ return await window._freightsLoading; }
+  finally { window._freightsLoading = null; }
+}
+
+async function ensureFreightsLoaded(){
+  if(window._freightsCache) return window._freightsCache;
+  return await loadFreightsFromCloud();
+}
+
+// 按订单号聚合运费（type=freight）与损耗赔付（type=loss），返回 {freight, loss}
+function getOrderFreightSum(orderId){
+  const cache = window._freightsCache;
+  if(!cache || !orderId) return { freight: 0, loss: 0 };
+  let freight = 0, loss = 0;
+  for(let i=0;i<cache.length;i++){
+    const f = cache[i];
+    if(f._deleted) continue;
+    if(f.order_id !== orderId) continue;
+    const amt = Number(f.amount) || 0;
+    if(f.type === 'loss') loss += amt; else freight += amt;
+  }
+  return { freight, loss };
+}
+
+// 后台静默加载（不阻塞）：加载完成后若当前在订单/利润页则重渲染，使利润扣减生效
+function preloadFreights(){
+  if(window._freightsCache || window._freightsLoading) return;
+  loadFreightsFromCloud().then(function(){
+    try{
+      if(typeof currentRoute !== 'undefined'){
+        if(currentRoute === 'orders') renderOrders();
+        else if(currentRoute === 'profit-report' && typeof renderProfitReport === 'function') renderProfitReport();
+      }
+    }catch(e){ console.warn('[freights] 预加载后重渲染跳过', e); }
+  }).catch(function(e){ console.warn('[freights] 预加载失败（不影响其余功能）', e); });
+}
+
 function calcOrderProfit(order) {
   if (!order || !order.items) return 0;
   const grossProfit = order.items.reduce((total, it) => {
@@ -11391,7 +11455,11 @@ function calcOrderProfit(order) {
     return total + itemProfit;
   }, 0);
   // 扣减售后损耗金额（财务联动）
-  return grossProfit - (order.afterSaleLoss || 0);
+  let profit = grossProfit - (order.afterSaleLoss || 0);
+  // v2026101901：扣减运费（freights 表按订单聚合；缓存未加载时为 0，预加载完成后重算）
+  const fr = getOrderFreightSum(order.id);
+  profit -= (fr.freight + fr.loss);
+  return profit;
 }
 
 // 利润归属日期（v2026100109：统一为 getProfitDate 唯一口径，消除首页与报表两套算法）
@@ -12812,12 +12880,16 @@ function exportOrders(){
   };
 
   // 表头：每个商品一行；新增「地址」「数量」列
-  const header = ['订单号','订单类型','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','利润','创建时间'];
+  // v2026101901：导出新增「运费」列 + 利润改为「净利润(扣运费)」（首行承担整单运费）
+  const header = ['订单号','订单类型','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','净利润(扣运费)','运费','创建时间'];
   const rows = [];
   filtered.forEach(o => {
     const afterSaleLoss = o.afterSaleLoss || 0;
     const address = [o.province,o.city,o.district,o.region,o.address].filter(Boolean).join(' ');
     const items = (o.items&&o.items.length) ? o.items : [{ name:'(无商品)', price:0, qty:0, productId:null, waste:0 }];
+    // v2026101901：整单运费（freights 表按订单聚合）
+    const _fr = getOrderFreightSum(o.id);
+    const _frTotal = _fr.freight + _fr.loss;
     items.forEach((it, idx) => {
       const p = _pmap.get(it.productId);
       const qty = it.qty||0;
@@ -12832,13 +12904,16 @@ function exportOrders(){
       const isLastRow = idx === items.length - 1;
       const lossForThisRow = isLastRow ? (afterSaleLoss - afterSaleLossPerItem * (items.length - 1)) : afterSaleLossPerItem;
       const itemProfit = Math.round(subtotal - itemCost - itemWaste - lossForThisRow);
+      // v2026101901：首行承担整单运费，使「净利润(扣运费)」列合计 = 商品总利润 - 整单运费
+      const netProfit = (idx === 0) ? (itemProfit - _frTotal) : itemProfit;
+      const freightCell = (idx === 0) ? _frTotal : '';
       // 售后损耗跟订单走：仅在订单首行展示，避免重复计入
       const showAfterSaleLoss = (idx === 0) ? Math.round(afterSaleLoss) : '';
       rows.push([
         o.id, typeLabel[o.type||'normal']||o.type, statusLabel[o.status]||o.status,
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), subtotal,
-        Math.round(o.total||0), itemCost, itemWaste, showAfterSaleLoss, itemProfit,
+        Math.round(o.total||0), itemCost, itemWaste, showAfterSaleLoss, netProfit, freightCell,
         fmtExportDateTime(o.createdAt)
       ]);
     });
@@ -13010,10 +13085,14 @@ function exportScheduleOrders(){
     var s = String(cell == null ? '' : cell).replace(/"/g,'""');
     return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
   };
-  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','利润','上门日期','创建时间'];
+  // v2026101901：导出新增「运费」列 + 利润改为「净利润(扣运费)」（首行承担整单运费）
+  var header = ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','利润','净利润(扣运费)','运费','上门日期','创建时间'];
   var rows = [];
   filtered.forEach(function(o){
     var afterSaleLoss = o.afterSaleLoss || 0;
+    // v2026101901：整单运费（freights 表按订单聚合）
+    var _fr = getOrderFreightSum(o.id);
+    var _frTotal = _fr.freight + _fr.loss;
     var address = [o.province,o.city,o.district,o.region,o.address].filter(Boolean).join(' ');
     var items = (o.items&&o.items.length) ? o.items : [{ name:'(无商品)', price:0, qty:0, productId:null, waste:0 }];
     items.forEach(function(it, idx){
@@ -13026,12 +13105,15 @@ function exportScheduleOrders(){
       var isLastRow = idx === items.length - 1;
       var lossForThisRow = isLastRow ? (afterSaleLoss - afterSaleLossPerItem * (items.length - 1)) : afterSaleLossPerItem;
       var itemProfit = Math.round(price * qty - itemCost - itemWaste - lossForThisRow);
+      // v2026101901：首行承担整单运费，使「净利润(扣运费)」列合计 = 商品总利润 - 整单运费
+      var netProfit = (idx === 0) ? (itemProfit - _frTotal) : itemProfit;
+      var freightCell = (idx === 0) ? _frTotal : '';
       var showAfterSaleLoss = (idx === 0) ? Math.round(afterSaleLoss) : '';
       rows.push([
         o.id, statusLabel[o.status]||o.status,
         o.customerName||'', o.phone||'', address, o.salesName||'',
         it.name||'', qty, Math.round(price), Math.round(price*qty),
-        Math.round(o.total||0), itemCost, itemWaste, showAfterSaleLoss, itemProfit,
+        Math.round(o.total||0), itemCost, itemWaste, showAfterSaleLoss, itemProfit, netProfit, freightCell,
         doorDateOf(o), fmtExportDateTime(o.createdAt)
       ]);
     });
@@ -13096,12 +13178,16 @@ function exportWarehouseOrders(){
     var s = String(cell == null ? '' : cell).replace(/"/g,'""');
     return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
   };
+  // v2026101901：导出新增「运费」列 + 利润改为「净利润(扣运费)」（首行承担整单运费）
   var header = isAdmin
-    ? ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','利润','订单日期','创建时间']
-    : ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','订单日期','创建时间'];
+    ? ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','成本','损耗','售后损耗','利润','净利润(扣运费)','运费','订单日期','创建时间']
+    : ['订单号','状态','客户','电话','地址','下单人','商品名称','数量','单价','小计','总金额','净利润(扣运费)','运费','订单日期','创建时间'];
   var rows = [];
   filtered.forEach(function(o){
     var afterSaleLoss = o.afterSaleLoss || 0;
+    // v2026101901：整单运费（freights 表按订单聚合）
+    var _fr = getOrderFreightSum(o.id);
+    var _frTotal = _fr.freight + _fr.loss;
     var address = [o.province,o.city,o.district,o.region,o.address].filter(Boolean).join(' ');
     var items = (o.items&&o.items.length) ? o.items : [{ name:'(无商品)', price:0, qty:0, productId:null, waste:0 }];
     items.forEach(function(it, idx){
@@ -13114,6 +13200,9 @@ function exportWarehouseOrders(){
       var isLastRow = idx === items.length - 1;
       var lossForThisRow = isLastRow ? (afterSaleLoss - afterSaleLossPerItem * (items.length - 1)) : afterSaleLossPerItem;
       var itemProfit = Math.round(price * qty - itemCost - itemWaste - lossForThisRow);
+      // v2026101901：首行承担整单运费，使「净利润(扣运费)」列合计 = 商品总利润 - 整单运费
+      var netProfit = (idx === 0) ? (itemProfit - _frTotal) : itemProfit;
+      var freightCell = (idx === 0) ? _frTotal : '';
       var showAfterSaleLoss = (idx === 0) ? Math.round(afterSaleLoss) : '';
       var baseRow = [
         o.id, statusLabel[o.status]||o.status,
@@ -13121,7 +13210,8 @@ function exportWarehouseOrders(){
         it.name||'', qty, Math.round(price), Math.round(price*qty),
         Math.round(o.total||0)
       ];
-      if(isAdmin){ baseRow.push(itemCost, itemWaste, showAfterSaleLoss, itemProfit); }
+      if(isAdmin){ baseRow.push(itemCost, itemWaste, showAfterSaleLoss, itemProfit, netProfit, freightCell); }
+      else { baseRow.push(netProfit, freightCell); }
       baseRow.push(o.orderDate||'', fmtExportDateTime(o.createdAt));
       rows.push(baseRow);
     });
@@ -13602,6 +13692,262 @@ function importProductsExcel(){
   };
   document.body.appendChild(input);
   input.click();
+}
+
+// ============ 运费对账（v2026101901） ============
+// 模板下载 / Excel 导入 / 三级匹配 / 三色决策 / 未匹配清单反馈 / 写入 freights
+window._lastFreightMatch = null;
+window._freightBatchId = null;
+
+function renderFreightReconcile(){
+  const root = document.getElementById('mainContent');
+  if(!root) return;
+  root.innerHTML = `
+    <div class="page freight-page">
+      <div class="card-title"><span class="title-text">🚚 运费对账</span></div>
+      <div class="freight-toolbar" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0">
+        <button class="btn primary" onclick="downloadFreightTemplate()">下载导入模板</button>
+        <button class="btn" onclick="importFreightExcel()">导入运费账单（Excel/CSV）</button>
+        <button class="btn" onclick="refreshFreightData()">刷新运费数据</button>
+        <span id="freightStatus" class="freight-status"></span>
+      </div>
+      <div id="freightMatchResult"></div>
+      <div id="freightBatchList" style="margin-top:18px"></div>
+      <div class="freight-help" style="margin-top:18px;color:#555;font-size:13px;line-height:1.7">
+        <p><b>使用说明：</b></p>
+        <ol>
+          <li>下载模板，按列填入【运单号 / 应付金额 / 手机号 / 发货日期】。</li>
+          <li>导入后系统按「运单号精确 → 手机号+发货日期窗(±7天) → 姓名」三级匹配到订单。</li>
+          <li>匹配成功的运费自动归属对应订单并扣减净利润；<b>匹配不到的运费会在下方红行列出，并支持导出未匹配清单。</b></li>
+          <li>同一订单多个运单号会按订单号累加计入运费。</li>
+        </ol>
+      </div>
+    </div>`;
+  ensureFreightsLoaded().then(function(){
+    try{ renderFreightBatchList(); }catch(e){}
+  }).catch(function(e){
+    const st = document.getElementById('freightStatus');
+    if(st) st.textContent = '运费数据加载失败：' + ((e && e.message) || e);
+  });
+}
+
+function downloadFreightTemplate(){
+  ensureXLSX().then(function(XLSX){
+    const aoa = [['运单号','应付金额','手机号','发货日期'],['SF1234567890123','12.50','13800138000','2026-10-01']];
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '运费导入');
+    XLSX.writeFile(wb, '运费导入模板.xlsx');
+  }).catch(function(err){ showToast('模板生成失败：' + ((err && err.message) || err), 'error'); });
+}
+
+function refreshFreightData(){
+  loadFreightsFromCloud(true).then(function(){
+    showToast('运费数据已刷新', 'success');
+    try{ renderFreightBatchList(); }catch(e){}
+  }).catch(function(e){ showToast('刷新失败：' + ((e && e.message) || e), 'error'); });
+}
+
+function importFreightExcel(){
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.xlsx,.xls,.csv,.tsv,.txt';
+  input.onchange = function(e){
+    const file = e.target.files && e.target.files[0];
+    if(!file) return;
+    showToast('正在解析运费账单...', 'info');
+    ensureXLSX().then(function(XLSX){
+      const reader = new FileReader();
+      const isText = /\.(csv|tsv|txt)$/i.test(file.name);
+      reader.onload = function(ev){
+        try{
+          const wb = isText
+            ? XLSX.read(ev.target.result, { type:'string' })
+            : XLSX.read(new Uint8Array(ev.target.result), { type:'array' });
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' });
+          const parsed = parseFreightBill(rows);
+          if(!parsed.length){ showToast('文件中没有可导入的运费数据', 'error'); return; }
+          window._freightBatchId = 'fr_batch_' + new Date().toISOString().slice(0,10) + '_' + String(Date.now()).slice(-6);
+          const matched = matchFreightToOrders(parsed);
+          window._lastFreightMatch = matched;
+          renderFreightMatchResult(matched);
+        }catch(err){
+          showToast('Excel 解析失败：' + ((err && err.message) || err), 'error');
+        }
+      };
+      if(isText) reader.readAsText(file); else reader.readAsArrayBuffer(file);
+    }).catch(function(err){
+      showToast('Excel 组件加载失败：' + ((err && err.message) || err), 'error');
+    });
+  };
+  document.body.appendChild(input);
+  input.click();
+}
+
+function parseFreightBill(rows){
+  if(!rows.length) return [];
+  let start = 0;
+  if(/运单|单号|金额|手机号|电话|日期|tracking/i.test((rows[0]||[]).join(' '))) start = 1;
+  const out = [];
+  for(let i=start;i<rows.length;i++){
+    const r = (rows[i]||[]).map(function(c){ return String(c==null?'':c).trim(); });
+    if(r.length < 2) continue;
+    const tracking = (r[0]||'').toUpperCase();
+    const amount = parseFloat(r[1]);
+    if(!tracking || isNaN(amount)) continue;
+    out.push({ tracking_no: tracking, amount: amount, phone: (r[2]||'').replace(/[^\d]/g,''), ship_date: (r[3]||'').trim() });
+  }
+  return out;
+}
+
+function matchFreightToOrders(bills){
+  const orders = DB.get('orders') || [];
+  const byTracking = {}, byPhone = {}, byName = {};
+  orders.forEach(function(o){
+    const oid = o.id;
+    const tnos = [];
+    if(o.tracking_no) tnos.push(String(o.tracking_no).trim().toUpperCase());
+    (o.items||[]).forEach(function(it){ if(it.trackingNo||it.tracking_no) tnos.push(String(it.trackingNo||it.tracking_no).trim().toUpperCase()); });
+    tnos.forEach(function(t){ (byTracking[t]=byTracking[t]||[]).push(oid); });
+    const ph = (o.phone||'').replace(/[^\d]/g,''); if(ph) (byPhone[ph]=byPhone[ph]||[]).push(oid);
+    const nm = (o.customer_name||o.customerName||'').trim(); if(nm) (byName[nm]=byName[nm]||[]).push(oid);
+  });
+  const result = { matched: [], manual: [], unmatched: [] };
+  bills.forEach(function(b){
+    const exact = (byTracking[b.tracking_no]||[]);
+    if(exact.length >= 1){ result.matched.push({ bill:b, orderIds: exact, rule:'auto', reason: exact.length>1?'运单号精确命中多个订单':'' }); return; }
+    const ph = b.phone;
+    let cand = ph ? (byPhone[ph]||[]) : [];
+    if(cand.length){
+      if(b.ship_date){
+        const sd = new Date(b.ship_date);
+        if(!isNaN(sd.getTime())){
+          cand = cand.filter(function(oid){
+            const o = orders.find(function(x){ return x.id===oid; });
+            if(!o) return false;
+            const od = o.order_date ? new Date(o.order_date) : (o.createdAt ? new Date(o.createdAt) : null);
+            if(!od) return true;
+            return Math.abs((sd.getTime()-od.getTime())/86400000) <= 7;
+          });
+        }
+      }
+      if(cand.length === 1){ result.matched.push({ bill:b, orderIds:cand, rule:'auto', reason:'手机号+日期窗命中' }); return; }
+      else if(cand.length > 1){ result.manual.push({ bill:b, orderIds:cand, rule:'manual', reason:'手机号+日期窗命中多个候选，请人工选择' }); return; }
+    }
+    result.unmatched.push({ bill:b, reason:'系统无此运单号' + (ph?'；手机号未匹配到订单':'；账单无手机号，无法降级匹配') });
+  });
+  return result;
+}
+
+function renderFreightMatchResult(m){
+  const el = document.getElementById('freightMatchResult');
+  if(!el) return;
+  const matchedCount = (m.matched||[]).length + (m.manual||[]).length;
+  const unmatchedCount = (m.unmatched||[]).length;
+  let html = '<div class="freight-match" style="margin-top:14px">';
+  html += '<h3 style="margin:8px 0">匹配结果</h3>';
+  html += '<p>已匹配（绿）：<b style="color:#16a34a">'+matchedCount+'</b> 条 ｜ 未匹配（红）：<b style="color:#dc2626">'+unmatchedCount+'</b> 条</p>';
+  html += '<div class="freight-unmatched" style="border:1px solid #fca5a5;background:#fef2f2;padding:10px 12px;border-radius:8px;margin:10px 0">';
+  html += '<div style="font-weight:600;color:#b91c1c;margin-bottom:6px">⚠️ 以下运费未匹配到系统（需去系统补录运单号或人工核对）</div>';
+  if(unmatchedCount){
+    html += '<table class="freight-table" style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="background:#fee2e2"><th style="border:1px solid #fca5a5;padding:4px 8px;text-align:left">运单号</th><th style="border:1px solid #fca5a5;padding:4px 8px;text-align:left">应付金额</th><th style="border:1px solid #fca5a5;padding:4px 8px;text-align:left">未匹配原因</th></tr></thead><tbody>';
+    m.unmatched.forEach(function(u){
+      html += '<tr><td style="border:1px solid #fca5a5;padding:4px 8px">'+escapeHtml(u.bill.tracking_no)+'</td><td style="border:1px solid #fca5a5;padding:4px 8px">'+Number(u.bill.amount).toFixed(2)+'</td><td style="border:1px solid #fca5a5;padding:4px 8px">'+escapeHtml(u.reason)+'</td></tr>';
+    });
+    html += '</tbody></table>';
+    html += '<button class="btn" style="margin-top:8px" onclick="exportUnmatchedFreight()">导出未匹配清单(CSV)</button>';
+  } else { html += '<p style="color:#16a34a;margin:4px 0">全部匹配成功 🎉</p>'; }
+  html += '</div>';
+  if(matchedCount){
+    html += '<details class="freight-matched" style="margin:10px 0"><summary style="cursor:pointer">已匹配明细（'+matchedCount+' 条，点击展开）</summary><table class="freight-table" style="width:100%;border-collapse:collapse;font-size:13px;margin-top:6px"><thead><tr style="background:#dcfce7"><th style="border:1px solid #86efac;padding:4px 8px;text-align:left">运单号</th><th style="border:1px solid #86efac;padding:4px 8px;text-align:left">金额</th><th style="border:1px solid #86efac;padding:4px 8px;text-align:left">归属订单</th><th style="border:1px solid #86efac;padding:4px 8px;text-align:left">匹配规则</th></tr></thead><tbody>';
+    m.matched.concat(m.manual).forEach(function(x){
+      html += '<tr><td style="border:1px solid #86efac;padding:4px 8px">'+escapeHtml(x.bill.tracking_no)+'</td><td style="border:1px solid #86efac;padding:4px 8px">'+Number(x.bill.amount).toFixed(2)+'</td><td style="border:1px solid #86efac;padding:4px 8px">'+escapeHtml(x.orderIds.join(', '))+'</td><td style="border:1px solid #86efac;padding:4px 8px">'+escapeHtml(x.rule)+'</td></tr>';
+    });
+    html += '</tbody></table></details>';
+  }
+  if(matchedCount){
+    html += '<div class="freight-actions" style="margin:10px 0"><button class="btn primary" onclick="confirmImportFreight()">确认导入 '+matchedCount+' 条运费到 freights 表</button></div>';
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+async function confirmImportFreight(){
+  const m = window._lastFreightMatch;
+  if(!m){ showToast('没有可导入的匹配结果', 'error'); return; }
+  const rows = m.matched.concat(m.manual).map(function(x){
+    return {
+      id: 'fr_' + Date.now() + '_' + Math.random().toString(36).slice(2,8),
+      batch_id: window._freightBatchId || ('fr_batch_' + new Date().toISOString().slice(0,10)),
+      order_id: x.orderIds[0],
+      tracking_no: x.bill.tracking_no,
+      phone: x.bill.phone || null,
+      carrier: (x.bill.tracking_no||'').indexOf('SF') === 0 ? '顺丰速运' : null,
+      ship_date: x.bill.ship_date || null,
+      amount: x.bill.amount,
+      type: 'freight',
+      source_file: '运费对账导入',
+      match_rule: x.rule || 'auto'
+    };
+  });
+  if(!rows.length){ showToast('没有可导入的匹配项', 'error'); return; }
+  try{
+    showToast('正在写入运费数据...', 'info');
+    const res = await fetch(SUPABASE_URL + '/rest/v1/freights', {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json', 'apikey': SUPABASE_KEY, 'Authorization':'Bearer '+SUPABASE_KEY, 'x-app-secret': APP_SECRET, 'Prefer':'return=minimal' },
+      body: JSON.stringify(rows)
+    });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    window._freightsCache = (window._freightsCache||[]).concat(rows);
+    showToast('成功导入 '+rows.length+' 条运费', 'success');
+    window._lastFreightMatch = null;
+    renderFreightMatchResult({ matched:[], manual:[], unmatched:[] });
+    try{ renderFreightBatchList(); }catch(e){}
+    if(typeof currentRoute!=='undefined' && currentRoute==='orders') renderOrders();
+  }catch(e){
+    showToast('导入失败：' + ((e&&e.message)||e), 'error');
+  }
+}
+
+function exportUnmatchedFreight(){
+  const m = window._lastFreightMatch;
+  if(!m || !m.unmatched.length){ showToast('没有未匹配项', 'error'); return; }
+  let csv = '运单号,应付金额,未匹配原因\n';
+  m.unmatched.forEach(function(u){
+    csv += '"'+u.bill.tracking_no+'","'+u.bill.amount+'","'+String(u.reason).replace(/"/g,'""')+'"\n';
+  });
+  const blob = new Blob(['\ufeff'+csv], { type:'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '未匹配运费清单_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+}
+
+function renderFreightBatchList(){
+  const el = document.getElementById('freightBatchList');
+  if(!el) return;
+  const cache = window._freightsCache || [];
+  const batches = {};
+  cache.forEach(function(f){
+    if(f._deleted) return;
+    const bid = f.batch_id || '未分组';
+    if(!batches[bid]) batches[bid] = { count:0, total:0 };
+    batches[bid].count++;
+    batches[bid].total += (Number(f.amount)||0);
+  });
+  const keys = Object.keys(batches);
+  let html = '<h3 style="margin:8px 0">已导入运费批次</h3>';
+  if(!keys.length){ html += '<p style="color:#888">暂无已导入的运费数据</p>'; }
+  else {
+    html += '<table class="freight-table" style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="background:#f1f5f9"><th style="border:1px solid #cbd5e1;padding:4px 8px;text-align:left">批次</th><th style="border:1px solid #cbd5e1;padding:4px 8px;text-align:left">条数</th><th style="border:1px solid #cbd5e1;padding:4px 8px;text-align:left">金额合计</th></tr></thead><tbody>';
+    keys.forEach(function(k){
+      html += '<tr><td style="border:1px solid #cbd5e1;padding:4px 8px">'+escapeHtml(k)+'</td><td style="border:1px solid #cbd5e1;padding:4px 8px">'+batches[k].count+'</td><td style="border:1px solid #cbd5e1;padding:4px 8px">'+batches[k].total.toFixed(2)+'</td></tr>';
+    });
+    html += '</tbody></table>';
+  }
+  el.innerHTML = html;
 }
 
 // 导入结果弹窗（含失效明细 + 导出失效商品按钮）
@@ -19368,6 +19714,7 @@ function applyVirtualScroll(id){
   }
   document.addEventListener('DOMContentLoaded', function(){
     window.checkNewVersion();
+    try{ preloadFreights(); }catch(e){}
   });
   // v2026091803：周期检查新版本（每 60s 调一次，内部 5min 节流控制真实请求频率）
   // 保证常驻前台/后台、从不切换前后台的设备也能在部署后强制拉到最新版
