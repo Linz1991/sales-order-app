@@ -1698,7 +1698,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026101901</div>
+          <div class="brand-sub">v2026101902</div>
         </div>
       </div>
     </div>
@@ -2267,6 +2267,7 @@ const DB = {
             if(r && r.id != null && _localFlag[r.id] && r.auto_added !== true){ r = Object.assign({}, r); r.auto_added = true; }
             return r;
           });
+          merged = _applyCalibCloudAuthority(merged, cloud); // v2026101902：云端已校准结论权威落地
           window._lastCloudProducts = cloud || [];
         }
         if(t === 'orders'){
@@ -2426,6 +2427,7 @@ const DB = {
           if(r && r.id != null && _localFlag[r.id] && r.auto_added !== true){ r = Object.assign({}, r); r.auto_added = true; }
           return r;
         });
+        merged = _applyCalibCloudAuthority(merged, cloud); // v2026101902：云端已校准结论权威落地
       }
       // 删除传播：云端已不存在、又不在本端排除集的本地行，视为被他人删除 → 移除。
       // 但 customers / products 表不执行此过滤：
@@ -4041,6 +4043,8 @@ const DB = {
         return r;
       });
     }
+    // v2026101902：云端 need_calibration=false 权威落地（压过 LWW 时间戳与本机 auto_added 残留），增量/全量两分支统一生效
+    merged = _applyCalibCloudAuthority(merged, cloud);
     localStorage.setItem('soms_products', JSON.stringify(merged));
     window._lastCloudProducts = cloud || [];
     // v20261003：仅在真正拿到云端数据后才写标记，失败则下次继续重试（不留下「已修复」的假象）。
@@ -8217,6 +8221,26 @@ function findProductByName(name){
 // 商品「待校准」跨端标记列：云端 products.need_calibration（需在 Supabase 执行一次下方 SQL，仅一次）。
 // 未执行时 _prodHasCalibCol=false，退化为「本机标记」（管理员本机校准后不再提示，但其它设备看不到），
 // 绝不影响下单、加购、同步等其它功能。
+// v2026101902：云端 need_calibration=false 是管理员 saveProduct 校准的权威结论。
+// 合并后强制落地：压过 _mergeById 的 LWW 时间戳判定（本地旧记录可能判"本地赢"）与本机残留的
+// auto_added=true，根治「管理员已校准、待校准角标仍反复出现」。cloudRows 必须是本轮真正拉到的云端行。
+function _applyCalibCloudAuthority(merged, cloudRows){
+  try{
+    if(!Array.isArray(merged) || !Array.isArray(cloudRows) || !cloudRows.length) return merged;
+    const _calibFalse = {};
+    cloudRows.forEach(function(r){ if(r && r.id != null && r.need_calibration === false) _calibFalse[r.id] = true; });
+    if(!Object.keys(_calibFalse).length) return merged;
+    return merged.map(function(r){
+      if(r && r.id != null && _calibFalse[r.id] && (r.need_calibration !== false || r.auto_added === true)){
+        r = Object.assign({}, r);
+        r.need_calibration = false;
+        delete r.auto_added;
+      }
+      return r;
+    });
+  }catch(e){ return merged; }
+}
+
 window._prodHasCalibCol = null; // null=未探测 / true=有列 / false=无列
 async function detectProductCalibColumn(){
   try{
@@ -8239,6 +8263,22 @@ async function detectProductCalibColumn(){
     }
     if(window._prodHasCalibCol && typeof DB !== 'undefined' && DB._PRODUCTS_COLS && DB._PRODUCTS_COLS.indexOf('need_calibration') < 0){
       DB._PRODUCTS_COLS = DB._PRODUCTS_COLS + ',need_calibration'; // 增量/全量拉取带上该列
+    }
+    // v2026101902 修复「已校准仍提示待校准」根因：启动时的每日全量拉取常在探测完成前跑完，
+    //   拉回的商品行不含 need_calibration 字段，且合并会把本机残留的 auto_added=true 贴回去，
+    //   isUncalibrated 规则④（auto_added）于是永远命中 —— 云端早已 need_calibration=false，
+    //   本机角标却卡死不消失（增量游标已越过校准时间点，这些行不会再被增量拉到）。
+    //   探测确认有列后，立即强制全量重拉一次商品（带 need_calibration 列），让本机学到云端权威结论。
+    if(window._prodHasCalibCol === true && typeof DB !== 'undefined' && typeof DB.loadProductsFromCloud === 'function' && !window._calibFullRefetchDone){
+      window._calibFullRefetchDone = true;
+      try{
+        DB.loadProductsFromCloud({ forceFull: true }).then(function(){
+          try{
+            if(typeof renderSidebar === 'function') renderSidebar();
+            if(typeof currentRoute !== 'undefined' && currentRoute === 'products' && typeof renderProducts === 'function') renderProducts();
+          }catch(e){}
+        }).catch(function(){});
+      }catch(e){}
     }
     return window._prodHasCalibCol;
   }catch(e){ window._calibProbeStarted = false; return null; } // 网络异常时允许后续重试
