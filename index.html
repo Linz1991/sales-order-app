@@ -1698,7 +1698,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026101902</div>
+          <div class="brand-sub">v2026102101</div>
         </div>
       </div>
     </div>
@@ -2475,6 +2475,8 @@ const DB = {
           if(m){
             if(o.remark == null || o.remark === '') o.remark = m.remark != null ? m.remark : '';
             if(o.trackingNo == null || o.trackingNo === '') o.trackingNo = m.trackingNo != null ? m.trackingNo : '';
+            // v2026102101：售后原因还原兜底（与备注/单号同机制；m.reason 为空串时不覆盖，保留本机现状）
+            if((o.reason == null || o.reason === '') && m.reason) o.reason = m.reason;
           }
           return o;
         });
@@ -3071,6 +3073,15 @@ const DB = {
               if(_finalRow.trackingNo == null || _finalRow.trackingNo === ''){
                 const _src = (fm && fm.trackingNo != null) ? fm.trackingNo : ((lm && lm.trackingNo != null) ? lm.trackingNo : ((rm && rm.trackingNo != null) ? rm.trackingNo : null));
                 if(_src != null) _finalRow.trackingNo = _src;
+              }
+              // v2026102101：售后原因「只补不删」——reason 是唯一没有跨端保护的售后业务字段，
+              // 整行 LWW 竞态下旧副本（reason 为空）胜出会把已填原因清空且无源可补。
+              // 合并结果 reason 为空时，依次从本地/云端的 _afterMeta.reason 备份与顶层 reason 补回。
+              if(_finalRow.reason == null || _finalRow.reason === ''){
+                const _lrReason = (lr && lr.reason) || (lm && lm.reason) || '';
+                const _rrReason = (r && r.reason) || (rm && rm.reason) || '';
+                const _reasonSrc = _lrReason || _rrReason;
+                if(_reasonSrc) _finalRow.reason = _reasonSrc;
               }
               // v2026101104：真实提交时间随 _afterMeta 跨端保底——合并结果缺 createdAt 时从本地/云端补回，
               // 避免「对方旧副本赢得整行 LWW」把真实时间冲掉（口径与 remark/trackingNo 的「只补不删」一致）。
@@ -6282,6 +6293,7 @@ async function navigate(route){
     'product-edit': renderProductEdit,
     payments: renderPayments,
     commissions: renderCommissions,
+    freight: renderFreightReconcile,
     aftersales: renderAftersales,
     'collect-balance': renderCollectBalance,
     'aftersale-new': renderAftersaleNew,
@@ -11445,6 +11457,7 @@ async function loadFreightsFromCloud(force){
       offset += limit;
     }
     window._freightsCache = all;
+    buildFreightIndex();
     return all;
   })();
   try{ return await window._freightsLoading; }
@@ -11456,19 +11469,61 @@ async function ensureFreightsLoaded(){
   return await loadFreightsFromCloud();
 }
 
+// 运费解析/匹配辅助：金额清洗（支持千分位、货币符号、前后空格）、日期宽松解析（Excel序列号/带时分秒/斜杠日期）、承运商推断
+function parseFreightAmount(raw){
+  if(raw == null) return NaN;
+  const s = String(raw).replace(/[¥￥$,\s]/g, '').trim();
+  if(s === '') return NaN;
+  const v = parseFloat(s);
+  return isNaN(v) ? NaN : v;
+}
+function parseShipDate(s){
+  if(s == null || s === '') return null;
+  if(typeof s === 'number'){ // Excel 日期序列号（sheet_to_json 默认 raw 模式返回数字）
+    const d = new Date((s - 25569) * 86400000);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  let t = String(s).trim().replace(/-/g, '/');
+  // v2026101904：去掉日期与时分之间的 T 或空格及随后时分秒，兼容 2026/10/01T14:30:00 与 2026-10-01 14:30:00 等写法
+  t = t.replace(/[T\s]+\d{1,2}:\d{2}(:\d{2})?/, '');
+  const d = new Date(t);
+  return isNaN(d.getTime()) ? null : d;
+}
+function inferCarrier(tracking){
+  const t = String(tracking || '').toUpperCase();
+  if(t.indexOf('SF') === 0) return '顺丰速运';
+  if(t.indexOf('YT') === 0) return '圆通速递';
+  if(t.indexOf('JD') === 0) return '京东物流';
+  if(t.indexOf('ZTO') === 0 || t.indexOf('ZT') === 0) return '中通快递';
+  if(t.indexOf('YD') === 0) return '韵达快递';
+  if(t.indexOf('HT') === 0) return '百世快递';
+  if(t.indexOf('EMS') === 0) return 'EMS';
+  return '其他';
+}
+
 // 按订单号聚合运费（type=freight）与损耗赔付（type=loss），返回 {freight, loss}
-function getOrderFreightSum(orderId){
-  const cache = window._freightsCache;
-  if(!cache || !orderId) return { freight: 0, loss: 0 };
-  let freight = 0, loss = 0;
+// v2026101903+：用 memoized 索引（按缓存引用判断失效），避免订单×运费双重 O(N) 遍历
+window._freightIndex = null;
+window._freightIndexRef = null;
+function buildFreightIndex(){
+  const cache = window._freightsCache || [];
+  const idx = {};
   for(let i=0;i<cache.length;i++){
     const f = cache[i];
     if(f._deleted) continue;
-    if(f.order_id !== orderId) continue;
+    const oid = f.order_id; if(!oid) continue;
+    if(!idx[oid]) idx[oid] = { freight:0, loss:0 };
     const amt = Number(f.amount) || 0;
-    if(f.type === 'loss') loss += amt; else freight += amt;
+    if(f.type === 'loss') idx[oid].loss += amt; else idx[oid].freight += amt;
   }
-  return { freight, loss };
+  window._freightIndex = idx;
+  window._freightIndexRef = cache;
+}
+function getOrderFreightSum(orderId){
+  if(!orderId) return { freight: 0, loss: 0 };
+  if(window._freightIndexRef !== window._freightsCache) buildFreightIndex();
+  const e = window._freightIndex[orderId];
+  return e ? { freight: e.freight, loss: e.loss } : { freight: 0, loss: 0 };
 }
 
 // 后台静默加载（不阻塞）：加载完成后若当前在订单/利润页则重渲染，使利润扣减生效
@@ -13756,13 +13811,21 @@ function renderFreightReconcile(){
       <div class="freight-help" style="margin-top:18px;color:#555;font-size:13px;line-height:1.7">
         <p><b>使用说明：</b></p>
         <ol>
-          <li>下载模板，按列填入【运单号 / 应付金额 / 手机号 / 发货日期】。</li>
-          <li>导入后系统按「运单号精确 → 手机号+发货日期窗(±7天) → 姓名」三级匹配到订单。</li>
+          <li>下载模板，按列填入【运单号 / 应付金额 / 手机号 / 发货日期】；<b>客户姓名列为可选</b>，填了可在运单号无匹配时按姓名回退匹配。</li>
+          <li>导入后系统按「运单号精确 → 手机号+发货日期窗(±7天) → 客户姓名」三级匹配到订单。</li>
           <li>匹配成功的运费自动归属对应订单并扣减净利润；<b>匹配不到的运费会在下方红行列出，并支持导出未匹配清单。</b></li>
-          <li>同一订单多个运单号会按订单号累加计入运费。</li>
+          <li>同一订单多个运单号会按订单号累加计入运费；已导入过的运费会自动识别并跳过，避免重复计费。</li>
         </ol>
       </div>
     </div>`;
+  // v2026101903：进入页面时若本地订单缓存为空，后台拉一次，避免匹配基于空/旧缓存漏匹配
+  if(!(DB.get('orders')||[]).length){
+    try{
+      if(window._sbpbClient && typeof DB.pullTableAuthoritative === 'function'){
+        DB.pullTableAuthoritative('orders').catch(function(){});
+      }
+    }catch(e){}
+  }
   ensureFreightsLoaded().then(function(){
     try{ renderFreightBatchList(); }catch(e){}
   }).catch(function(e){
@@ -13773,7 +13836,7 @@ function renderFreightReconcile(){
 
 function downloadFreightTemplate(){
   ensureXLSX().then(function(XLSX){
-    const aoa = [['运单号','应付金额','手机号','发货日期'],['SF1234567890123','12.50','13800138000','2026-10-01']];
+    const aoa = [['运单号','应付金额','手机号','发货日期','客户姓名(可选)'],['SF1234567890123','12.50','13800138000','2026-10-01','']];
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, '运费导入');
@@ -13799,7 +13862,7 @@ function importFreightExcel(){
     ensureXLSX().then(function(XLSX){
       const reader = new FileReader();
       const isText = /\.(csv|tsv|txt)$/i.test(file.name);
-      reader.onload = function(ev){
+      reader.onload = async function(ev){
         try{
           const wb = isText
             ? XLSX.read(ev.target.result, { type:'string' })
@@ -13808,7 +13871,18 @@ function importFreightExcel(){
           const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' });
           const parsed = parseFreightBill(rows);
           if(!parsed.length){ showToast('文件中没有可导入的运费数据', 'error'); return; }
-          window._freightBatchId = 'fr_batch_' + new Date().toISOString().slice(0,10) + '_' + String(Date.now()).slice(-6);
+          showToast('正在核对已导入记录（防重）...', 'info');
+          // v2026101903+：确保 freights 缓存已加载，否则 alreadyImported 基于空缓存会把已导入的再判为"新"→重复导入
+          try{ await ensureFreightsLoaded(); }catch(e){ console.warn('[freight] 防重数据加载失败，仍继续匹配', e); }
+          // v2026101904：导入前确保本地 orders 缓存非空，否则匹配基于空/旧缓存会漏匹配（与运费防重对称）
+          try{
+            if(!(DB.get('orders')||[]).length && typeof DB.pullTableAuthoritative === 'function'){
+              await DB.pullTableAuthoritative('orders');
+            }
+          }catch(e){ console.warn('[freight] 订单预拉取失败，仍继续匹配', e); }
+          window._freightManualChoice = {}; // v2026101903：新导入清空上次的人工选择
+          // v2026101904：batch_id 用毫秒36进制+随机串，杜绝同秒同毫秒导入两批导致批次号碰撞合并
+          window._freightBatchId = 'fr_batch_' + new Date().toISOString().slice(0,10) + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8);
           const matched = matchFreightToOrders(parsed);
           window._lastFreightMatch = matched;
           renderFreightMatchResult(matched);
@@ -13827,16 +13901,44 @@ function importFreightExcel(){
 
 function parseFreightBill(rows){
   if(!rows.length) return [];
+  // v2026101903：表头识别，按关键词定位列，容错顺丰原始账单的列名/列序差异；无表头时退化为固定列序
   let start = 0;
-  if(/运单|单号|金额|手机号|电话|日期|tracking/i.test((rows[0]||[]).join(' '))) start = 1;
+  const COL = { tracking:-1, amount:-1, phone:-1, ship:-1, name:-1 };
+  const head = (rows[0]||[]).map(function(c){ return String(c==null?'':c).trim(); });
+  const headText = head.join(' ');
+  const isHeader = /运单|单号|金额|手机号|电话|日期|tracking|客户|姓名|name/i.test(headText);
+  if(isHeader){
+    head.forEach(function(h, i){
+      const s = h.toLowerCase();
+      if(/运单|单号|tracking/.test(s) && COL.tracking<0) COL.tracking=i;
+      else if(/金额|应付|费用|amount|price/.test(s) && COL.amount<0) COL.amount=i;
+      else if(/手机|电话|phone|mobile/.test(s) && COL.phone<0) COL.phone=i;
+      else if(/日期|发货|ship|date/.test(s) && COL.ship<0) COL.ship=i;
+      else if(/姓名|客户|name|customer/.test(s) && COL.name<0) COL.name=i;
+    });
+    start = 1;
+  } else {
+    COL.tracking=0; COL.amount=1; COL.phone=2; COL.ship=3; COL.name=-1;
+  }
   const out = [];
   for(let i=start;i<rows.length;i++){
     const r = (rows[i]||[]).map(function(c){ return String(c==null?'':c).trim(); });
-    if(r.length < 2) continue;
-    const tracking = (r[0]||'').toUpperCase();
-    const amount = parseFloat(r[1]);
+    const tIdx = COL.tracking>=0?COL.tracking:0;
+    const aIdx = COL.amount>=0?COL.amount:1;
+    const pIdx = COL.phone>=0?COL.phone:2;
+    const sIdx = COL.ship>=0?COL.ship:3;
+    const nIdx = COL.name;
+    const tracking = String(r[tIdx]||'').toUpperCase().replace(/\s+/g, '');
+    const amount = parseFreightAmount(r[aIdx]);
     if(!tracking || isNaN(amount)) continue;
-    out.push({ tracking_no: tracking, amount: amount, phone: (r[2]||'').replace(/[^\d]/g,''), ship_date: (r[3]||'').trim() });
+    out.push({
+      tracking_no: tracking,
+      amount: amount,
+      phone: String(r[pIdx]||'').replace(/[^\d]/g,''),
+      // v2026101904：保留原始类型交给 parseShipDate（Excel 日期序列号为 number，不能先 String 化否则丢失）；可解析则归一化为 ISO 日期串，写库兼容 date 列
+      ship_date: (function(){ var raw = (r[sIdx]==null?'':r[sIdx]); var d = parseShipDate(raw); return d ? d.toISOString().slice(0,10) : (typeof raw==='string'?raw.trim():''); })(),
+      customer_name: nIdx>=0 ? String(r[nIdx]||'').trim() : ''
+    });
   }
   return out;
 }
@@ -13847,35 +13949,66 @@ function matchFreightToOrders(bills){
   orders.forEach(function(o){
     const oid = o.id;
     const tnos = [];
-    if(o.tracking_no) tnos.push(String(o.tracking_no).trim().toUpperCase());
-    (o.items||[]).forEach(function(it){ if(it.trackingNo||it.tracking_no) tnos.push(String(it.trackingNo||it.tracking_no).trim().toUpperCase()); });
+    // v2026101904：订单侧运单号也去空格，与账单侧（去空格）规范化口径一致，避免"SF123" vs "SF 123" 漏匹配
+    if(o.tracking_no) tnos.push(String(o.tracking_no).trim().toUpperCase().replace(/\s+/g,''));
+    (o.items||[]).forEach(function(it){ if(it.trackingNo||it.tracking_no) tnos.push(String(it.trackingNo||it.tracking_no).trim().toUpperCase().replace(/\s+/g,'')); });
     tnos.forEach(function(t){ (byTracking[t]=byTracking[t]||[]).push(oid); });
     const ph = (o.phone||'').replace(/[^\d]/g,''); if(ph) (byPhone[ph]=byPhone[ph]||[]).push(oid);
     const nm = (o.customer_name||o.customerName||'').trim(); if(nm) (byName[nm]=byName[nm]||[]).push(oid);
   });
-  const result = { matched: [], manual: [], unmatched: [] };
-  bills.forEach(function(b){
+  // v2026101903：防重——已写入系统的运费（同 运单号+金额）视为重复，跳过导入
+  // v2026101904：用 Set 替代每单 some() 全表扫描，运费表变大后匹配不再卡
+  const imported = window._freightsCache || [];
+  const _importedSet = {};
+  imported.forEach(function(f){ if(!f._deleted) _importedSet[(String(f.tracking_no||'').toUpperCase())+'|'+(Number(f.amount))] = true; });
+  function alreadyImported(tracking, amount){ return !!_importedSet[tracking+'|'+amount]; }
+  const result = { matched: [], manual: [], unmatched: [], duplicates: [] };
+  bills.forEach(function(b, bi){
+    // v2026101904：key 加序号，避免两笔"同运单+同金额"共用 key 互相覆盖人工选择
+    const key = b.tracking_no + '|' + b.amount + '|' + bi;
+    if(alreadyImported(b.tracking_no, b.amount)){
+      result.duplicates.push({ bill:b, reason:'该运费已存在于系统中（或本次文件内重复），本次跳过导入' });
+      return;
+    }
+    // v2026101904：标记本批次内已处理，避免同一导入文件内完全相同的运费行被重复写入
+    _importedSet[b.tracking_no+'|'+b.amount] = true;
     const exact = (byTracking[b.tracking_no]||[]);
-    if(exact.length >= 1){ result.matched.push({ bill:b, orderIds: exact, rule:'auto', reason: exact.length>1?'运单号精确命中多个订单':'' }); return; }
+    if(exact.length === 1){ result.matched.push({ bill:b, orderIds: exact, rule:'auto', reason:'', key:key }); return; }
+    // v2026101904：运单号命中多个订单→转人工选择，不再静默取首单（与 manual 同口径，杜绝挂错）
+    if(exact.length > 1){ result.manual.push({ bill:b, orderIds: exact, rule:'manual', reason:'运单号精确命中多个订单，请人工选择', key:key }); return; }
     const ph = b.phone;
+    let phoneMatchedAny = false;
     let cand = ph ? (byPhone[ph]||[]) : [];
+    if(cand.length) phoneMatchedAny = true;
     if(cand.length){
       if(b.ship_date){
-        const sd = new Date(b.ship_date);
-        if(!isNaN(sd.getTime())){
+        const sd = parseShipDate(b.ship_date);
+        if(sd){
           cand = cand.filter(function(oid){
             const o = orders.find(function(x){ return x.id===oid; });
             if(!o) return false;
-            const od = o.order_date ? new Date(o.order_date) : (o.createdAt ? new Date(o.createdAt) : null);
+            const od = o.order_date ? parseShipDate(o.order_date) : (o.createdAt ? new Date(o.createdAt) : null);
             if(!od) return true;
             return Math.abs((sd.getTime()-od.getTime())/86400000) <= 7;
           });
         }
       }
-      if(cand.length === 1){ result.matched.push({ bill:b, orderIds:cand, rule:'auto', reason:'手机号+日期窗命中' }); return; }
-      else if(cand.length > 1){ result.manual.push({ bill:b, orderIds:cand, rule:'manual', reason:'手机号+日期窗命中多个候选，请人工选择' }); return; }
+      if(cand.length === 1){ result.matched.push({ bill:b, orderIds:cand, rule:'auto', reason:'手机号+日期窗命中', key:key }); return; }
+      else if(cand.length > 1){ result.manual.push({ bill:b, orderIds:cand, rule:'manual', reason:'手机号+日期窗命中多个候选，请人工选择', key:key }); return; }
     }
-    result.unmatched.push({ bill:b, reason:'系统无此运单号' + (ph?'；手机号未匹配到订单':'；账单无手机号，无法降级匹配') });
+    // v2026101903：③ 姓名回退（账单含客户姓名且精确匹配，解决"三级匹配名存实亡"）
+    const nm = (b.customer_name||'').trim();
+    if(nm && byName[nm]){
+      const cand2 = byName[nm];
+      if(cand2.length === 1){ result.matched.push({ bill:b, orderIds:cand2, rule:'auto', reason:'客户姓名精确命中', key:key }); return; }
+      else if(cand2.length > 1){ result.manual.push({ bill:b, orderIds:cand2, rule:'manual', reason:'客户姓名命中多个候选，请人工选择', key:key }); return; }
+    }
+    let reason = '系统无此运单号';
+    if(phoneMatchedAny) reason += '；手机号匹配到订单，但发货日期超出±7天窗口';
+    else if(ph) reason += '；手机号未匹配到订单';
+    else reason += '；账单无手机号，无法降级匹配';
+    if(nm) reason += '；客户姓名未匹配到订单';
+    result.unmatched.push({ bill:b, reason: reason });
   });
   return result;
 }
@@ -13883,11 +14016,27 @@ function matchFreightToOrders(bills){
 function renderFreightMatchResult(m){
   const el = document.getElementById('freightMatchResult');
   if(!el) return;
+  if(!window._freightManualChoice) window._freightManualChoice = {};
   const matchedCount = (m.matched||[]).length + (m.manual||[]).length;
   const unmatchedCount = (m.unmatched||[]).length;
+  const dupCount = (m.duplicates||[]).length;
   let html = '<div class="freight-match" style="margin-top:14px">';
   html += '<h3 style="margin:8px 0">匹配结果</h3>';
-  html += '<p>已匹配（绿）：<b style="color:#16a34a">'+matchedCount+'</b> 条 ｜ 未匹配（红）：<b style="color:#dc2626">'+unmatchedCount+'</b> 条</p>';
+  html += '<p>已匹配（绿）：<b style="color:#16a34a">'+matchedCount+'</b> 条 ｜ 未匹配（红）：<b style="color:#dc2626">'+unmatchedCount+'</b> 条'
+        + (dupCount ? ' ｜ 已存在跳过（灰）：<b style="color:#64748b">'+dupCount+'</b> 条' : '') + '</p>';
+
+  // 已存在（防重）
+  if(dupCount){
+    html += '<div style="border:1px solid #cbd5e1;background:#f8fafc;padding:10px 12px;border-radius:8px;margin:10px 0">';
+    html += '<div style="font-weight:600;color:#475569;margin-bottom:6px">ℹ️ 以下运费已存在于系统中，本次跳过导入（避免重复计费）</div>';
+    html += '<table class="freight-table" style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="background:#e2e8f0"><th style="border:1px solid #cbd5e1;padding:4px 8px;text-align:left">运单号</th><th style="border:1px solid #cbd5e1;padding:4px 8px;text-align:left">应付金额</th><th style="border:1px solid #cbd5e1;padding:4px 8px;text-align:left">说明</th></tr></thead><tbody>';
+    m.duplicates.forEach(function(d){
+      html += '<tr><td style="border:1px solid #cbd5e1;padding:4px 8px">'+escapeHtml(d.bill.tracking_no)+'</td><td style="border:1px solid #cbd5e1;padding:4px 8px">'+Number(d.bill.amount).toFixed(2)+'</td><td style="border:1px solid #cbd5e1;padding:4px 8px">'+escapeHtml(d.reason)+'</td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+
+  // 未匹配
   html += '<div class="freight-unmatched" style="border:1px solid #fca5a5;background:#fef2f2;padding:10px 12px;border-radius:8px;margin:10px 0">';
   html += '<div style="font-weight:600;color:#b91c1c;margin-bottom:6px">⚠️ 以下运费未匹配到系统（需去系统补录运单号或人工核对）</div>';
   if(unmatchedCount){
@@ -13899,39 +14048,77 @@ function renderFreightMatchResult(m){
     html += '<button class="btn" style="margin-top:8px" onclick="exportUnmatchedFreight()">导出未匹配清单(CSV)</button>';
   } else { html += '<p style="color:#16a34a;margin:4px 0">全部匹配成功 🎉</p>'; }
   html += '</div>';
+
+  // 待人工选择（manual 多候选）——不再静默取首单，逐条下拉选择
+  if(m.manual && m.manual.length){
+    html += '<div class="freight-manual" style="border:1px solid #fcd34d;background:#fffbeb;padding:10px 12px;border-radius:8px;margin:10px 0">';
+    html += '<div style="font-weight:600;color:#b45309;margin-bottom:6px">🟡 以下运费匹配到多个候选订单，请逐条选择正确归属后再确认导入</div>';
+    html += '<table class="freight-table" style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="background:#fef3c7"><th style="border:1px solid #fcd34d;padding:4px 8px;text-align:left">运单号</th><th style="border:1px solid #fcd34d;padding:4px 8px;text-align:left">金额</th><th style="border:1px solid #fcd34d;padding:4px 8px;text-align:left">归属订单</th></tr></thead><tbody>';
+    m.manual.forEach(function(x){
+      const key = x.key || (x.bill.tracking_no + '|' + x.bill.amount);
+      const cur = window._freightManualChoice[key] || x.orderIds[0];
+      let opts = '';
+      x.orderIds.forEach(function(oid){ opts += '<option value="'+escapeHtml(oid)+'"'+(oid===cur?' selected':'')+'>'+escapeHtml(oid)+'</option>'; });
+      html += '<tr><td style="border:1px solid #fcd34d;padding:4px 8px">'+escapeHtml(x.bill.tracking_no)+'</td>'
+            + '<td style="border:1px solid #fcd34d;padding:4px 8px">'+Number(x.bill.amount).toFixed(2)+'</td>'
+            + '<td style="border:1px solid #fcd34d;padding:4px 8px"><select onchange="window._freightManualChoice[\''+String(key).replace(/'/g,'')+'\']=this.value; if(window._lastFreightMatch) renderFreightMatchResult(window._lastFreightMatch);" style="padding:3px 6px">'+opts+'</select></td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+
+  // 已匹配明细
   if(matchedCount){
-    html += '<details class="freight-matched" style="margin:10px 0"><summary style="cursor:pointer">已匹配明细（'+matchedCount+' 条，点击展开）</summary><table class="freight-table" style="width:100%;border-collapse:collapse;font-size:13px;margin-top:6px"><thead><tr style="background:#dcfce7"><th style="border:1px solid #86efac;padding:4px 8px;text-align:left">运单号</th><th style="border:1px solid #86efac;padding:4px 8px;text-align:left">金额</th><th style="border:1px solid #86efac;padding:4px 8px;text-align:left">归属订单</th><th style="border:1px solid #86efac;padding:4px 8px;text-align:left">匹配规则</th></tr></thead><tbody>';
+    html += '<details class="freight-matched" open style="margin:10px 0"><summary style="cursor:pointer">已匹配明细（'+matchedCount+' 条，点击展开）</summary><table class="freight-table" style="width:100%;border-collapse:collapse;font-size:13px;margin-top:6px"><thead><tr style="background:#dcfce7"><th style="border:1px solid #86efac;padding:4px 8px;text-align:left">运单号</th><th style="border:1px solid #86efac;padding:4px 8px;text-align:left">金额</th><th style="border:1px solid #86efac;padding:4px 8px;text-align:left">归属订单</th><th style="border:1px solid #86efac;padding:4px 8px;text-align:left">匹配规则</th></tr></thead><tbody>';
     m.matched.concat(m.manual).forEach(function(x){
-      html += '<tr><td style="border:1px solid #86efac;padding:4px 8px">'+escapeHtml(x.bill.tracking_no)+'</td><td style="border:1px solid #86efac;padding:4px 8px">'+Number(x.bill.amount).toFixed(2)+'</td><td style="border:1px solid #86efac;padding:4px 8px">'+escapeHtml(x.orderIds.join(', '))+'</td><td style="border:1px solid #86efac;padding:4px 8px">'+escapeHtml(x.rule)+'</td></tr>';
+      const selOid = (x.key && window._freightManualChoice[x.key]) || x.orderIds[0];
+      const dispOid = (x.rule === 'manual') ? selOid : x.orderIds.join(', ');
+      html += '<tr><td style="border:1px solid #86efac;padding:4px 8px">'+escapeHtml(x.bill.tracking_no)+'</td><td style="border:1px solid #86efac;padding:4px 8px">'+Number(x.bill.amount).toFixed(2)+'</td><td style="border:1px solid #86efac;padding:4px 8px">'+escapeHtml(dispOid)+'</td><td style="border:1px solid #86efac;padding:4px 8px">'+escapeHtml(x.rule)+'</td></tr>';
     });
     html += '</tbody></table></details>';
   }
   if(matchedCount){
-    html += '<div class="freight-actions" style="margin:10px 0"><button class="btn primary" onclick="confirmImportFreight()">确认导入 '+matchedCount+' 条运费到 freights 表</button></div>';
+    html += '<div class="freight-actions" style="margin:10px 0"><button class="btn primary" onclick="confirmImportFreight()">确认导入 '+matchedCount+' 条运费到 freights 表</button>';
+    if(unmatchedCount || dupCount) html += ' <button class="btn" onclick="clearFreightMatchResult()">清除本页结果</button>';
+    html += '</div>';
+  } else if(unmatchedCount || dupCount){
+    html += '<div class="freight-actions" style="margin:10px 0"><button class="btn" onclick="clearFreightMatchResult()">清除本页结果</button></div>';
   }
   html += '</div>';
   el.innerHTML = html;
 }
 
+// v2026101903+：导入后保留的未匹配清单，提供"清除本页结果"入口
+function clearFreightMatchResult(){
+  window._lastFreightMatch = null;
+  window._freightManualChoice = {};
+  renderFreightMatchResult({ matched:[], manual:[], unmatched:[], duplicates:[] });
+}
+
 async function confirmImportFreight(){
+  if(window._freightImporting){ showToast('正在导入中，请稍候', 'info'); return; }
   const m = window._lastFreightMatch;
   if(!m){ showToast('没有可导入的匹配结果', 'error'); return; }
   const rows = m.matched.concat(m.manual).map(function(x){
+    const key = x.key || (x.bill.tracking_no + '|' + x.bill.amount);
+    // v2026101903：manual 多候选订单以用户下拉选择为准，不再静默取首单
+    const oid = (window._freightManualChoice && window._freightManualChoice[key]) || x.orderIds[0];
     return {
       id: 'fr_' + Date.now() + '_' + Math.random().toString(36).slice(2,8),
       batch_id: window._freightBatchId || ('fr_batch_' + new Date().toISOString().slice(0,10)),
-      order_id: x.orderIds[0],
+      order_id: oid,
       tracking_no: x.bill.tracking_no,
       phone: x.bill.phone || null,
-      carrier: (x.bill.tracking_no||'').indexOf('SF') === 0 ? '顺丰速运' : null,
+      carrier: inferCarrier(x.bill.tracking_no),
       ship_date: x.bill.ship_date || null,
       amount: x.bill.amount,
       type: 'freight',
       source_file: '运费对账导入',
-      match_rule: x.rule || 'auto'
+      match_rule: x.rule || 'auto',
+      created_at: new Date().toISOString()
     };
   });
   if(!rows.length){ showToast('没有可导入的匹配项', 'error'); return; }
+  window._freightImporting = true;
   try{
     showToast('正在写入运费数据...', 'info');
     const res = await fetch(SUPABASE_URL + '/rest/v1/freights', {
@@ -13941,22 +14128,34 @@ async function confirmImportFreight(){
     });
     if(!res.ok) throw new Error('HTTP ' + res.status);
     window._freightsCache = (window._freightsCache||[]).concat(rows);
-    showToast('成功导入 '+rows.length+' 条运费', 'success');
-    window._lastFreightMatch = null;
-    renderFreightMatchResult({ matched:[], manual:[], unmatched:[] });
+    buildFreightIndex(); // v2026101903+：即时更新聚合索引，利润扣减立即生效
+    // v2026101903+：已导入的从结果中移除，未匹配的保留供再次导出（流程闭环：导入→看未匹配→导出→补录→再导入）
+    const leftover = { matched:[], manual:[], unmatched: (m.unmatched||[]), duplicates: [] };
+    window._lastFreightMatch = leftover;
+    window._freightManualChoice = {}; // v2026101903：清空人工选择，避免下次串味
+    const unmatchedN = (m.unmatched||[]).length;
+    showToast('成功导入 '+rows.length+' 条运费' + (unmatchedN ? ('；剩余 '+unmatchedN+' 条未匹配，可在下方再次导出') : ''), 'success');
+    renderFreightMatchResult(leftover);
     try{ renderFreightBatchList(); }catch(e){}
-    if(typeof currentRoute!=='undefined' && currentRoute==='orders') renderOrders();
+    if(typeof currentRoute!=='undefined'){
+      if(currentRoute==='orders') renderOrders();
+      else if(currentRoute==='profit-report' && typeof renderProfitReport==='function') renderProfitReport();
+    }
   }catch(e){
     showToast('导入失败：' + ((e&&e.message)||e), 'error');
+  }finally{
+    window._freightImporting = false;
   }
 }
 
 function exportUnmatchedFreight(){
   const m = window._lastFreightMatch;
   if(!m || !m.unmatched.length){ showToast('没有未匹配项', 'error'); return; }
-  let csv = '运单号,应付金额,未匹配原因\n';
+  let csv = '运单号,应付金额,手机号,发货日期,客户姓名,未匹配原因\r\n';
   m.unmatched.forEach(function(u){
-    csv += '"'+u.bill.tracking_no+'","'+u.bill.amount+'","'+String(u.reason).replace(/"/g,'""')+'"\n';
+    const b = u.bill || {};
+    const cell = function(v){ return '"' + String(v==null?'':v).replace(/"/g,'""') + '"'; };
+    csv += cell(b.tracking_no) + ',' + cell(b.amount) + ',' + cell(b.phone) + ',' + cell(b.ship_date) + ',' + cell(b.customer_name) + ',' + cell(u.reason) + '\r\n';
   });
   const blob = new Blob(['\ufeff'+csv], { type:'text/csv;charset=utf-8' });
   const a = document.createElement('a');
@@ -13970,24 +14169,71 @@ function renderFreightBatchList(){
   if(!el) return;
   const cache = window._freightsCache || [];
   const batches = {};
+  const itemsOf = {}; // v2026101904：一次遍历同时收集每批明细，避免后续按批次 filter 全表造成 O(批次×N)
   cache.forEach(function(f){
     if(f._deleted) return;
     const bid = f.batch_id || '未分组';
-    if(!batches[bid]) batches[bid] = { count:0, total:0 };
+    if(!batches[bid]){ batches[bid] = { count:0, total:0 }; itemsOf[bid] = []; }
     batches[bid].count++;
     batches[bid].total += (Number(f.amount)||0);
+    itemsOf[bid].push(f);
   });
   const keys = Object.keys(batches);
   let html = '<h3 style="margin:8px 0">已导入运费批次</h3>';
   if(!keys.length){ html += '<p style="color:#888">暂无已导入的运费数据</p>'; }
   else {
-    html += '<table class="freight-table" style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="background:#f1f5f9"><th style="border:1px solid #cbd5e1;padding:4px 8px;text-align:left">批次</th><th style="border:1px solid #cbd5e1;padding:4px 8px;text-align:left">条数</th><th style="border:1px solid #cbd5e1;padding:4px 8px;text-align:left">金额合计</th></tr></thead><tbody>';
+    html += '<p style="font-size:12px;color:#888;margin:0 0 8px">点击批次可展开明细；如导入有误，可删除整个批次回滚（软删除，不可撤销）。</p>';
     keys.forEach(function(k){
-      html += '<tr><td style="border:1px solid #cbd5e1;padding:4px 8px">'+escapeHtml(k)+'</td><td style="border:1px solid #cbd5e1;padding:4px 8px">'+batches[k].count+'</td><td style="border:1px solid #cbd5e1;padding:4px 8px">'+batches[k].total.toFixed(2)+'</td></tr>';
+      const safeK = String(k).replace(/'/g,'');
+      const items = itemsOf[k] || [];
+      html += '<details style="margin:6px 0;border:1px solid #cbd5e1;border-radius:6px;overflow:hidden">'+
+        '<summary style="padding:8px 12px;cursor:pointer;background:#f1f5f9;display:flex;align-items:center;gap:12px">'+
+          '<span style="font-weight:600">'+escapeHtml(k)+'</span>'+
+          '<span style="color:#475569">'+batches[k].count+' 条</span>'+
+          '<span style="color:#16a34a">¥'+batches[k].total.toFixed(2)+'</span>'+
+          (k!=='未分组' ? '<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:12px" onclick="event.preventDefault();event.stopPropagation();deleteFreightBatch(decodeURIComponent(\''+encodeURIComponent(k)+'\'))">删除批次</button>' : '')+
+        '</summary>'+
+        '<div style="padding:6px 12px;background:#fff">'+
+          '<table class="freight-table" style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:#e2e8f0"><th style="border:1px solid #cbd5e1;padding:3px 6px;text-align:left">运单号</th><th style="border:1px solid #cbd5e1;padding:3px 6px;text-align:left">金额</th><th style="border:1px solid #cbd5e1;padding:3px 6px;text-align:left">归属订单</th><th style="border:1px solid #cbd5e1;padding:3px 6px;text-align:left">承运商</th><th style="border:1px solid #cbd5e1;padding:3px 6px;text-align:left">匹配规则</th></tr></thead><tbody>'+
+          items.map(function(f){
+            return '<tr><td style="border:1px solid #cbd5e1;padding:3px 6px">'+escapeHtml(f.tracking_no||'')+'</td>'+
+                   '<td style="border:1px solid #cbd5e1;padding:3px 6px">'+Number(f.amount||0).toFixed(2)+'</td>'+
+                   '<td style="border:1px solid #cbd5e1;padding:3px 6px">'+escapeHtml(f.order_id||'')+'</td>'+
+                   '<td style="border:1px solid #cbd5e1;padding:3px 6px">'+escapeHtml(f.carrier||'')+'</td>'+
+                   '<td style="border:1px solid #cbd5e1;padding:3px 6px">'+escapeHtml(f.match_rule||'')+'</td></tr>';
+          }).join('')+
+          '</tbody></table>'+
+        '</div>'+
+      '</details>';
     });
-    html += '</tbody></table>';
   }
   el.innerHTML = html;
+}
+
+// v2026101903+：删除整个批次（软删除回滚），用于导入有误时撤回
+async function deleteFreightBatch(bid){
+  try{ bid = decodeURIComponent(bid); }catch(e){}
+  if(!bid || bid==='未分组'){ showToast('该批次不可删除', 'error'); return; }
+  if(typeof confirm==='function' && !confirm('确定删除批次「'+bid+'」的全部运费记录吗？\n删除后这些运费将不再计入任何订单利润，此操作不可撤销。')) return;
+  try{
+    showToast('正在删除批次...', 'info');
+    const res = await fetch(SUPABASE_URL + '/rest/v1/freights?batch_id=eq.' + encodeURIComponent(bid), {
+      method: 'PATCH',
+      headers: { 'Content-Type':'application/json', 'apikey': SUPABASE_KEY, 'Authorization':'Bearer '+SUPABASE_KEY, 'x-app-secret': APP_SECRET, 'Prefer':'return=minimal' },
+      body: JSON.stringify({ _deleted: true })
+    });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    (window._freightsCache||[]).forEach(function(f){ if(f.batch_id===bid) f._deleted = true; });
+    buildFreightIndex();
+    showToast('批次「'+bid+'」已删除', 'success');
+    try{ renderFreightBatchList(); }catch(e){}
+    if(typeof currentRoute!=='undefined'){
+      if(currentRoute==='orders') renderOrders();
+      else if(currentRoute==='profit-report' && typeof renderProfitReport==='function') renderProfitReport();
+    }
+  }catch(e){
+    showToast('删除失败：' + ((e&&e.message)||e), 'error');
+  }
 }
 
 // 导入结果弹窗（含失效明细 + 导出失效商品按钮）
@@ -16029,6 +16275,9 @@ function saveAftersaleDetail(id){
   const _oldMeta = (aftersales[idx].items[0]._afterMeta && typeof aftersales[idx].items[0]._afterMeta === 'object') ? aftersales[idx].items[0]._afterMeta : {};
   const _newMeta = { remark: aftersales[idx].remark || '', trackingNo: aftersales[idx].trackingNo || '' };
   if(_oldMeta.createdAt) _newMeta.createdAt = _oldMeta.createdAt;
+  // v2026102101：整对象重写 _afterMeta 时必须带回 reason，否则「保存备注/单号」会把原因备份清掉。
+  // 优先取当前行顶层 reason，其次旧 meta 里的备份。
+  _newMeta.reason = (aftersales[idx].reason != null && aftersales[idx].reason !== '') ? aftersales[idx].reason : (_oldMeta.reason || '');
   aftersales[idx].items[0]._afterMeta = _newMeta;
 
   // 管理员可随时编辑损耗金额，保存后重新核算利润
@@ -16611,7 +16860,9 @@ function submitAftersale(){
   if(!Array.isArray(newAS.items) || !newAS.items.length) newAS.items = [{}];
   if(!newAS.items[0]) newAS.items[0] = {};
   // v2026101104：同时写入真实提交时间（随 items JSONB 上云，不依赖 created_at 列白名单，跨端最稳）
-  newAS.items[0]._afterMeta = { remark: newAS.remark || '', trackingNo: newAS.trackingNo || '', createdAt: newAS.createdAt || nowStr() };
+  // v2026102101：reason 同步备份进 _afterMeta——售后原因此前是唯一没有跨端保护的售后业务字段，
+  // 整行 LWW 竞态下若旧副本（reason 空）胜出，云端顶层 reason 被清空后无源可补。与备注/单号同机制防丢。
+  newAS.items[0]._afterMeta = { remark: newAS.remark || '', trackingNo: newAS.trackingNo || '', reason: newAS.reason || '', createdAt: newAS.createdAt || nowStr() };
   DB.set('aftersales', aftersales);
   if(typeof schedulePushToCloud === 'function') schedulePushToCloud();
 
@@ -16733,6 +16984,11 @@ function saveAftersaleEdit(id){
   _setAfterSalesLoss(aftersales[idx], newLoss);
   aftersales[idx].status = newStatus;
   aftersales[idx].updatedAt = nowStr();
+  // v2026102101：reason 同步备份进 items[0]._afterMeta（随 items 上云），与备注/单号同机制防丢
+  if(!Array.isArray(aftersales[idx].items) || !aftersales[idx].items.length) aftersales[idx].items = [{}];
+  if(!aftersales[idx].items[0]) aftersales[idx].items[0] = {};
+  const _emOld = (aftersales[idx].items[0]._afterMeta && typeof aftersales[idx].items[0]._afterMeta === 'object') ? aftersales[idx].items[0]._afterMeta : {};
+  aftersales[idx].items[0]._afterMeta = Object.assign({}, _emOld, { reason: reason });
   DB.set('aftersales', aftersales);
 
   // 财务联动：重新核算原订单利润（先减旧损耗再加新损耗）
@@ -16773,6 +17029,17 @@ function updateAftersaleStatus(id, status){
   const trackingEl = document.getElementById('asTrackingNo');
   if(remarkEl) aftersales[idx].remark = remarkEl.value.trim();
   if(trackingEl) aftersales[idx].trackingNo = trackingEl.value.trim();
+  // v2026102101：备注/单号同步双写进 items[0]._afterMeta（随 items 上云的传输源）。
+  // 此前只写顶层——跨端合并时 _afterMeta 里还是旧值，另一端会把刚填的备注/单号回退掉。
+  if(remarkEl || trackingEl){
+    if(!Array.isArray(aftersales[idx].items) || !aftersales[idx].items.length) aftersales[idx].items = [{}];
+    if(!aftersales[idx].items[0]) aftersales[idx].items[0] = {};
+    const _smOld = (aftersales[idx].items[0]._afterMeta && typeof aftersales[idx].items[0]._afterMeta === 'object') ? aftersales[idx].items[0]._afterMeta : {};
+    const _smNew = { remark: aftersales[idx].remark || '', trackingNo: aftersales[idx].trackingNo || '' };
+    if(_smOld.createdAt) _smNew.createdAt = _smOld.createdAt;
+    if(_smOld.reason != null) _smNew.reason = _smOld.reason;
+    aftersales[idx].items[0]._afterMeta = _smNew;
+  }
 
   if(isAdmin){
     const lossEl = document.getElementById('asLossInput');
@@ -16791,6 +17058,8 @@ function updateAftersaleStatus(id, status){
   }
 
   DB.set('aftersales', aftersales);
+  // v2026102101：状态变更立即推送（此前漏调，只等周期性脏行推送，拉大「本机已处理、云端仍待处理」的竞态窗口）
+  if(typeof schedulePushToCloud === 'function') schedulePushToCloud();
   showToast('售后状态已更新，损耗金额已同步保留','success');
   closeModal();
   renderAftersales();
@@ -17022,11 +17291,17 @@ async function renderWarehouse(){
   }
   filtered = filtered.slice().sort(function(a,b){ return _createdAtDesc(a,b); });
 
+  // 待下单总额（仅管理员可见）：固定显示全部「留仓 + 待下单」总额，不受关键词/日期/状态Tab 任何筛选影响
+  var pendingOrders = orders.filter(function(o){ return o.status === 'pending'; });
+  var pendingTotal = pendingOrders.reduce(function(s,o){ return s + (Number(o.total)||0); }, 0);
+  var pendingCount = pendingOrders.length;
+  var adminKpi = isAdmin ? '<span style="margin-right:12px;font-size:13px;color:var(--text-muted)">待下单总额 <b style="color:var(--warning);font-size:15px">'+money(pendingTotal)+'</b>'+(pendingCount? ' <span style="font-size:12px;color:var(--text-muted)">('+pendingCount+' 笔)</span>' : '')+'</span>' : '';
+
   var whTabs = [
     {key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},
     {key:'feedback',label:'待反馈'},{key:'completed',label:'已完成'},{key:'',label:'全部'}
   ];
-  var html = '<div class="card"><div class="card-title"><span class="title-text">🏷️ 留仓订单</span><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="gotoNewOrder(\'warehouse\')">+ 新建留仓订单</button>'+(isAdmin?'<button class="btn btn-primary btn-sm" onclick="exportWarehouseOrders()" style="display:inline-flex;align-items:center;gap:4px">📥 导出</button>':'')+'</div></div>';
+  var html = '<div class="card"><div class="card-title"><span class="title-text">🏷️ 留仓订单</span><div style="display:flex;gap:8px;align-items:center">'+adminKpi+'<button class="btn btn-primary btn-sm" onclick="gotoNewOrder(\'warehouse\')">+ 新建留仓订单</button>'+(isAdmin?'<button class="btn btn-primary btn-sm" onclick="exportWarehouseOrders()" style="display:inline-flex;align-items:center;gap:4px">📥 导出</button>':'')+'</div></div>';
   html += '<div class="admin-tab-bar" style="margin-bottom:14px">';
   whTabs.forEach(function(t){
     var count = t.key==='' ? orders.length : orders.filter(function(o){ return statusMap[t.key].indexOf(o.status) >= 0; }).length;
