@@ -1724,7 +1724,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026102305</div>
+          <div class="brand-sub">v2026102306</div>
         </div>
       </div>
     </div>
@@ -15552,7 +15552,9 @@ function onPurchaseProductChange(sel){
 // v2026102303：采购单商品选择支持关键字检索（原生 select 无法输入过滤，商品多时只能滚动找）
 function piSearchProducts(inp){
   const kw = (inp.value || '').trim().toLowerCase();
-  const products = DB.get('products') || [];
+  // 采购只针对在售商品：已下架的不再出现在采购检索里（status: on=在售 / off=已下架）
+  const all = DB.get('products') || [];
+  const products = all.filter(function(p){ return p.status !== 'off'; });
   const box = inp.parentNode;
   const drop = box.querySelector('.pi-drop');
   let list = products;
@@ -15563,7 +15565,12 @@ function piSearchProducts(inp){
     const selStyle = pr.id === cur ? 'background:#eef6f6;font-weight:600;' : '';
     return '<div class="pi-opt" data-pid="' + escAttr(pr.id) + '" style="padding:8px 10px;cursor:pointer;border-bottom:1px solid var(--border);font-size:13px;' + selStyle + '">' + escAttr(pr.name) + '（库存' + (Number(pr.stockQty) || 0) + '）</div>';
   }).join('');
-  if(!list.length){ html = '<div style="padding:10px;color:var(--text-muted);font-size:13px">无匹配商品</div>'; }
+  if(!list.length){
+    // 关键字只命中已下架商品时，明确告知「被下架屏蔽」，避免用户以为商品丢了
+    const offHit = kw ? all.filter(function(p){ return p.status === 'off' && ((p.name || '') + ' ' + (p.category || '')).toLowerCase().indexOf(kw) !== -1; }).length : 0;
+    html = '<div style="padding:10px;color:var(--text-muted);font-size:13px">'
+      + (offHit ? '无在售匹配商品（' + offHit + ' 个已下架商品未显示）' : '无匹配商品') + '</div>';
+  }
   else if(list.length > MAX){ html += '<div style="padding:8px 10px;color:var(--text-muted);font-size:12px">共 ' + list.length + ' 个匹配，仅显示前 ' + MAX + ' 个，请继续输入关键字缩小范围</div>'; }
   drop.innerHTML = html;
   drop.style.display = 'block';
