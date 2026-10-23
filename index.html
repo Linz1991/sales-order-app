@@ -1724,7 +1724,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026102303</div>
+          <div class="brand-sub">v2026102304</div>
         </div>
       </div>
     </div>
@@ -15544,10 +15544,52 @@ function onPurchaseProductChange(sel){
   const pid = sel && sel.value;
   if(!pid) return;
   const def = getLastPurchaseCost(pid);
-  const row = sel.parentNode;
+  const row = (sel.closest && sel.closest('.purchase-item-row')) || sel.parentNode;
   const costEl = row ? row.querySelector('.pi-cost') : null;
   if(costEl){ costEl.value = def; }
   recalcPurchaseTotal();
+}
+// v2026102303：采购单商品选择支持关键字检索（原生 select 无法输入过滤，商品多时只能滚动找）
+function piSearchProducts(inp){
+  const kw = (inp.value || '').trim().toLowerCase();
+  const products = DB.get('products') || [];
+  const box = inp.parentNode;
+  const drop = box.querySelector('.pi-drop');
+  let list = products;
+  if(kw) list = products.filter(function(pr){ return ((pr.name || '') + ' ' + (pr.category || '')).toLowerCase().indexOf(kw) !== -1; });
+  const MAX = 50;
+  const cur = box.querySelector('.pi-product').value;
+  let html = list.slice(0, MAX).map(function(pr){
+    const selStyle = pr.id === cur ? 'background:#eef6f6;font-weight:600;' : '';
+    return '<div class="pi-opt" data-pid="' + escAttr(pr.id) + '" style="padding:8px 10px;cursor:pointer;border-bottom:1px solid var(--border);font-size:13px;' + selStyle + '">' + escAttr(pr.name) + '（库存' + (Number(pr.stockQty) || 0) + '）</div>';
+  }).join('');
+  if(!list.length){ html = '<div style="padding:10px;color:var(--text-muted);font-size:13px">无匹配商品</div>'; }
+  else if(list.length > MAX){ html += '<div style="padding:8px 10px;color:var(--text-muted);font-size:12px">共 ' + list.length + ' 个匹配，仅显示前 ' + MAX + ' 个，请继续输入关键字缩小范围</div>'; }
+  drop.innerHTML = html;
+  drop.style.display = 'block';
+  Array.prototype.forEach.call(drop.querySelectorAll('.pi-opt'), function(el){
+    // 用 mousedown：先于输入框 blur 触发，保证点选生效
+    el.addEventListener('mousedown', function(ev){
+      ev.preventDefault();
+      piPickProduct(el);
+    });
+  });
+}
+function piPickProduct(optEl){
+  const box = optEl.closest('.pi-product-box') || optEl.parentNode;
+  const row = box.closest('.purchase-item-row');
+  const pid = optEl.getAttribute('data-pid');
+  const pr = (DB.get('products') || []).find(function(x){ return x.id === pid; });
+  box.querySelector('.pi-product').value = pid;
+  box.querySelector('.pi-pname').value = pr ? pr.name : '';
+  box.querySelector('.pi-drop').style.display = 'none';
+  if(row){ onPurchaseProductChange(row.querySelector('.pi-product')); }
+}
+function piHideDrop(inp){
+  setTimeout(function(){
+    const drop = inp.parentNode.querySelector('.pi-drop');
+    if(drop) drop.style.display = 'none';
+  }, 180);
 }
 // v20261022：库存低于预警时，管理员一键开补货采购单（预填该商品 + 建议补货量 + 最近采购价）
 function quickReplenish(productId){
@@ -15602,12 +15644,16 @@ function openPurchaseModal(id){
 }
 function addPurchaseItemRow(preset){
   const products = DB.get('products') || [];
-  const prodOpts = products.map(function(pr){ return `<option value="${pr.id}" ${preset && preset.productId === pr.id ? 'selected' : ''}>${escAttr(pr.name)}（库存${Number(pr.stockQty)||0}）</option>`; }).join('');
+  const _presetName = preset ? (((products.find(function(pr){ return pr.id === preset.productId; })) || {}).name || '') : '';
   const row = document.createElement('div');
   row.className = 'purchase-item-row';
   row.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;align-items:center';
   row.innerHTML = `
-    <select class="form-control pi-product" style="flex:2" onchange="onPurchaseProductChange(this)">${prodOpts}</select>
+    <div style="flex:2;position:relative" class="pi-product-box">
+      <input type="hidden" class="pi-product" value="${preset ? escAttr(preset.productId || '') : ''}">
+      <input type="text" class="form-control pi-pname" placeholder="点击或输入关键字搜索商品" value="${escAttr(_presetName)}" autocomplete="off" oninput="piSearchProducts(this)" onfocus="piSearchProducts(this)" onblur="piHideDrop(this)">
+      <div class="pi-drop" style="display:none;position:absolute;top:100%;left:0;right:0;max-height:240px;overflow-y:auto;background:#fff;border:1px solid var(--border);border-radius:8px;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.12)"></div>
+    </div>
     <input type="number" class="form-control pi-qty" placeholder="数量" style="width:90px" min="1" value="${preset ? (Number(preset.qty)||1) : 1}" oninput="recalcPurchaseTotal()">
     <input type="number" class="form-control pi-cost" placeholder="单价" style="width:110px" min="0" step="0.01" value="${preset ? (Number(preset.unitCost)||0) : 0}" oninput="recalcPurchaseTotal()">
     <span class="pi-sub" style="width:90px;text-align:right;color:var(--text-muted)">¥0</span>
@@ -15638,12 +15684,18 @@ function savePurchase(){
   const prodMap = {};
   products.forEach(function(pr){ prodMap[pr.id] = pr.name; });
   const items = [];
+  let _badRows = 0;
   document.querySelectorAll('#purchaseItems .purchase-item-row').forEach(function(row){
     const pid = row.querySelector('.pi-product').value;
+    const pname = ((row.querySelector('.pi-pname') || {}).value || '').trim();
     const qty = parseInt(row.querySelector('.pi-qty').value) || 0;
     const cost = parseFloat(row.querySelector('.pi-cost').value) || 0;
+    // 搜索式下拉防护：输入框里的名称必须与已选商品一致（防止改了字没点选、或没选就保存）
+    if(pid && pname && prodMap[pid] !== pname){ _badRows++; return; }
+    if(pid && !pname){ _badRows++; return; }
     if(pid && qty > 0){ items.push({ productId: pid, productName: prodMap[pid] || '', qty: qty, unitCost: cost }); }
   });
+  if(_badRows){ showToast(_badRows + ' 行商品未从搜索列表选中（名称不匹配），已忽略；请点击输入框重新选择', 'error', 4000); }
   if(!items.length){ showToast('请至少添加一行有效的采购商品', 'error'); return; }
   const totalAmount = items.reduce(function(s,it){ return s + it.qty * it.unitCost; }, 0);
   const id = (document.getElementById('poId').value || '').trim();
