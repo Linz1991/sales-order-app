@@ -419,7 +419,10 @@ const _RT_TABLES = [
   { name: 'aftersales',  events: ['UPDATE','INSERT'] },
   { name: 'customers',   events: ['UPDATE','INSERT'] },
   { name: 'payments',    events: ['UPDATE','INSERT'] },
-  { name: 'commissions', events: ['UPDATE','INSERT'] }
+  { name: 'commissions', events: ['UPDATE','INSERT'] },
+  { name: 'suppliers',   events: ['UPDATE','INSERT'] },
+  { name: 'purchases',   events: ['UPDATE','INSERT'] },
+  { name: 'stock_logs',  events: ['UPDATE','INSERT'] }
 ];
 // 释放所有 Realtime 订阅（页面切后台/关闭前调用）。Supabase Realtime 的 egress 大头是
 // “持久 WS 连接的心跳 + 持续推送 payload”；页面不可见时主动 removeChannel，可砍掉这部分空闲流量。
@@ -886,6 +889,21 @@ div:has(> .btn):not(:has(> *:not(.btn))):not(.search-box):not(.card-title):not(.
 .form-control:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(13,115,119,.10)}
 textarea.form-control{resize:vertical;min-height:70px}
 .form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+/* v2026102102 库存系统：供应商 / 采购 / 库存台账 模块样式 */
+.page-actions{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+.kpi-row{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px}
+.kpi-card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px 18px;min-width:120px}
+.kpi-card.kpi-danger{border-color:var(--danger);background:#fff5f5}
+.kpi-value{font-size:22px;font-weight:700;color:#111}
+.kpi-label{font-size:12px;color:var(--text-muted);margin-top:2px}
+.alert{padding:10px 14px;border-radius:10px;margin-bottom:12px;font-size:13px}
+.alert-warning{background:#fffbeb;border:1px solid #fde68a;color:#92400e}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:500}
+.badge-success{background:#dcfce7;color:#166534}
+.badge-danger{background:#fee2e2;color:#991b1b}
+.badge-warning{background:#fef3c7;color:#92400e}
+.badge-info{background:#dbeafe;color:#1e40af}
+.badge-secondary{background:#f1f5f9;color:#475569}
 .form-inline{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 
 .table-wrap{overflow-x:auto;border-radius:var(--radius);min-width:0;width:100%}
@@ -1698,7 +1716,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026102101</div>
+          <div class="brand-sub">v2026102102</div>
         </div>
       </div>
     </div>
@@ -1813,11 +1831,17 @@ const DB = {
     actorId:'actor_id', actorName:'actor_name', actorRole:'actor_role', action:'action',
     targetType:'target_type', targetId:'target_id', targetLabel:'target_label', before:'before', after:'after', detail:'detail',
     lockedBy:'locked_by', lockedAt:'locked_at',
-    _deleted:'_deleted', _deletedAt:'_deleted_at', _deletedBy:'_deleted_by'
+    _deleted:'_deleted', _deletedAt:'_deleted_at', _deletedBy:'_deleted_by',
+    // v2026102102 库存/采购系统：新增字段映射
+    stockQty:'stock_qty', warnQty:'warn_qty',
+    shipWarehouse:'ship_warehouse', outboundRemark:'outbound_remark', _stockDeducted:'_stock_deducted',
+    supplierId:'supplier_id', supplierName:'supplier_name', totalAmount:'total_amount',
+    expectDate:'expect_date', inboundAt:'inbound_at',
+    productName:'product_name', beforeQty:'before_qty', afterQty:'after_qty', relId:'rel_id'
   },
   _snakeToCamel: {},
   // JSONB 字段（需要序列化/反序列化）
-  _jsonFields: { orders:'items', aftersales:'items' },
+  _jsonFields: { orders:'items', aftersales:'items', purchases:'items' },
 
   // 同步状态
   _syncStatus: 'idle', // idle | syncing | synced | error
@@ -1853,14 +1877,14 @@ const DB = {
     // 使 pushLocalChanges/_pushDirtyRows 只推脏行、零变化零请求（此前小表走 syncTable 每 2min 全量双向同步）。
     if(opts && opts.fromCloud){
       // 对账拉云写入：云端已是真相源，直接落本机，不标记脏、不反推、不刷新时间戳（避免把刚拉来的云端值又 upsert 回去）
-    } else if(key === 'orders' || key === 'products' || key === 'customers' || key === 'aftersales' || key === 'payments' || key === 'commissions'){
+    } else if(key === 'orders' || key === 'products' || key === 'customers' || key === 'aftersales' || key === 'payments' || key === 'commissions' || key === 'suppliers' || key === 'purchases' || key === 'stock_logs'){
       try{
         const oldArr = this.get(key, []) || [];
         const newArr = val || [];
         // #2 (v2026101005) 写入时 jsonb 数组守卫：orders/aftersales 的 items/images 若被写成字符串（如 "[]"），
         // 则解析成真数组；解析失败或非数组则置 []。缺失字段不臆造，避免对无该列的历史行大量误标脏、引发重推风暴。
         // 与启动自愈 healJsonArrayFields 形成双保险，从写入根因杜绝「.map is not a function」类白屏。
-        const _ARR_FIELDS = { orders: ['items','images'], aftersales: ['items','images'] };
+        const _ARR_FIELDS = { orders: ['items','images'], aftersales: ['items','images'], purchases: ['items'] };
         const _arrFields = _ARR_FIELDS[key];
         if(_arrFields){
           (newArr||[]).forEach(function(r){
@@ -3491,7 +3515,10 @@ const DB = {
               // 缺失时剔除可选列后整批重试，保证基础同步不中断；绝不因可选列缺失而让整批同步报红。
               const optionalColsByTable = {
                 orders: new Set([]),
-                aftersales: new Set(['remark','tracking_no','updated_at'])
+                aftersales: new Set(['remark','tracking_no','updated_at']),
+                suppliers: new Set(['contact','phone','address','remark','created_at']),
+                purchases: new Set(['supplier_id','supplier_name','total_amount','expect_date','remark','created_at']),
+                stock_logs: new Set(['product_name','warehouse','rel_id','operator','remark','created_at'])
               };
               const optSet = optionalColsByTable[table] || null;
               const errMsg = String((error && error.message) || (error && error.code) || '');
@@ -3600,6 +3627,8 @@ const DB = {
   async _pushDirtyRows(key){
     if(!window._sbpbClient) return;
     if(key === 'users' || key === 'audit_log') return; // users 只拉不推；audit_log 本地审计日志不上云
+    // v2026102102 库存系统：suppliers/purchases/stock_logs 三表尚未建（SQL 未执行）时跳过推送，避免同步报红；建好后 detectInventoryTables 置 true。
+    if((key === 'suppliers' || key === 'purchases' || key === 'stock_logs') && window._invTablesReady !== true) return;
     this._initMapping();
     const dirty = this._getDirty(key);
     if(!dirty || !dirty.length){ return; }
@@ -3838,12 +3867,15 @@ const DB = {
     const now = Date.now();
     const lastFull = this._getLastFullAt();
     const needFull = !lastFull || (now - lastFull) > this._fullSyncIntervalMs;
+    // v2026102102 库存系统：拉取前探测 suppliers 三表是否已建（用户需在 Supabase 执行 supabase_inventory_schema.sql）。
+    // 已建 → _invTablesReady=true，拉取/推送才会包含这三表；未建 → 跳过，避免同步报红。
+    try{ if(window._invTablesReady === null) await detectInventoryTables(); }catch(e){}
     let hasError = false;
     if(needFull){
       // 全量兜底（v20260902 降 egress）：订单/商品改走 loadXxxFromCloud（本地缓存存在时自动切增量，
       // 只拉 updated_at 之后的变化行，含删除传播）；小表全量拉（users 无 updated_at 列必须全量；
       // customers/aftersales/payments/commissions 行数小、体积小）；audit_log 为纯本地审计日志，不跨端，不拉取。
-      const tables = ['users','aftersales','payments','commissions'];
+      const tables = (window._invTablesReady === true) ? ['users','aftersales','payments','commissions','suppliers','purchases','stock_logs'] : ['users','aftersales','payments','commissions'];
       for(let i = 0; i < tables.length; i++){
         try{
           const result = await this._loadTable(tables[i]);
@@ -3894,7 +3926,7 @@ const DB = {
     // 注意：商品表不在此批量上推，避免把某台设备的本地旧缓存（如手机上残留的 300+ 条）糊回云端。
     // 商品由「进入页面云端覆盖」+「改/增时单条上推」+「以本机为准同步」按钮来保证一致。
     // audit_log 是本地审计日志，无需跨端传播；且该表可能尚未创建，避免因此把整体同步状态报红。
-    const tables = ['users','customers','orders','aftersales','payments','commissions'];
+    const tables = (window._invTablesReady === true) ? ['users','customers','orders','aftersales','payments','commissions','suppliers','purchases','stock_logs'] : ['users','customers','orders','aftersales','payments','commissions'];
     let hasError = false;
     for(let i = 0; i < tables.length; i++){
       try{
@@ -3915,7 +3947,7 @@ const DB = {
   // 现改为只推脏行（有变化才推，无变化零请求）；小表跨端拉取由 1h 全量兜底（syncFromCloud needFull → _loadTable）负责。
   async pushLocalChanges(keys){
     if(!window._sbpbClient) return;
-    const tables = keys || ['orders','aftersales','payments','commissions','customers'];
+    const tables = (keys || ['orders','aftersales','payments','commissions','customers']).concat((window._invTablesReady === true) ? ['suppliers','purchases','stock_logs'] : []);
     for(let i = 0; i < tables.length; i++){
       try{
         await this._pushDirtyRows(tables[i]);
@@ -5665,12 +5697,14 @@ function startAutoSync(){
     orders:'orders', schedule:'orders', warehouse:'orders',
     customers:'customers', products:'products', aftersales:'aftersales',
     commissions:'commissions', payments:'payments',
+    suppliers:'suppliers', purchases:'purchases', 'stock-ledger':'stock_logs',
     dashboard:'orders', dashboard2:'orders', recycle:'orders'
   };
   const routeRenderers = {
     orders: renderOrders, schedule: renderSchedule, warehouse: renderWarehouse,
     customers: renderCustomers, products: renderProducts, aftersales: renderAftersales,
     commissions: renderCommissions, freight: renderFreightReconcile, payments: renderPayments,
+    suppliers: renderSuppliers, purchases: renderPurchases, 'stock-ledger': renderStockLedger,
     dashboard: renderDashboard, dashboard2: renderDashboard2, recycle: renderRecycleBin
   };
   window._routeRenderers = routeRenderers;
@@ -5925,6 +5959,7 @@ function tablesForRoute(route){
     customers:'customers', products:'products', 'product-edit':'products',
     payments:'payments', commissions:'commissions',
     aftersales:'aftersales', 'aftersale-detail':'aftersales', 'aftersale-new':'aftersales',
+    suppliers:'suppliers', purchases:'purchases', 'stock-ledger':'stock_logs',
     users:'users'
   };
   return m[route] ? [m[route]] : [];
@@ -5938,6 +5973,9 @@ function refreshCurrentViewForTable(table){
       products:['products','product-edit'],
       customers:['customers'],
       aftersales:['aftersales','aftersale-new','aftersale-detail'],
+      suppliers:['suppliers'],
+      purchases:['purchases'],
+      stock_logs:['stock-ledger'],
       commissions:['commissions'],
       payments:['payments']
     };
@@ -6114,6 +6152,9 @@ function renderSidebar(){
       {route:'warehouse', icon:'🏷️', name:'留仓订单'},
       {route:'aftersales', icon:'🔧', name:'售后工单'},
       {route:'products', icon:'🛒', name:'商品管理'},
+      {route:'suppliers', icon:'🏭', name:'供应商管理'},
+      {route:'purchases', icon:'📥', name:'采购管理'},
+      {route:'stock-ledger', icon:'📒', name:'库存台账'},
       {route:'customers', icon:'👥', name:'客户管理'},
       {route:'commissions', icon:'🏆', name:'销售提成'},
       {route:'freight', icon:'🚚', name:'运费对账'},
@@ -6123,7 +6164,9 @@ function renderSidebar(){
     ];
   }else if(isOperator){
     menus = [
-      {route:'orders', icon:'📦', name:'订单列表'}
+      {route:'orders', icon:'📦', name:'订单列表'},
+      {route:'products', icon:'🛒', name:'商品管理'},
+      {route:'stock-ledger', icon:'📒', name:'库存台账'}
     ];
   }else{
     menus = [
@@ -6201,6 +6244,9 @@ const routeTitles = {
   payments: ['收款记录','查看收款记录'],
   commissions: ['销售提成','管理销售提成'],
   aftersales: ['售后工单','处理售后申请'],
+  suppliers: ['供应商管理','维护供应商信息'],
+  purchases: ['采购管理','采购单与入库'],
+  'stock-ledger': ['库存台账','查看库存变动流水'],
   'collect-balance': ['待收尾款','待收客户未结清尾款'],
   'aftersale-new': ['新建售后','提交售后申请'],
   'aftersale-detail': ['售后详情','查看售后详情'],
@@ -6237,7 +6283,8 @@ async function navigate(route){
   currentRoute = route;
   // 权限检查：销售角色不能访问管理员专属页面
   const isAdmin = currentUser.role === 'admin';
-  const restrictedRoutes = ['customers','payments','dashboard2','settings','commissions','profit-report','audit'];
+  // v2026102102：供应商/采购属经营与资金决策，非管理员一律拦截（下单操作员菜单无入口，此处再兜一层防直跳）
+  const restrictedRoutes = ['customers','payments','dashboard2','settings','commissions','profit-report','audit','suppliers','purchases'];
   if(!isAdmin && restrictedRoutes.includes(route)){
     showToast('无访问权限','error');
     // 下单操作员无首页，兜底跳订单列表
@@ -6302,7 +6349,10 @@ async function navigate(route){
     'profit-report': renderProfitReport,
     settings: renderSettings,
     users: renderUsers,
-    audit: renderAuditLog
+    audit: renderAuditLog,
+    suppliers: renderSuppliers,
+    purchases: renderPurchases,
+    'stock-ledger': renderStockLedger
   };
   const fn = renderers[route] || renderDashboard;
 
@@ -6829,6 +6879,7 @@ async function renderOrders(){
   if(typeof renderSidebar === 'function') renderSidebar();
   const isAdmin = currentUser.role === 'admin';
   const isOperator = currentUser.role === 'operator';
+  const canStock = isAdmin || isOperator; // 库存查看/预警/选仓/出入库：管理员+操作员
   // 是否移动端（手机 ≤768px）：管理端与销售端列表统一用它切换「表格/卡片」布局
   const isMobile = window.innerWidth <= 768 || /Mobile|Android|iPhone/.test(navigator.userAgent);
   let orders = DB.get('orders').filter(o => !isOrderDeleted(o));
@@ -7019,7 +7070,7 @@ async function renderOrders(){
           const itemCols = isAdmin ? 7 : 6;
           html += `<tr>`;
           html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span>${o.salesName?`<br><span style="font-size:11px;color:var(--text-muted)">销售 ${escapeHtml(o.salesName)}</span>`:''}</td>`;
-          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/><col/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}</tr></thead><tbody>`;
+          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/><col/>':''}${canStock?'<col/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}${canStock?'<th>发货仓</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const cost = effectiveItemCost(o, it, _productMap);
             const waste = it.waste || 0;
@@ -7029,6 +7080,19 @@ async function renderOrders(){
               html += `<td>${money(cost)}</td>`;
               html += `<td style="font-weight:600;color:var(--danger)">${money(waste)}</td>`;
               html += `<td style="color:${profit>=0?'var(--success)':'var(--danger)'};font-weight:600">${money(profit)}</td>`;
+            }
+            if(canStock){
+              // v2026102102 发货仓改为下拉二选一：①系统默认仓=扣减系统库存 ②手动填写=自定义仓名，仅留痕不扣库存
+              const _whRaw = String(it.shipWarehouse || o.shipWarehouse || '本仓').trim();
+              const _isDefWh = (_whRaw === '本仓');
+              const _customVal = (_whRaw === '待填写') ? '' : _whRaw;
+              html += `<td style="white-space:nowrap">
+                <select class="form-control" id="itWhSel_${o.id}_${idx}" onchange="onShipWhModeChange('${o.id}',${idx},this.value)" style="padding:4px 6px;width:124px" title="系统默认仓=扣减系统库存；手动填写=仅记录，不扣库存">
+                  <option value="本仓"${_isDefWh?' selected':''}>系统默认仓</option>
+                  <option value="__custom__"${_isDefWh?'':' selected'}>手动填写…</option>
+                </select>
+                ${_isDefWh?'':`<input type="text" class="form-control" id="itWh_${o.id}_${idx}" value="${escapeHtml(_customVal)}" placeholder="仓库名(不扣库存)" title="手动填写的仓库不扣系统库存，仅留痕" style="padding:4px 6px;width:124px;margin-top:4px" onchange="saveItemShipWarehouse('${o.id}',${idx},this.value || '待填写')">`}
+              </td>`;
             }
             html += `</tr>`;
           });
@@ -7047,7 +7111,7 @@ async function renderOrders(){
         filtered.forEach(o => {
           html += `<tr>`;
           html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span>${o.salesName?`<br><span style="font-size:11px;color:var(--text-muted)">销售 ${escapeHtml(o.salesName)}</span>`:''}</td>`;
-          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/><col/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}</tr></thead><tbody>`;
+          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/><col/>':''}${canStock?'<col/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}${canStock?'<th>发货仓</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const cost = effectiveItemCost(o, it, _productMap);
             const waste = it.waste || 0;
@@ -7058,6 +7122,12 @@ async function renderOrders(){
               html += `<td>${money(cost)}</td>`;
               html += `<td style="font-weight:600;color:var(--danger)">${money(waste)}</td>`;
               html += `<td style="color:${profit>=0?'var(--success)':'var(--danger)'};font-weight:600">${money(profit)}</td>`;
+            }
+            if(canStock){
+              // 已下单 Tab：发货仓只读展示（仅管理员/操作员可见），下单后再不可改
+              const _wh = (it.shipWarehouse && String(it.shipWarehouse).trim()) || (o.shipWarehouse && String(o.shipWarehouse).trim()) || '本仓';
+              const _isDefault = _wh === '本仓';
+              html += `<td style="font-size:12px;white-space:nowrap">${escapeHtml(_isDefault ? '系统默认仓' : _wh)}${_isDefault?'':`<br><span style="font-size:11px;color:var(--text-muted)">不扣库存</span>`}</td>`;
             }
             html += `</tr>`;
           });
@@ -8296,6 +8366,45 @@ async function detectProductCalibColumn(){
   }catch(e){ window._calibProbeStarted = false; return null; } // 网络异常时允许后续重试
 }
 const PRODUCT_CALIB_SQL = 'ALTER TABLE products ADD COLUMN IF NOT EXISTS need_calibration boolean DEFAULT false;';
+// v2026102102 库存系统：products 库存列探测（与 need_calibration 同机制的"列存在才推送"保护）
+window._prodHasStockCol = null; // null=未探测 / true=有列 / false=无列
+async function detectProductStockColumn(){
+  try{
+    if(window._prodHasStockCol !== null) return window._prodHasStockCol;
+    if(window._stockProbeStarted) return null;
+    if(!window._sbpbClient) return null;
+    window._stockProbeStarted = true;
+    const { error } = await window._sbpbClient.from('products').select('stock_qty').limit(1);
+    if(!error){
+      window._prodHasStockCol = true;
+    }else if(error && (error.code === '42703' || error.code === 'PGRST204' || /does not exist|Could not find the|PGRST204/i.test(String(error.message || '')))){
+      window._prodHasStockCol = false;
+    }else{
+      window._stockProbeStarted = false;
+      return null;
+    }
+    if(typeof renderProducts === 'function') renderProducts(); // 探测完成后重渲染，使库存列/出入库按钮生效
+    return window._prodHasStockCol;
+  }catch(e){ window._stockProbeStarted = false; return null; }
+}
+const PRODUCT_STOCK_SQL = 'ALTER TABLE products ADD COLUMN IF NOT EXISTS stock_qty integer DEFAULT 0; ALTER TABLE products ADD COLUMN IF NOT EXISTS warn_qty integer DEFAULT 0;';
+// v2026102102 库存系统：suppliers/purchases/stock_logs 三表存在性探测（与商品 stock 列探测同机制的"表存在才推送/拉取"保护）
+window._invTablesReady = null; // null=未探测 / true=三表已建 / false=未建
+async function detectInventoryTables(){
+  try{
+    if(window._invTablesReady !== null) return window._invTablesReady;
+    if(!window._sbpbClient) return null;
+    const { error } = await window._sbpbClient.from('suppliers').select('id').limit(1);
+    if(!error){
+      window._invTablesReady = true;
+    }else if(error && (error.code === '42P01' || error.code === 'PGRST204' || /does not exist|relation|Could not find the/i.test(String(error.message || '')))){
+      window._invTablesReady = false;
+    }else{
+      return null; // 其它错误（网络抖动）允许后续重试
+    }
+    return window._invTablesReady;
+  }catch(e){ return null; }
+}
 function copyProductCalibSql(){
   const done = function(){ showToast('SQL 已复制：请到 Supabase → SQL Editor 粘贴执行一次（仅一次），之后跨设备即可看到「待校准」提醒','success',7000); };
   try{
@@ -8305,6 +8414,17 @@ function copyProductCalibSql(){
     }
   }catch(e){}
   window.prompt('请复制以下 SQL 到 Supabase → SQL Editor 执行：', PRODUCT_CALIB_SQL);
+}
+// v2026102102 库存系统：一键复制"库存列"建列 SQL
+function copyProductStockSql(){
+  const done = function(){ showToast('SQL 已复制：请到 Supabase → SQL Editor 粘贴执行一次（仅一次），之后即可看到库存列与出入库按钮','success',7000); };
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(PRODUCT_STOCK_SQL).then(done, function(){ window.prompt('请复制以下 SQL 到 Supabase → SQL Editor 执行：', PRODUCT_STOCK_SQL); });
+      return;
+    }
+  }catch(e){}
+  window.prompt('请复制以下 SQL 到 Supabase → SQL Editor 执行：', PRODUCT_STOCK_SQL);
 }
 
 // 本机已确认校准的商品（无 need_calibration 列时的降级记录：管理员校准后本机不再反复提示）
@@ -9243,7 +9363,8 @@ function renderOrderDetail(){
   // 商品明细实际列数（销售仅 名称/数量/售价 3 列；管理员加 成本/损耗/利润）
   const _orderCols = isAdminDoorDetail ? 7
     : 3 + (isAdmin ? 3 : 0) + (isDoor ? 1 : 0) + (editMode ? 1 : 0) + ((isAdmin && order.type==='warehouse') ? 2 : 0)
-      + ((isOperator && (order.status === 'pending' || order.items && order.items.some(it => it.ordered === true))) ? 1 : 0);
+      + ((isOperator && (order.status === 'pending' || order.items && order.items.some(it => it.ordered === true))) ? 1 : 0)
+      + ((isAdmin || isOperator) ? 1 : 0); // v2026102102 发货仓列（管理员/操作员可见，与下方商品行 td 对齐）
   const totalColspan = _orderCols - 1;
   // 当订单已具备独立「物流信息」模块（已下单/运输中/待反馈/已反馈/已完成）时，商品明细内联的「填写物流单号」列隐藏，避免重复
   const hideInlineTracking = ['confirmed','shipped','feedback','feedback_done','completed'].includes(order.status);
@@ -9402,6 +9523,7 @@ function renderOrderDetail(){
               <th>数量</th>
               <th>售价</th>
               ${isAdmin ? '<th>成本</th><th>损耗</th><th>利润</th>' : ''}
+              ${(isAdmin || isOperator) ? '<th>发货仓</th>' : ''}
               ${isDoor ? '<th>货到店</th><th>货到客户</th>' : ''}
               ${(isAdmin || isOperator) && (order.status==='pending' || order.items && order.items.some(it=>it.ordered)) ? '<th>下单</th>' : ''}
               ${isAdmin && order.type==='warehouse' && !hideInlineTracking ? '<th>物流单号</th>' : ''}
@@ -9432,6 +9554,7 @@ function renderOrderDetail(){
                   ${isAdmin ? `<td>${money(cost)}</td>` : ''}
                   ${isAdmin ? `<td><input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px;color:var(--danger);font-weight:600" id="wasteItem_${i}" oninput="saveItemWaste('${order.id}',${i},this.value)" onchange="saveItemWaste('${order.id}',${i},this.value)"></td>` : ''}
                   ${isAdmin ? `<td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}">${money(itemProfit)}</td>` : ''}
+                  ${(isAdmin || isOperator) ? `<td style="font-size:12px">${(()=>{ const _w=String(it.shipWarehouse || order.shipWarehouse || '本仓').trim(); if(_w==='本仓') return '系统默认仓'; if(_w==='待填写') return '<span style="color:var(--warning)">手动填写(待补仓名)</span>'; return escapeHtml(_w) + ' <span style="color:var(--text-muted)">(手动填写·不扣库存)</span>'; })()}</td>` : ''}
                   ${((isAdmin || isOperator) && (order.status==='pending' || order.items && order.items.some(it=>it.ordered))) ? `<td>${it.ordered ? '<button class="btn btn-sm" title="双击撤回下单" ondblclick="markItemUnordered(\''+order.id+'\','+i+')" style="background:#3b82f6;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer">已下单</button>' : '<button class="btn btn-success btn-sm" onclick="markItemOrdered(\''+order.id+'\','+i+')">下单</button>'}</td>` : ''}
                   ${(isAdmin && order.type==='warehouse' && !hideInlineTracking) ? `<td><input type="text" class="form-control" id="whTrackItem_${i}" value="${escapeHtml(it.trackingNo) || ''}" placeholder="输入运单号" style="padding:6px 10px;min-width:150px">${it.trackingNo ? `<a class="btn-link" style="margin-left:6px;white-space:nowrap" onclick="queryLogistics(escapeJsStr(order.id), ${i}, document.getElementById('whTrackItem_${i}').value)">查询</a>` : ''}</td>` : ''}
                   ${isDoor ? `<td>${editMode ? `<select class="form-control" id="editItemStock_${i}" style="padding:6px 10px;width:70px"><option value="" ${(!it.stock || (it.stock!=='有' && it.stock!=='是' && it.stock!=='需订货'))?'selected':''}></option><option value="有" ${(it.stock==='有' || it.stock==='是')?'selected':''}>有</option><option value="需订货" ${(it.stock==='需订货')?'selected':''}>需订货</option></select>` : ((isAdmin || currentUser.role==='sales') ? `<select class="form-control" onchange="saveItemStock('${order.id}',${i},this.value)" style="padding:6px 10px;width:70px"><option value="" ${(!it.stock || (it.stock!=='有' && it.stock!=='是' && it.stock!=='需订货'))?'selected':''}></option><option value="有" ${(it.stock==='有' || it.stock==='是')?'selected':''}>有</option><option value="需订货" ${(it.stock==='需订货')?'selected':''}>需订货</option></select>` : (it.stock==='有' || it.stock==='是')?'<span class="tag tag-completed">有</span>':(it.stock==='需订货'?'<span class="tag tag-pending">需订货</span>':''))}</td>` : ''}
@@ -11368,6 +11491,19 @@ async function updateOrderStatus(orderId, status){
       orders[idx].completedAt = nowStr();
     }
     if(status === 'shipped') orders[idx].shippedAt = nowStr();
+    // v2026102102 出库联动库存：普通/留仓单到「已发货」、上门单到「完成」即触发扣减；_stockDeducted 防重复
+    const _isOutbound = (status === 'shipped') || (orders[idx].type === 'door' && status === 'completed');
+    if(_isOutbound && !orders[idx]._stockDeducted){
+      const _mode = DB.get('stockMode') || 'loose';
+      if(_mode !== 'loose'){
+        const _chk = _strictOutboundAllowed(orders[idx]);
+        if(!_chk.ok){ showToast('⛔ 严格模式：'+escAttr(_chk.name)+' 库存不足（当前 '+_chk.have+'，需 '+_chk.need+'），已阻止发货', 'error', 6000); return; }
+      }
+      try{
+        const _dr = await deductStockForOrder(orders[idx]);
+        if(_dr.ok) orders[idx]._stockDeducted = true;
+      }catch(e){ console.warn('出库扣库存异常', e); }
+    }
     orders[idx].updatedAt = nowStr();
     _pinWriteLock(orderId); // 写入窗口锁：改状态即刻 pin，350ms 重拉/推送间隙不被云端旧状态闪回
     DB.set('orders', orders);
@@ -11577,6 +11713,44 @@ function saveItemWaste(orderId, itemIndex, value) {
   recalcAdminProfit(orderId);
   // 如果当前在列表页，刷新列表以反映最新损耗
   if(currentRoute === 'orders') renderOrders();
+}
+// v2026102102 库存系统：逐行设置发货仓（默认本仓，支持一行一仓）
+function saveItemShipWarehouse(orderId, itemIndex, value){
+  const orders = DB.get('orders');
+  const idx = orders.findIndex(o => o.id === orderId);
+  if(idx < 0) return;
+  orders[idx].items[itemIndex].shipWarehouse = (value || '').trim() || '本仓';
+  orders[idx].updatedAt = nowStr();
+  DB.set('orders', orders);
+  _pinWriteLock(orderId);
+  schedulePushToCloud();
+}
+// v2026102102 发货仓下拉切换：系统默认仓(本仓，扣库存) ⇄ 手动填写(自定义仓名，不扣系统库存)
+// 切到「手动填写」时先落一个占位值『待填写』——它不等于「本仓」，因此出库时必定走 outbound_other 只留痕、绝不扣减默认仓库存。
+function onShipWhModeChange(orderId, itemIndex, value){
+  const sel = document.getElementById('itWhSel_' + orderId + '_' + itemIndex);
+  if(value === '__custom__'){
+    saveItemShipWarehouse(orderId, itemIndex, '待填写');
+    if(sel && sel.parentNode){
+      let inp = document.getElementById('itWh_' + orderId + '_' + itemIndex);
+      if(!inp){
+        inp = document.createElement('input');
+        inp.type = 'text';
+        inp.className = 'form-control';
+        inp.id = 'itWh_' + orderId + '_' + itemIndex;
+        inp.placeholder = '仓库名(不扣库存)';
+        inp.title = '手动填写的仓库不扣系统库存，仅留痕';
+        inp.style.cssText = 'padding:4px 6px;width:124px;margin-top:4px';
+        inp.onchange = function(){ saveItemShipWarehouse(orderId, itemIndex, this.value || '待填写'); };
+        sel.parentNode.appendChild(inp);
+      }
+      try{ inp.focus(); }catch(e){}
+    }
+  } else {
+    saveItemShipWarehouse(orderId, itemIndex, value);
+    const inp = document.getElementById('itWh_' + orderId + '_' + itemIndex);
+    if(inp && inp.parentNode) inp.parentNode.removeChild(inp);
+  }
 }
 
 // 管理员对订单逐商品标记"已下单"：点击后该商品 ordered=true；全部商品已下单则订单状态转为"已下单"(confirmed)
@@ -13402,9 +13576,15 @@ async function renderProducts(){
   if(window._prodHasCalibCol === null && !window._calibProbeStarted && typeof detectProductCalibColumn === 'function'){
     detectProductCalibColumn().then(function(){ if(currentRoute === 'products') renderProducts(); }).catch(function(){});
   }
+  // v2026102102 库存系统：首次进商品页探测云端是否有 stock_qty 列（决定库存列/出入库按钮/同步是否生效）
+  if(window._prodHasStockCol === null && !window._stockProbeStarted && typeof detectProductStockColumn === 'function'){
+    detectProductStockColumn().then(function(){ if(currentRoute === 'products') renderProducts(); }).catch(function(){});
+  }
   // 渲染函数只负责展示，不自己拉网络：navigate()/Realtime/afterWriteRefresh 已保证数据为云端最新。
   if(typeof renderSidebar === 'function') renderSidebar();
   const isAdmin = currentUser.role === 'admin';
+  const isOperator = currentUser.role === 'operator';
+  const canStock = isAdmin || isOperator; // 库存查看/预警/出入库：管理员+操作员
   const products = DB.get('products');
   const keyword = window._productFilter || '';
   const delistedCount = products.filter(p => p.status === 'off').length;
@@ -13437,6 +13617,7 @@ async function renderProducts(){
           ${isAdmin ? '<button class="btn btn-warning btn-sm" onclick="reconcileProductsToCloud()" title="只把云端没有的本机商品补上去，绝不覆盖任何已有商品的价格/成本">🔄 补齐缺失商品</button>' : ''}
           ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="batchDeleteProducts()">${batchMode?'取消批量删除':'🗑️ 批量删除'}</button>` : ''}
           ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="batchExportProducts()">${exportMode?'取消导出':'📤 批量导出'}</button>` : ''}
+          ${canStock ? `<button class="btn btn-warning btn-sm" onclick="openBatchCountModal()">📋 批量盘点</button>` : ''}
         </div>
       </div>
       ${(batchMode || exportMode) ? `
@@ -13466,6 +13647,14 @@ async function renderProducts(){
         </div>
         <div style="margin-top:6px;font-size:12px;color:#64748b">路径：Supabase 后台 → SQL Editor → 粘贴 → Run。执行后刷新本页即可生效。</div>
       </div>` : ''}
+      ${(isAdmin && window._prodHasStockCol === false) ? `<div style="margin:10px 0;padding:10px 14px;background:#f1f5f9;border:1px solid #cbd5e1;border-left:4px solid #64748b;border-radius:6px;font-size:13px;color:#334155">
+        <div>⚙️ <b>数据库小升级（仅需一次）</b>：商品「库存数量」要在任意设备生效，需在 Supabase 执行一次 SQL。未执行时不影响下单、加购、同步，只是看不到库存/无法出入库。</div>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-secondary btn-sm" onclick="copyProductStockSql()">📋 复制 SQL</button>
+          <code style="font-size:12px;background:#fff;padding:4px 8px;border-radius:4px;border:1px solid #e2e8f0">ALTER TABLE products ADD COLUMN IF NOT EXISTS stock_qty integer DEFAULT 0; ALTER TABLE products ADD COLUMN IF NOT EXISTS warn_qty integer DEFAULT 0;</code>
+        </div>
+        <div style="margin-top:6px;font-size:12px;color:#64748b">路径：Supabase 后台 → SQL Editor → 粘贴 → Run。执行后刷新本页即可生效。</div>
+      </div>` : ''}
       <div class="filter-bar">
         <div class="search-box">
           <span class="search-icon">🔍</span>
@@ -13482,6 +13671,7 @@ async function renderProducts(){
               <th>分类</th>
               <th>售价</th>
               ${isAdmin ? '<th>成本</th><th>利润</th>' : ''}
+              ${canStock ? '<th>库存</th>' : ''}
               <th>状态</th>
               ${isAdmin ? '<th>操作</th>' : ''}
             </tr>
@@ -13507,6 +13697,9 @@ async function renderProducts(){
 // 只生成商品表格的 tbody 内容（含分页切片 + 序号），供整体渲染与搜索/翻页局部刷新
 function renderProductRowsHtml(){
   const isAdmin = currentUser.role === 'admin';
+  // v2026102102：库存列对「管理员+操作员」显示，必须与 renderProducts 表头的 canStock 条件完全一致，
+  // 否则表头 th 数与本函数 td 数不等 → 整表列错位。此处不能引用 renderProducts 的局部变量 canStock（本函数是顶层函数，取不到）。
+  const canStock = isAdmin || currentUser.role === 'operator';
   const products = DB.get('products');
   const keyword = window._productFilter || '';
   let filtered = products;
@@ -13527,7 +13720,7 @@ function renderProductRowsHtml(){
   const batchMode = window._productBatchMode || false;
   const exportMode = window._productExportMode || false;
   const selectedIds = window._productSelectedIds || {};
-  const colspan = (isAdmin?((batchMode||exportMode)?9:8):5); // 多一列"序号"
+  const colspan = (isAdmin?((batchMode||exportMode)?10:9):5); // 多一列"序号"、管理员再加库存列
   // 分页
   const pageSize = window._productPageSize || 20;
   let page = window._productPage || 1;
@@ -13556,6 +13749,10 @@ function renderProductRowsHtml(){
         <td>${escAttr(p.category)||'-'}</td>
         <td style="font-weight:600">${money(p.price)}</td>
         ${isAdmin ? `<td>${money(p.cost)}</td><td style="color:${profitColor};font-weight:600">${profitText}</td>` : ''}
+        ${canStock ? `<td>
+          ${(()=>{ const sq=Number(p.stockQty)||0; const wq=Number(p.warnQty)||0; const low = wq>0 && sq<=wq; const neg = sq<0; return `<b style="color:${(low||neg)?'var(--danger)':'inherit'}">${sq}</b>${low?' ⚠️':''}${neg&&isAdmin?' <span class="badge badge-danger" style="font-size:10px">负库存</span>':''}`; })()}
+          <button class="btn-link" onclick="openStockAdjustModal('${p.id}')" title="手动出入库">出入库</button><button class="btn-link" onclick="openStockTakeModal('${p.id}')" title="盘库（设为实际库存并记流水）">盘库</button>${isAdmin ? `${(()=>{ const wq=Number(p.warnQty)||0; const sq=Number(p.stockQty)||0; return (sq<=0 || (wq>0 && sq<=wq)) ? ` <button class="btn-link" style="color:#f59e0b" onclick="quickReplenish('${p.id}')" title="库存不足/低于预警，一键开补货采购单">补货</button>` : ''; })()}` : ''}
+        </td>` : ''}
         <td>${p.status==='on'?'<span class="tag tag-onshelf">在售</span>':'<span class="tag tag-offshelf">已下架</span>'}</td>
         ${isAdmin ? `<td>
           <button class="btn-link" onclick="openProductModal('${p.id}')">编辑</button>
@@ -14807,6 +15004,16 @@ function openProductModal(productId){
               <input type="number" class="form-control" id="productCost" value="${product?product.cost:''}" placeholder="成本" min="0" step="1">
             </div>` : ''}
           </div>
+          ${isAdmin ? `<div class="form-row">
+            <div class="form-group">
+              <label class="form-label">库存数量</label>
+              <input type="number" class="form-control" id="productStock" value="${product?(Number(product.stockQty)||0):0}" placeholder="当前库存" min="0" step="1">
+            </div>
+            <div class="form-group">
+              <label class="form-label">预警阈值</label>
+              <input type="number" class="form-control" id="productWarn" value="${product?(Number(product.warnQty)||0):0}" placeholder="低于此数标红" min="0" step="1">
+            </div>
+          </div>` : ''}
           ${uncal ? `<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#475569;margin-top:4px">
             <input type="checkbox" id="productCalibConfirmed" style="width:16px;height:16px">
             <span>成本已核实（真实成本确实与售价相同），保存后不再提示校准</span>
@@ -14848,6 +15055,12 @@ function _productRowToSnake(p){
   if(window._prodHasCalibCol === true && p.need_calibration !== undefined && p.need_calibration !== null){
     row.need_calibration = (p.need_calibration === true);
   }
+  // v2026102102 库存系统：库存列仅当云端已加该列时才推送，否则会 PGRST204 导致整条商品推送失败。
+  // 本地无值时不传，避免把云端已算好的库存覆盖成 0。
+  if(window._prodHasStockCol === true && p.stockQty !== undefined && p.stockQty !== null){
+    row.stock_qty = Number(p.stockQty) || 0;
+    row.warn_qty = Number(p.warnQty) || 0;
+  }
   return row;
 }
 // 返回是否成功（v20260917：调用方据此给用户「已同步 / 同步失败」的明确反馈）
@@ -14873,6 +15086,750 @@ async function pushSingleProductToCloud(product){
     return false;
   }
 }
+
+// ============ v2026102102 库存系统：核心出入库辅助 ============
+// 统一的库存变动入口：改 products.stockQty、写 stock_logs 流水、推云端。
+// type 取值：'purchase'(采购入库) / 'outbound'(订单出库) / 'adjust'(手动调整) / 'correction'(纠错回滚)
+// delta 可为负（出库/扣减）。返回 {ok, before, after}。本地 localStorage 永远更新，云端列存在才上推。
+async function applyStockChange(opts){
+  const { productId, delta, type, warehouse, relId, remark } = opts;
+  const products = DB.get('products') || [];
+  const idx = products.findIndex(p => p.id === productId);
+  if(idx < 0) return { ok:false, err:'商品不存在' };
+  const before = Number(products[idx].stockQty) || 0;
+  const after = before + Number(delta) || 0;
+  // v2026102102：库存模式（宽松 loose / 严格 strict），存于本地设置 DB('stockMode')，默认宽松。
+  // 仅「本仓出库(outbound)」受负库存限制：严格模式下库存不足则拒绝；宽松模式允许扣成负库存（先出货后盘点）。
+  // 入库(purchase)/调整(adjust)/盘点(count) 均不受负库存限制。
+  const _stockMode = (DB.get('stockMode') || 'loose');
+  if(after < 0 && type === 'outbound' && _stockMode !== 'loose'){
+    return { ok:false, err:'库存不足，无法出库（当前 '+before+'）' };
+  }
+  products[idx].stockQty = after;
+  products[idx].updatedAt = window.nowStr();
+  DB.set('products', products);
+  // 写流水
+  try{
+    writeStockLog({
+      productId: productId, productName: products[idx].name || '',
+      type: type, delta: delta, beforeQty: before, afterQty: after,
+      warehouse: warehouse || '本仓', relId: relId || '', operator: (currentUser && currentUser.name) || '',
+      remark: remark || ''
+    });
+  }catch(e){ console.warn('写库存流水失败', e); }
+  // 推商品库存上云（列存在才推，_productRowToSnake 已内部保护）
+  if(window._prodHasStockCol === true && window._sbpbClient){
+    try{ await pushSingleProductToCloud(products[idx]); }catch(e){ console.warn('库存上推失败', e); }
+  }
+  return { ok:true, before: before, after: after };
+}
+// 写一条库存变动流水到本地（并尽量上推云端）。stock_logs 表由 supabase_inventory_schema.sql 建表。
+function writeStockLog(log){
+  const list = DB.get('stock_logs') || [];
+  const row = {
+    id: DB.uid('sl_'),
+    productId: log.productId || '', productName: log.productName || '',
+    type: log.type || 'adjust', delta: Number(log.delta) || 0,
+    beforeQty: Number(log.beforeQty) || 0, afterQty: Number(log.afterQty) || 0,
+    warehouse: log.warehouse || '本仓', relId: log.relId || '',
+    operator: log.operator || '', remark: log.remark || '',
+    createdAt: window.nowStr()
+  };
+  list.unshift(row);
+  DB.set('stock_logs', list);
+  if(window._sbpbClient){
+    try{
+      const sbp = window._sbpbClient;
+      const snake = {
+        id: row.id, product_id: row.productId, product_name: row.productName, type: row.type,
+        delta: row.delta, before_qty: row.beforeQty, after_qty: row.afterQty,
+        warehouse: row.warehouse, rel_id: row.relId, operator: row.operator, remark: row.remark,
+        created_at: row.createdAt
+      };
+      sbp.from('stock_logs').insert(snake).then(function(){}, function(){});
+    }catch(e){ console.warn('库存流水上推失败', e); }
+  }
+  return row;
+}
+// 手动出入库弹窗（管理员或操作员，商品列表「出入库」按钮触发）
+function openStockAdjustModal(productId){
+  if(currentUser.role !== 'admin' && currentUser.role !== 'operator'){ showToast('仅管理员/操作员可操作库存','error'); return; }
+  const p = (DB.get('products')||[]).find(x => x.id === productId);
+  if(!p){ showToast('商品不存在','error'); return; }
+  const modalHtml = `
+    <div class="modal-mask" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <div class="modal-header"><h3>📦 出入库调整 · ${escAttr(p.name)}</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+        <div class="modal-body">
+          <div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">当前库存：<b>${Number(p.stockQty)||0}</b>${Number(p.warnQty)>0?'（预警阈值 '+p.warnQty+'）':''}</div>
+          <div class="form-group">
+            <label class="form-label">变动数量（正数=入库，负数=出库）</label>
+            <input type="number" class="form-control" id="stockAdjDelta" value="" placeholder="如 +10 或 -3" step="1">
+          </div>
+          <div class="form-group">
+            <label class="form-label">仓库</label>
+            <input type="text" class="form-control" id="stockAdjWarehouse" value="本仓" placeholder="默认本仓，可手填其他">
+          </div>
+          <div class="form-group">
+            <label class="form-label">备注</label>
+            <input type="text" class="form-control" id="stockAdjRemark" value="" placeholder="如 盘点调整 / 退货入库">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+          <button class="btn btn-primary" onclick="saveStockAdjust('${productId}')">确定</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('modalContainer').innerHTML = modalHtml;
+}
+async function saveStockAdjust(productId){
+  const delta = parseInt(document.getElementById('stockAdjDelta').value);
+  if(isNaN(delta) || delta === 0){ showToast('请输入非 0 的变动数量','error'); return; }
+  const warehouse = (document.getElementById('stockAdjWarehouse').value || '本仓').trim();
+  const remark = (document.getElementById('stockAdjRemark').value || '').trim();
+  closeModal();
+  const r = await applyStockChange({ productId, delta, type:'adjust', warehouse, remark });
+  if(!r.ok){ showToast('出入库失败：'+r.err, 'error', 4000); return; }
+  showToast('✓ 库存已调整：'+r.before+' → '+r.after, 'success', 3000);
+  renderProducts();
+}
+
+// 批量盘点：列出所有在售商品，录入实盘数量，按真实数量覆盖系统库存并写「盘点」流水（不受负库存限制）
+function openBatchCountModal(){
+  if(currentUser.role !== 'admin' && currentUser.role !== 'operator'){ showToast('仅管理员/操作员可盘点','error'); return; }
+  const products = (DB.get('products') || []).filter(function(p){ return p.status !== 'off'; });
+  if(!products.length){ showToast('暂无在售商品，无法盘点','error'); return; }
+  const rows = products.map(function(p){
+    return `<tr>
+      <td>${escapeHtml(p.name||'')}</td>
+      <td style="text-align:center">${Number(p.stockQty)||0}</td>
+      <td style="text-align:center">${Number(p.warnQty)||0}</td>
+      <td><input type="number" class="form-control" id="bc_${p.id}" value="" placeholder="实盘数量" style="width:120px;display:inline-block"></td>
+    </tr>`;
+  }).join('');
+  const modalHtml = `
+    <div class="modal-mask" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:700px">
+        <div class="modal-header"><h3>📋 批量盘点库存</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+        <div class="modal-body">
+          <div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">填写实盘数量后保存，将以实盘数<b>覆盖</b>系统库存并生成「盘点」流水（盘点不受负库存限制）。<b>留空=不改动该商品</b>。</div>
+          <div class="table-wrap" style="max-height:54vh;overflow:auto">
+            <table class="data-table"><thead><tr><th>商品</th><th>系统库存</th><th>预警阈值</th><th>实盘数量</th></tr></thead><tbody>${rows}</tbody></table>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+          <button class="btn btn-primary" onclick="saveBatchCount()">保存盘点结果</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('modalContainer').innerHTML = modalHtml;
+}
+async function saveBatchCount(){
+  const products = DB.get('products') || [];
+  let changed = 0, failed = 0;
+  for(let i=0;i<products.length;i++){
+    const p = products[i];
+    const el = document.getElementById('bc_' + p.id);
+    if(!el || el.value === '' || el.value === null) continue;
+    const real = parseInt(el.value);
+    if(isNaN(real) || real < 0){ failed++; continue; }
+    const before = Number(p.stockQty) || 0;
+    if(real === before) continue;
+    const r = await applyStockChange({ productId: p.id, delta: real - before, type:'count', warehouse:'本仓', remark:'批量盘点（实盘 '+real+'）' });
+    if(r.ok) changed++; else failed++;
+  }
+  closeModal();
+  if(changed) renderProducts();
+  if(failed) showToast('已更新 '+changed+' 个商品，'+failed+' 项录入无效被跳过', 'warning', 4000);
+  else showToast('✓ 盘点完成，共更新 '+changed+' 个商品', 'success', 3000);
+}
+
+// 单个商品盘库：直接填实盘数量，覆盖系统库存并写「盘点」流水（不受负库存限制，动作留痕）
+function openStockTakeModal(productId){
+  if(currentUser.role !== 'admin' && currentUser.role !== 'operator'){ showToast('仅管理员/操作员可盘库','error'); return; }
+  const p = (DB.get('products') || []).find(function(x){ return x.id === productId; });
+  if(!p){ showToast('商品不存在','error'); return; }
+  const cur = Number(p.stockQty) || 0;
+  const modalHtml = `
+    <div class="modal-mask" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <div class="modal-header"><h3>📋 盘库 · ${escAttr(p.name)}</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+        <div class="modal-body">
+          <div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">当前系统库存：<b>${cur}</b>。填入实际盘点数量，保存后将以实盘数<b>覆盖</b>系统库存并生成「盘点」流水（留痕可追溯）。</div>
+          <div class="form-group"><label class="form-label">实盘数量</label><input type="number" class="form-control" id="stockTakeQty" value="${cur}" step="1" min="0"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+          <button class="btn btn-primary" onclick="saveStockTake('${productId}')">保存盘库</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('modalContainer').innerHTML = modalHtml;
+}
+async function saveStockTake(productId){
+  const el = document.getElementById('stockTakeQty');
+  const real = parseInt(el ? el.value : '');
+  if(isNaN(real) || real < 0){ showToast('请输入有效实盘数量','error'); return; }
+  const p = (DB.get('products') || []).find(function(x){ return x.id === productId; });
+  if(!p){ showToast('商品不存在','error'); return; }
+  const before = Number(p.stockQty) || 0;
+  closeModal();
+  const r = await applyStockChange({ productId: productId, delta: real - before, type:'count', warehouse:'本仓', remark:'手动盘库（实盘 '+real+'）' });
+  if(!r.ok){ showToast('盘库失败：'+r.err, 'error', 4000); return; }
+  showToast('✓ 已盘库：'+before+' → '+real, 'success', 3000);
+  renderProducts();
+}
+
+// ============ 订单出库联动库存 ============
+// 订单推进到出库态时，按 items 逐项扣减对应商品库存（delta=-qty），写 stock_logs(type=outbound)。
+// 普通/上门/留仓三类订单共用：统一在 updateOrderStatus 终态触发；_stockDeducted 防重复扣减。
+// 发货仓：逐项读 it.shipWarehouse（订单详情内管理员可改，默认本仓），回退到 order.shipWarehouse 或 '本仓'。
+// 注意：本函数只做扣减、不写 _stockDeducted 标记，由调用方（updateOrderStatus）在全部成功后才标记。
+async function deductStockForOrder(order){
+  if(!order || order._stockDeducted) return { ok:true, skipped:true };
+  const items = Array.isArray(order.items) ? order.items : [];
+  let anyFail = false, failMsg = '', negStock = false;
+  for(let i=0;i<items.length;i++){
+    const it = items[i];
+    if(!it || !it.productId) continue;
+    const qty = Number(it.qty) || 0;
+    if(qty <= 0) continue;
+    let wh = (it.shipWarehouse && String(it.shipWarehouse).trim()) || (order.shipWarehouse && String(order.shipWarehouse).trim()) || '本仓';
+    const _inp = document.getElementById('itWh_'+(order.id)+'_'+i); // 待下单列表/详情页管理员刚填的发货仓
+    if(_inp && _inp.value && _inp.value.trim()) wh = _inp.value.trim();
+    if(wh === '本仓'){
+      // 默认仓（本仓）：真实扣减系统库存 + 写出库流水
+      const r = await applyStockChange({ productId: it.productId, delta: -qty, type:'outbound', warehouse: wh, relId: order.id, remark: '订单出库 · '+(order.customerName||order.id) });
+      if(!r.ok){ anyFail = true; failMsg = r.err; }
+      else if(r.after < 0){ negStock = true; }
+    } else {
+      // 其他仓发货：不扣减默认仓系统库存，仅写一笔留痕（便于追溯从哪个仓出、出了多少）
+      try{
+        const products = DB.get('products')||[];
+        const p = products.find(x => x.id === it.productId);
+        const cur = p ? (Number(p.stockQty)||0) : 0;
+        writeStockLog({ productId: it.productId, productName: p ? p.name : '', type:'outbound_other', delta: -qty, beforeQty: cur, afterQty: cur, warehouse: wh, relId: order.id, operator:(currentUser&&currentUser.name)||'', remark: '从「'+wh+'」发出（非系统仓，未扣减默认仓库存）· '+(order.customerName||order.id) });
+      }catch(e){}
+    }
+  }
+  if(anyFail) showToast('部分商品出库失败（默认仓库存不足）：'+failMsg, 'error', 4500);
+  else if(negStock) showToast('⚠️ 默认仓库存不足，已按实际扣减（出现负库存）。盘点补齐后可到「系统设置」切回严格模式', 'warning', 5500);
+  return { ok:!anyFail };
+}
+
+// v20261023：严格模式出库预检——所有本仓商品库存充足才允许；任一不足返回失败（配合 updateOrderStatus 阻断发货，避免「订单已出但库存账没动」的数据断档）
+function _strictOutboundAllowed(order){
+  const products = DB.get('products') || [];
+  for(let i=0;i<(order.items||[]).length;i++){
+    const it = order.items[i];
+    if(!it || !it.productId) continue;
+    const qty = Number(it.qty) || 0;
+    if(qty <= 0) continue;
+    let wh = (it.shipWarehouse && String(it.shipWarehouse).trim()) || (order.shipWarehouse && String(order.shipWarehouse).trim()) || '本仓';
+    const _inp = document.getElementById('itWh_'+(order.id)+'_'+i);
+    if(_inp && _inp.value && _inp.value.trim()) wh = _inp.value.trim();
+    if(wh === '本仓'){
+      const pr = products.find(p => p.id === it.productId);
+      const have = pr ? (Number(pr.stockQty)||0) : 0;
+      if(have < qty) return { ok:false, name: pr ? pr.name : it.productId, have: have, need: qty };
+    }
+  }
+  return { ok:true };
+}
+
+// ============ v2026102102 库存系统：供应商 / 采购 / 库存台账 三大模块 ============
+
+// ---------- 供应商管理（仅管理员可增删改）----------
+function renderSuppliers(){
+  const isAdmin = !!(currentUser && currentUser.role === 'admin');
+  const html = `
+    <div class="page-actions">
+      <input type="text" class="form-control" id="supplierSearch" placeholder="🔍 搜索名称 / 联系人 / 电话" oninput="filterSuppliers()" style="max-width:260px">
+      ${isAdmin ? `<button class="btn btn-primary" onclick="openSupplierModal()">+ 新增供应商</button>` : ''}
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>名称</th><th>联系人</th><th>电话</th><th>地址</th><th>备注</th>${isAdmin ? '<th>操作</th>' : ''}</tr></thead>
+        <tbody id="supplierTbody"></tbody>
+      </table>
+    </div>`;
+  document.getElementById('mainContent').innerHTML = html;
+  filterSuppliers();
+}
+function filterSuppliers(){
+  const isAdmin = !!(currentUser && currentUser.role === 'admin');
+  const suppliers = DB.get('suppliers') || [];
+  const kw = (document.getElementById('supplierSearch') ? document.getElementById('supplierSearch').value : '').trim().toLowerCase();
+  const list = kw ? suppliers.filter(function(s){
+    return (s.name||'').toLowerCase().indexOf(kw) >= 0 || (s.contact||'').toLowerCase().indexOf(kw) >= 0 || (s.phone||'').toLowerCase().indexOf(kw) >= 0;
+  }) : suppliers;
+  const tbody = document.getElementById('supplierTbody');
+  if(!tbody) return;
+  if(!list.length){
+    tbody.innerHTML = '<tr><td colspan="' + (isAdmin ? 6 : 5) + '" style="text-align:center;color:var(--text-muted)">暂无供应商数据</td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(function(s){
+    return `<tr>
+      <td>${escapeHtml(s.name || '')}</td>
+      <td>${escapeHtml(s.contact || '')}</td>
+      <td>${escapeHtml(s.phone || '')}</td>
+      <td>${escapeHtml(s.address || '')}</td>
+      <td>${escapeHtml(s.remark || '')}</td>
+      ${isAdmin ? `<td class="row-actions"><button class="btn-link" onclick="openSupplierModal('${s.id}')">编辑</button><button class="btn-link danger" onclick="deleteSupplier('${s.id}')">删除</button></td>` : ''}
+    </tr>`;
+  }).join('');
+}
+function openSupplierModal(id){
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可维护供应商', 'error'); return; }
+  const suppliers = DB.get('suppliers') || [];
+  const s = id ? suppliers.find(function(x){ return x.id === id; }) : null;
+  const modalHtml = `
+    <div class="modal-mask" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <div class="modal-header"><h3>${s ? '✏️ 编辑供应商' : '🏭 新增供应商'}</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+        <div class="modal-body">
+          <input type="hidden" id="supId" value="${s ? s.id : ''}">
+          <div class="form-row">
+            <div class="form-group"><label class="form-label">供应商名称 *</label><input type="text" class="form-control" id="supName" value="${s ? escAttr(s.name) : ''}" placeholder="如 某某耗材厂"></div>
+            <div class="form-group"><label class="form-label">联系人</label><input type="text" class="form-control" id="supContact" value="${s ? escAttr(s.contact) : ''}" placeholder="联系人姓名"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label class="form-label">电话</label><input type="text" class="form-control" id="supPhone" value="${s ? escAttr(s.phone) : ''}" placeholder="联系电话"></div>
+            <div class="form-group"><label class="form-label">地址</label><input type="text" class="form-control" id="supAddress" value="${s ? escAttr(s.address) : ''}" placeholder="地址"></div>
+          </div>
+          <div class="form-group"><label class="form-label">备注</label><input type="text" class="form-control" id="supRemark" value="${s ? escAttr(s.remark) : ''}" placeholder="备注信息"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+          <button class="btn btn-primary" onclick="saveSupplier()">保存</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('modalContainer').innerHTML = modalHtml;
+}
+function saveSupplier(){
+  const name = (document.getElementById('supName').value || '').trim();
+  if(!name){ showToast('请填写供应商名称', 'error'); return; }
+  const id = (document.getElementById('supId').value || '').trim();
+  const contact = (document.getElementById('supContact').value || '').trim();
+  const phone = (document.getElementById('supPhone').value || '').trim();
+  const address = (document.getElementById('supAddress').value || '').trim();
+  const remark = (document.getElementById('supRemark').value || '').trim();
+  const suppliers = DB.get('suppliers') || [];
+  const _now = window.nowStr();
+  if(id){
+    const idx = suppliers.findIndex(function(x){ return x.id === id; });
+    if(idx >= 0){ suppliers[idx] = Object.assign({}, suppliers[idx], { name: name, contact: contact, phone: phone, address: address, remark: remark, updatedAt: _now }); }
+  } else {
+    suppliers.unshift({ id: DB.uid('sp_'), name: name, contact: contact, phone: phone, address: address, remark: remark, createdAt: _now, updatedAt: _now });
+  }
+  DB.set('suppliers', suppliers);
+  closeModal();
+  showToast('✓ 供应商已保存', 'success');
+  renderSuppliers();
+}
+function deleteSupplier(id){
+  if(!confirm('确定删除该供应商？该操作不可撤销。')) return;
+  const suppliers = (DB.get('suppliers') || []).filter(function(x){ return x.id !== id; });
+  DB.set('suppliers', suppliers);
+  showToast('已删除', 'success');
+  renderSuppliers();
+}
+
+// ---------- 采购管理（仅管理员）----------
+function renderPurchases(){
+  const isAdmin = !!(currentUser && currentUser.role === 'admin');
+  const html = `
+    <div class="page-actions">
+      <select class="form-control" id="purchaseFilter" onchange="filterPurchases()" style="max-width:200px">
+        <option value="">全部状态</option>
+        <option value="ordered">已下单</option>
+        <option value="partial">部分入库</option>
+        <option value="inbound">已入库</option>
+      </select>
+      ${isAdmin ? `<button class="btn btn-primary" onclick="openPurchaseModal()">+ 新建采购单</button>` : ''}
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>单号</th><th>供应商</th><th>商品数</th><th>金额</th><th>预计到货</th><th>状态</th><th>创建时间</th>${isAdmin ? '<th>操作</th>' : ''}</tr></thead>
+        <tbody id="purchaseTbody"></tbody>
+      </table>
+    </div>`;
+  document.getElementById('mainContent').innerHTML = html;
+  filterPurchases();
+}
+function filterPurchases(){
+  const isAdmin = !!(currentUser && currentUser.role === 'admin');
+  const purchases = DB.get('purchases') || [];
+  const f = document.getElementById('purchaseFilter') ? document.getElementById('purchaseFilter').value : '';
+  const list = (f ? purchases.filter(function(p){ return p.status === f; }) : purchases).slice().sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
+  const tbody = document.getElementById('purchaseTbody');
+  if(!tbody) return;
+  if(!list.length){
+    tbody.innerHTML = '<tr><td colspan="' + (isAdmin ? 8 : 7) + '" style="text-align:center;color:var(--text-muted)">暂无采购单</td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(function(p){
+    const itemCount = (p.items || []).reduce(function(s,it){ return s + (Number(it.qty)||0); }, 0);
+    const _partial = (p.items||[]).some(function(it){ return (Number(it.inboundQty)||0) > 0 && (Number(it.inboundQty)||0) < (Number(it.qty)||0); });
+    const statusLabel = p.status === 'inbound' ? '<span class="badge badge-success">已入库</span>' : (_partial ? '<span class="badge badge-info">部分入库</span>' : '<span class="badge badge-warning">已下单</span>');
+    const _inbounded = (p.items||[]).reduce(function(s,it){return s+(Number(it.inboundQty)||0);},0);
+    const ops = isAdmin ? `<td class="row-actions">${p.status !== 'inbound' ? `<button class="btn-link" onclick="openInboundModal('${p.id}')">${_inbounded>0?'继续入库':'入库'}</button>` : ''}<button class="btn-link danger" onclick="deletePurchase('${p.id}')">删除</button></td>` : '';
+    return `<tr>
+      <td>${escapeHtml(p.id || '')}</td>
+      <td>${escapeHtml(p.supplierName || '')}</td>
+      <td>${itemCount}</td>
+      <td>¥${Number(p.totalAmount||0).toFixed(2)}</td>
+      <td>${escapeHtml(p.expectDate || '—')}</td>
+      <td>${statusLabel}</td>
+      <td>${escapeHtml((p.createdAt||'').slice(0,10))}</td>
+      ${ops}
+    </tr>`;
+  }).join('');
+}
+// 取某商品「最近一次采购单价」：倒序找最近含该商品的采购行；找不到则回落商品成本 cost
+function getLastPurchaseCost(productId){
+  if(!productId) return 0;
+  const purchases = DB.get('purchases') || [];
+  for(let i = purchases.length - 1; i >= 0; i--){
+    const it = (purchases[i].items || []).find(function(x){ return x.productId === productId; });
+    if(it && Number(it.unitCost) > 0) return Number(it.unitCost);
+  }
+  const pr = (DB.get('products') || []).find(function(x){ return x.id === productId; });
+  return pr ? (Number(pr.cost) || 0) : 0;
+}
+// 采购单里切换商品时，自动把单价带出为「最近一次采购价」（没有则商品成本），减少重复录入
+function onPurchaseProductChange(sel){
+  const pid = sel && sel.value;
+  if(!pid) return;
+  const def = getLastPurchaseCost(pid);
+  const row = sel.parentNode;
+  const costEl = row ? row.querySelector('.pi-cost') : null;
+  if(costEl){ costEl.value = def; }
+  recalcPurchaseTotal();
+}
+// v20261022：库存低于预警时，管理员一键开补货采购单（预填该商品 + 建议补货量 + 最近采购价）
+function quickReplenish(productId){
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可创建采购单','error'); return; }
+  const suppliers = DB.get('suppliers') || [];
+  if(!suppliers.length){ showToast('请先到「供应商管理」添加至少一家供应商','error',4000); return; }
+  const p = (DB.get('products')||[]).find(function(x){ return x.id === productId; });
+  if(!p){ showToast('商品不存在','error'); return; }
+  const suggest = Math.max(1, (Number(p.warnQty)||0) - (Number(p.stockQty)||0));
+  openPurchaseModal(null, { productId: productId, qty: suggest, unitCost: getLastPurchaseCost(productId) });
+}
+function openPurchaseModal(id){
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可创建采购单', 'error'); return; }
+  const suppliers = DB.get('suppliers') || [];
+  const products = DB.get('products') || [];
+  const purchases = DB.get('purchases') || [];
+  const p = id ? purchases.find(function(x){ return x.id === id; }) : null;
+  if(!suppliers.length){ showToast('请先到「供应商管理」添加至少一家供应商', 'error', 4000); return; }
+  const suppOpts = suppliers.map(function(s){ return `<option value="${s.id}" ${p && p.supplierId === s.id ? 'selected' : ''}>${escAttr(s.name)}</option>`; }).join('');
+  const modalHtml = `
+    <div class="modal-mask" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:660px">
+        <div class="modal-header"><h3>📥 ${p ? '编辑采购单' : '新建采购单'}</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+        <div class="modal-body">
+          <input type="hidden" id="poId" value="${p ? p.id : ''}">
+          <div class="form-row">
+            <div class="form-group"><label class="form-label">供应商 *</label><select class="form-control" id="poSupplier">${suppOpts}</select></div>
+            <div class="form-group"><label class="form-label">预计到货</label><input type="date" class="form-control" id="poExpect" value="${p && p.expectDate ? p.expectDate : ''}"></div>
+          </div>
+          <label class="form-label">采购商品</label>
+          <div id="purchaseItems"></div>
+          <button class="btn btn-secondary" style="margin:6px 0" onclick="addPurchaseItemRow()">+ 添加商品</button>
+          <div class="form-group"><label class="form-label">备注</label><input type="text" class="form-control" id="poRemark" value="${p ? escAttr(p.remark) : ''}" placeholder="如 补货 / 订制"></div>
+          <div style="text-align:right;font-size:15px;margin-top:8px">合计：<b id="purchaseTotal">¥0.00</b></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+          <button class="btn btn-primary" onclick="savePurchase()">保存</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('modalContainer').innerHTML = modalHtml;
+  const _preset = (arguments.length > 1) ? arguments[1] : null;
+  if(p && p.items && p.items.length){
+    p.items.forEach(function(it){ addPurchaseItemRow(it); });
+  } else if(_preset){
+    addPurchaseItemRow(_preset);
+  } else {
+    addPurchaseItemRow(null);
+  }
+  recalcPurchaseTotal();
+}
+function addPurchaseItemRow(preset){
+  const products = DB.get('products') || [];
+  const prodOpts = products.map(function(pr){ return `<option value="${pr.id}" ${preset && preset.productId === pr.id ? 'selected' : ''}>${escAttr(pr.name)}（库存${Number(pr.stockQty)||0}）</option>`; }).join('');
+  const row = document.createElement('div');
+  row.className = 'purchase-item-row';
+  row.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;align-items:center';
+  row.innerHTML = `
+    <select class="form-control pi-product" style="flex:2" onchange="onPurchaseProductChange(this)">${prodOpts}</select>
+    <input type="number" class="form-control pi-qty" placeholder="数量" style="width:90px" min="1" value="${preset ? (Number(preset.qty)||1) : 1}" oninput="recalcPurchaseTotal()">
+    <input type="number" class="form-control pi-cost" placeholder="单价" style="width:110px" min="0" step="0.01" value="${preset ? (Number(preset.unitCost)||0) : 0}" oninput="recalcPurchaseTotal()">
+    <span class="pi-sub" style="width:90px;text-align:right;color:var(--text-muted)">¥0</span>
+    <button class="btn-link danger" onclick="this.parentNode.remove();recalcPurchaseTotal()">×</button>`;
+  document.getElementById('purchaseItems').appendChild(row);
+  recalcPurchaseTotal();
+}
+function recalcPurchaseTotal(){
+  let total = 0;
+  const rows = document.querySelectorAll('#purchaseItems .purchase-item-row');
+  rows.forEach(function(row){
+    const qty = parseFloat(row.querySelector('.pi-qty').value) || 0;
+    const cost = parseFloat(row.querySelector('.pi-cost').value) || 0;
+    const sub = qty * cost;
+    total += sub;
+    const subEl = row.querySelector('.pi-sub');
+    if(subEl) subEl.textContent = '¥' + sub.toFixed(2);
+  });
+  const el = document.getElementById('purchaseTotal');
+  if(el) el.textContent = '¥' + total.toFixed(2);
+}
+function savePurchase(){
+  const supplierId = (document.getElementById('poSupplier').value || '').trim();
+  if(!supplierId){ showToast('请选择供应商', 'error'); return; }
+  const suppliers = DB.get('suppliers') || [];
+  const supplier = suppliers.find(function(s){ return s.id === supplierId; });
+  const products = DB.get('products') || [];
+  const prodMap = {};
+  products.forEach(function(pr){ prodMap[pr.id] = pr.name; });
+  const items = [];
+  document.querySelectorAll('#purchaseItems .purchase-item-row').forEach(function(row){
+    const pid = row.querySelector('.pi-product').value;
+    const qty = parseInt(row.querySelector('.pi-qty').value) || 0;
+    const cost = parseFloat(row.querySelector('.pi-cost').value) || 0;
+    if(pid && qty > 0){ items.push({ productId: pid, productName: prodMap[pid] || '', qty: qty, unitCost: cost }); }
+  });
+  if(!items.length){ showToast('请至少添加一行有效的采购商品', 'error'); return; }
+  const totalAmount = items.reduce(function(s,it){ return s + it.qty * it.unitCost; }, 0);
+  const id = (document.getElementById('poId').value || '').trim();
+  const expectDate = (document.getElementById('poExpect').value || '').trim();
+  const remark = (document.getElementById('poRemark').value || '').trim();
+  const purchases = DB.get('purchases') || [];
+  const _now = window.nowStr();
+  if(id){
+    const idx = purchases.findIndex(function(x){ return x.id === id; });
+    if(idx >= 0){
+      const _oldMap = {};
+      (purchases[idx].items || []).forEach(function(o){ if(o.productId) _oldMap[o.productId] = (Number(o.inboundQty)||0); });
+      items = items.map(function(it){ return Object.assign({}, it, { inboundQty: _oldMap[it.productId] || 0 }); });
+      purchases[idx] = Object.assign({}, purchases[idx], { supplierId: supplierId, supplierName: supplier ? supplier.name : '', items: items, totalAmount: totalAmount, expectDate: expectDate, remark: remark, updatedAt: _now });
+    }
+  } else {
+    purchases.unshift({ id: DB.uid('po_'), supplierId: supplierId, supplierName: supplier ? supplier.name : '', items: items, totalAmount: totalAmount, status: 'ordered', expectDate: expectDate, remark: remark, createdAt: _now, updatedAt: _now });
+  }
+  DB.set('purchases', purchases);
+  closeModal();
+  showToast('✓ 采购单已保存', 'success');
+  renderPurchases();
+}
+// v20261022：采购单支持「按行部分入库」。打开入库弹窗，逐行填本次入库数量；
+// 已入量累计到 item.inboundQty，全部入完才标记 status='inbound'，否则保持 partial。
+async function openInboundModal(id){
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可入库', 'error'); return; }
+  const purchases = DB.get('purchases') || [];
+  const idx = purchases.findIndex(function(x){ return x.id === id; });
+  if(idx < 0){ showToast('采购单不存在', 'error'); return; }
+  const p = purchases[idx];
+  if(p.status === 'inbound'){ showToast('该单已全部入库', 'error'); return; }
+  const rows = (p.items || []).map(function(it, i){
+    const qty = Number(it.qty) || 0;
+    const inb = Number(it.inboundQty) || 0;
+    const remain = Math.max(0, qty - inb);
+    return `<div class="purchase-item-row" style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+      <span style="flex:2">${escAttr(it.productName || it.productId)}</span>
+      <span style="width:80px;text-align:center;color:var(--text-muted)">应入 ${qty}</span>
+      <span style="width:80px;text-align:center;color:var(--text-muted)">已入 ${inb}</span>
+      <input type="number" class="form-control ib-qty" data-i="${i}" placeholder="本次" style="width:100px" min="0" max="${remain}" value="${remain}" oninput="syncInboundTotal()">
+      <span style="width:70px;text-align:center;color:var(--text-muted)">待入 ${remain}</span>
+    </div>`;
+  }).join('');
+  const modalHtml = `
+    <div class="modal-mask" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:680px">
+        <div class="modal-header"><h3>📥 入库 · ${escAttr(p.supplierName||'')} · ${escAttr(p.id||'')}</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+        <div class="modal-body">
+          <div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">按行填写「本次入库数量」，可部分入库（留待下次继续）；全部入完才标记完成。</div>
+          <div id="inboundRows">${rows || '<div style="color:var(--text-muted)">该单无商品</div>'}</div>
+          <div style="text-align:right;margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="fillAllInbound()">全部填满</button></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+          <button class="btn btn-primary" onclick="confirmInbound('${p.id}')">确认入库</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('modalContainer').innerHTML = modalHtml;
+}
+function fillAllInbound(){
+  document.querySelectorAll('#inboundRows .ib-qty').forEach(function(el){ el.value = el.max || 0; });
+  syncInboundTotal();
+}
+function syncInboundTotal(){}
+async function confirmInbound(id){
+  const purchases = DB.get('purchases') || [];
+  const idx = purchases.findIndex(function(x){ return x.id === id; });
+  if(idx < 0){ showToast('采购单不存在', 'error'); return; }
+  const p = purchases[idx];
+  let allDone = true, anyIn = false;
+  const inputs = document.querySelectorAll('#inboundRows .ib-qty');
+  const items = (p.items || []).map(function(it, i){
+    const qty = Number(it.qty) || 0;
+    const inb = Number(it.inboundQty) || 0;
+    const remain = Math.max(0, qty - inb);
+    const el = inputs ? inputs[i] : null;
+    let add = el ? (parseInt(el.value) || 0) : 0;
+    if(add < 0) add = 0;
+    if(add > remain) add = remain;
+    if(add > 0) anyIn = true;
+    const newInb = inb + add;
+    if(newInb < qty) allDone = false;
+    return Object.assign({}, it, { inboundQty: newInb });
+  });
+  if(!anyIn){ showToast('请输入本次入库数量', 'error'); return; }
+  for(let i=0;i<items.length;i++){
+    const it = items[i];
+    const oldInb = Number(p.items[i] ? p.items[i].inboundQty : 0) || 0;
+    const add = (Number(items[i].inboundQty)||0) - oldInb;
+    if(add <= 0) continue;
+    const batchNo = oldInb > 0 ? '（部分 第' + (oldInb + add) + '件）' : '';
+    const r = await applyStockChange({ productId: it.productId, delta: add, type: 'purchase', relId: p.id, remark: '采购入库' + batchNo + ' · ' + (p.supplierName||'') });
+    if(!r.ok){ showToast('入库失败：' + r.err, 'error', 4500); return; }
+    // v20261022：入库时同步回写商品成本——基于 applyStockChange 之后的最新库存，避免覆盖刚写入的库存量
+    const productsNow = DB.get('products') || [];
+    const pr = productsNow.find(function(x){ return x.id === it.productId; });
+    if(pr && pr.cost !== it.unitCost){ pr.cost = Number(it.unitCost) || 0; DB.set('products', productsNow); }
+  }
+  const newStatus = allDone ? 'inbound' : 'partial';
+  purchases[idx] = Object.assign({}, p, { items: items, status: newStatus, inboundAt: allDone ? window.nowStr() : p.inboundAt, updatedAt: window.nowStr() });
+  DB.set('purchases', purchases);
+  closeModal();
+  showToast(allDone ? '✓ 已全额入库，库存已增加' : '✓ 已部分入库（' + items.reduce(function(s,x){return s+(Number(x.inboundQty)||0);},0) + '/' + items.reduce(function(s,x){return s+(Number(x.qty)||0);},0) + '）', 'success', 3500);
+  renderPurchases();
+}
+function deletePurchase(id){
+  if(!confirm('确定删除该采购单？删除后不影响已入库库存。')) return;
+  const purchases = (DB.get('purchases') || []).filter(function(x){ return x.id !== id; });
+  DB.set('purchases', purchases);
+  showToast('已删除', 'success');
+  renderPurchases();
+}
+
+// ---------- 库存台账（管理员或操作员）----------
+const STOCK_TYPE_LABEL = { outbound:'出库', outbound_other:'他仓出库', purchase:'采购入库', adjust:'手动调整', count:'盘点', correction:'纠错', initial:'初始化' };
+function stockTypeBadge(type){
+  const map = { outbound:['badge-danger','出库'], outbound_other:['badge-warning','他仓出库'], purchase:['badge-success','采购入库'], adjust:['badge-info','手动调整'], count:['badge-info','盘点'], correction:['badge-warning','纠错'], initial:['badge-secondary','初始化'] };
+  const m = map[type] || ['badge-secondary', (STOCK_TYPE_LABEL[type] || type || '其他')];
+  return '<span class="badge ' + m[0] + '">' + m[1] + '</span>';
+}
+function renderStockLedger(){
+  if(currentUser.role !== 'admin' && currentUser.role !== 'operator'){ showToast('仅管理员/操作员可查看库存台账', 'error'); return; }
+  const products = DB.get('products') || [];
+  const lowStock = products.filter(function(pr){ const sq = Number(pr.stockQty)||0; const wq = Number(pr.warnQty)||0; return wq > 0 && sq <= wq; });
+  const negStock = products.filter(function(pr){ return (Number(pr.stockQty)||0) < 0; });
+  const html = `
+    <div class="kpi-row">
+      <div class="kpi-card"><div class="kpi-value">${products.length}</div><div class="kpi-label">商品总数</div></div>
+      <div class="kpi-card ${lowStock.length ? 'kpi-danger' : ''}"><div class="kpi-value">${lowStock.length}</div><div class="kpi-label">低于预警阈值</div></div>
+      <div class="kpi-card"><div class="kpi-value">${products.reduce(function(s,p){ return s + (Number(p.stockQty)||0); }, 0)}</div><div class="kpi-label">库存总量(件)</div></div>
+      <div class="kpi-card ${negStock.length ? 'kpi-danger' : ''}"><div class="kpi-value">${negStock.length}</div><div class="kpi-label">负库存商品</div></div>
+    </div>
+    ${lowStock.length ? `<div class="alert alert-warning">⚠️ 库存预警：${lowStock.map(function(p){ return escAttr(p.name) + '(' + (Number(p.stockQty)||0) + '/' + (Number(p.warnQty)||0) + ')'; }).join('、')}</div>` : ''}
+    <div class="page-actions">
+      <input type="text" class="form-control" id="ledgerProduct" placeholder="🔍 商品名" oninput="filterStockLedger()" style="max-width:200px">
+      <select class="form-control" id="ledgerType" onchange="filterStockLedger()" style="max-width:160px">
+        <option value="">全部类型</option>
+        <option value="outbound">出库(本仓)</option>
+        <option value="outbound_other">他仓出库</option>
+        <option value="purchase">采购入库</option>
+        <option value="adjust">手动调整</option>
+        <option value="count">盘点</option>
+      </select>
+      <input type="date" class="form-control" id="ledgerDate" onchange="filterStockLedger()" style="max-width:170px" title="按日期筛选">
+      <button class="btn btn-secondary btn-sm" onclick="exportStockLedgerCSV()">📥 导出CSV</button>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>时间</th><th>商品</th><th>类型</th><th>变动</th><th>变动前</th><th>变动后</th><th>仓库</th><th>关联单号</th><th>操作人</th><th>备注</th></tr></thead>
+        <tbody id="ledgerTbody"></tbody>
+      </table>
+    </div>`;
+  document.getElementById('mainContent').innerHTML = html;
+  filterStockLedger();
+}
+function filterStockLedger(){
+  const logs = (DB.get('stock_logs') || []).slice().sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
+  const kw = (document.getElementById('ledgerProduct') ? document.getElementById('ledgerProduct').value : '').trim().toLowerCase();
+  const type = document.getElementById('ledgerType') ? document.getElementById('ledgerType').value : '';
+  const date = document.getElementById('ledgerDate') ? document.getElementById('ledgerDate').value : '';
+  const list = logs.filter(function(l){
+    if(kw && (l.productName||'').toLowerCase().indexOf(kw) < 0) return false;
+    if(type && l.type !== type) return false;
+    if(date && (l.createdAt||'').slice(0,10) !== date) return false;
+    return true;
+  });
+  const tbody = document.getElementById('ledgerTbody');
+  if(!tbody) return;
+  if(!list.length){
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-muted)">暂无库存变动记录</td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(function(l){
+    const delta = Number(l.delta) || 0;
+    const deltaTxt = (delta > 0 ? '+' : '') + delta;
+    const deltaColor = delta > 0 ? '#16a34a' : (delta < 0 ? 'var(--danger)' : 'inherit');
+    return `<tr>
+      <td>${escapeHtml((l.createdAt||'').replace('T',' ').slice(0,19))}</td>
+      <td>${escapeHtml(l.productName || '')}</td>
+      <td>${stockTypeBadge(l.type)}</td>
+      <td style="color:${deltaColor};font-weight:600">${deltaTxt}</td>
+      <td>${Number(l.beforeQty)||0}</td>
+      <td>${Number(l.afterQty)||0}</td>
+      <td>${escapeHtml(l.warehouse || '')}</td>
+      <td>${escapeHtml(l.relId || '')}</td>
+      <td>${escapeHtml(l.operator || '')}</td>
+      <td>${escapeHtml(l.remark || '')}</td>
+    </tr>`;
+  }).join('');
+}
+
+// v20261022：库存台账导出 CSV（按当前筛选结果），带 BOM 防 Excel 中文乱码
+function exportStockLedgerCSV(){
+  const logs = (DB.get('stock_logs') || []).slice().sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
+  const kw = (document.getElementById('ledgerProduct') ? document.getElementById('ledgerProduct').value : '').trim().toLowerCase();
+  const type = document.getElementById('ledgerType') ? document.getElementById('ledgerType').value : '';
+  const date = document.getElementById('ledgerDate') ? document.getElementById('ledgerDate').value : '';
+  const list = logs.filter(function(l){
+    if(kw && (l.productName||'').toLowerCase().indexOf(kw) < 0) return false;
+    if(type && l.type !== type) return false;
+    if(date && (l.createdAt||'').slice(0,10) !== date) return false;
+    return true;
+  });
+  if(!list.length){ showToast('当前筛选无数据可导出','error'); return; }
+  const headers = ['时间','商品','类型','变动','变动前','变动后','仓库','关联单号','操作人','备注'];
+  const typeLabel = { outbound:'出库', outbound_other:'他仓出库', purchase:'采购入库', adjust:'手动调整', count:'盘点', correction:'纠错', initial:'初始化' };
+  const rows = list.map(function(l){
+    return [ (l.createdAt||'').replace('T',' ').slice(0,19), l.productName||'', typeLabel[l.type]||l.type||'', (Number(l.delta)>0?'+':'')+(Number(l.delta)||0), Number(l.beforeQty)||0, Number(l.afterQty)||0, l.warehouse||'', l.relId||'', l.operator||'', l.remark||'' ];
+  });
+  const csv = [headers].concat(rows).map(function(r){
+    return r.map(function(c){ c = String(c); if(c.indexOf(',')>=0 || c.indexOf('"')>=0 || c.indexOf('\n')>=0){ c = '"' + c.replace(/"/g,'""') + '"'; } return c; }).join(',');
+  }).join('\r\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = '库存台账_' + (window.nowStr ? window.nowStr().slice(0,10) : '') + '.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('✓ 已导出 ' + list.length + ' 条流水', 'success');
+}
+
+// ============ 库存系统模块结束 ============
 
 // v2026091705：历史脏数据自愈——某些订单/售后单的 items 字段被存成了 JSON 字符串
 // （如 '[]'），导致 (o.items||[]).forEach / .some 抛「is not a function」，进而中断保存或渲染。
@@ -14924,6 +15881,14 @@ async function saveProduct(){
   }
   if(!name){ showToast('请输入商品名称','error'); return; }
   if(isNaN(price) || price < 0){ showToast('请输入有效售价','error'); return; }
+  // v2026102102 库存字段：仅管理员可编辑，写入商品对象
+  let stockQty = 0, warnQty = 0;
+  if(isAdmin){
+    const _sq = parseInt(document.getElementById('productStock').value);
+    const _wq = parseInt(document.getElementById('productWarn').value);
+    stockQty = isNaN(_sq) || _sq < 0 ? 0 : _sq;
+    warnQty = isNaN(_wq) || _wq < 0 ? 0 : _wq;
+  }
   const calibConfirmed = (document.getElementById('productCalibConfirmed') || {}).checked === true;
   // 管理员保存后是否仍需提示「待校准」：成本未填，或成本与售价完全相同且没勾「成本已核实」
   const stillUncalibrated = !cost || (Number(cost) === Number(price) && !calibConfirmed);
@@ -14962,7 +15927,7 @@ async function saveProduct(){
     if(idx >= 0){
       _origName = products[idx].name; // 记录编辑前原名，撞唯一索引时回滚
       _wasUncal = isUncalibrated(products[idx]); // v20261008：必须在覆盖前取，覆盖后 auto_added 已删就取不到了
-      products[idx] = {...products[idx], name, category, price, cost, updatedAt: _nowStr};
+      products[idx] = {...products[idx], name, category, price, cost, stockQty, warnQty, updatedAt: _nowStr};
       delete products[idx].auto_added;
       if(isAdmin){
         // 校准完成（成本已填且≠售价，或管理员勾选了「成本已核实」）→ 清除待校准；否则继续保持提醒
@@ -14973,7 +15938,7 @@ async function saveProduct(){
     }
   }else{
     savedProduct = {
-      id: DB.uid('p_'), name, category, price, cost, status:'on', createdAt: _nowStr, updatedAt: _nowStr
+      id: DB.uid('p_'), name, category, price, cost, status:'on', stockQty, warnQty, createdAt: _nowStr, updatedAt: _nowStr
     };
     if(!isAdmin){
       // 销售在商品管理页新增：成本默认=售价，并标记待校准，提醒管理员补全真实成本
@@ -17461,7 +18426,22 @@ function renderSettings(){
   html += '</tbody></table></div></div>';
 
   html += '</div>';
+  html += '<div class="detail-section card" style="margin-top:16px"><h4 style="margin-bottom:12px">📦 库存模式</h4>';
+  html += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">控制「默认仓库存不足时能否出库」：<br>· <b>宽松</b>：允许出库并记负库存（适合先出货、后盘点补货）；<br>· <b>严格</b>：库存不足禁止出库（适合库存必须准确，出库前先盘点）。</div>';
+  const _sm = DB.get('stockMode') || 'loose';
+  html += '<select class="form-control" id="stockModeSel" onchange="saveStockMode()" style="max-width:300px"><option value="loose" '+( _sm==='loose'?'selected':'')+'>宽松（允许负库存 / 先出货后盘点）</option><option value="strict" '+( _sm==='strict'?'selected':'')+'>严格（库存不足禁止出库）</option></select>';
+  html += '<div style="margin-top:8px;font-size:12px;color:#64748b">当前模式：<b>'+( _sm==='loose'?'宽松':'严格')+'</b>。设置保存在本机，多设备需分别设置。</div>';
+  html += '</div>';
+  html += '</div>';
   document.getElementById('mainContent').innerHTML = html;
+}
+function saveStockMode(){
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可设置库存模式','error'); return; }
+  const sel = document.getElementById('stockModeSel');
+  if(!sel) return;
+  const val = sel.value === 'strict' ? 'strict' : 'loose';
+  DB.set('stockMode', val);
+  showToast('库存模式已设为：' + (val === 'loose' ? '宽松（允许负库存）' : '严格（库存不足禁止出库）'), 'success', 3500);
 }
 
 function changeUserRole(userId, role){
