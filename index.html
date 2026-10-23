@@ -1724,7 +1724,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026102302</div>
+          <div class="brand-sub">v2026102303</div>
         </div>
       </div>
     </div>
@@ -7096,7 +7096,7 @@ async function renderOrders(){
               let _whHtml;
               if(_whRaw === '待填写'){ _whHtml = '<span style="color:var(--warning)">手动填写(待补仓名)</span>'; }
               else if(_isDefWh){ _whHtml = '系统默认仓'; }
-              else { _whHtml = escapeHtml(_whRaw) + '<br><span style="font-size:11px;color:var(--text-muted)">不扣库存</span>'; }
+              else { _whHtml = escapeHtml(_whRaw); }
               html += `<td style="font-size:12px">${_whHtml}</td>`;
             }
             html += `</tr>`;
@@ -7132,7 +7132,7 @@ async function renderOrders(){
               // 已下单 Tab：发货仓只读展示（仅管理员/操作员可见），下单后再不可改
               const _wh = (it.shipWarehouse && String(it.shipWarehouse).trim()) || (o.shipWarehouse && String(o.shipWarehouse).trim()) || '本仓';
               const _isDefault = _wh === '本仓';
-              html += `<td style="font-size:12px">${escapeHtml(_isDefault ? '系统默认仓' : _wh)}${_isDefault?'':`<br><span style="font-size:11px;color:var(--text-muted)">不扣库存</span>`}</td>`;
+              html += `<td style="font-size:12px">${escapeHtml(_isDefault ? '系统默认仓' : _wh)}</td>`;
             }
             html += `</tr>`;
           });
@@ -10244,8 +10244,8 @@ function copySingleOrderInfo(orderId){
       const base = (it.name || '未命名商品') + ' ×' + qty;
       lines.push(base + mark);
     });
-    // 备注行（始终显示）
-    lines.push('备注：' + (order.remark || ''));
+    // 备注行（有内容才显示）
+    if(order.remark && order.remark.trim()){ lines.push('备注：' + order.remark.trim()); }
     // 上门订单：追加备货统计 + 货款统计 + 国补统计
     let totalQty = 0, stockedQty = 0, inTransitQty = 0, needStockQty = 0, shippedQty = 0;
     const govItems = [];
@@ -10301,8 +10301,8 @@ function copySingleOrderInfo(orderId){
     if(order.items && order.items.length){
       order.items.forEach(it => { lines.push((it.name || '未命名商品') + ' ×' + (it.qty || 1)); });
     }
-    // 备注行（始终显示）
-    lines.push('备注：' + (order.remark || ''));
+    // 备注行（有内容才显示）
+    if(order.remark && order.remark.trim()){ lines.push('备注：' + order.remark.trim()); }
   }
   copyToClipboardWithMsg(lines.join('\n'));
 }
@@ -15463,6 +15463,8 @@ function renderPurchases(){
   const isAdmin = !!(currentUser && currentUser.role === 'admin');
   const html = `
     <div class="page-actions">
+      <input type="text" class="form-control" id="purchaseSearch" placeholder="搜索单号 / 供应商 / 商品 / 备注" style="max-width:260px" onkeydown="if(event.key==='Enter')filterPurchases()" oninput="filterPurchases()">
+      <button class="btn btn-secondary" onclick="filterPurchases()">🔍 检索</button>
       <select class="form-control" id="purchaseFilter" onchange="filterPurchases()" style="max-width:200px">
         <option value="">全部状态</option>
         <option value="ordered">已下单</option>
@@ -15484,7 +15486,24 @@ function filterPurchases(){
   const isAdmin = !!(currentUser && currentUser.role === 'admin');
   const purchases = DB.get('purchases') || [];
   const f = document.getElementById('purchaseFilter') ? document.getElementById('purchaseFilter').value : '';
-  const list = (f ? purchases.filter(function(p){ return p.status === f; }) : purchases).slice().sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
+  // v2026102303：关键字检索（单号/供应商/商品名/备注），支持空格分隔多关键字（需全部命中）
+  const searchEl = document.getElementById('purchaseSearch');
+  const rawQ = searchEl ? searchEl.value.trim().toLowerCase() : '';
+  let list = purchases;
+  if(f) list = list.filter(function(p){ return p.status === f; });
+  if(rawQ){
+    const tokens = rawQ.split(/\s+/).filter(Boolean);
+    const products = DB.get('products') || [];
+    const pnameMap = {};
+    products.forEach(function(pr){ pnameMap[pr.id] = (pr.name || '').toLowerCase(); });
+    list = list.filter(function(p){
+      const hay = [p.id || '', p.supplierName || '', p.remark || '']
+        .concat((p.items || []).map(function(it){ return pnameMap[it.productId] || ''; }))
+        .join(' ').toLowerCase();
+      return tokens.every(function(t){ return hay.indexOf(t) !== -1; });
+    });
+  }
+  list = list.slice().sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
   const tbody = document.getElementById('purchaseTbody');
   if(!tbody) return;
   if(!list.length){
