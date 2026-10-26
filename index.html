@@ -1724,7 +1724,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026102306</div>
+          <div class="brand-sub">v2026102307</div>
         </div>
       </div>
     </div>
@@ -14380,6 +14380,33 @@ function exportUnmatchedFreight(){
   a.click();
 }
 
+// 批次显示名：优先用该批次记录的导入时间（created_at 最早一条）→ 解码批次号内 base36 时间戳 → 日期段 → 原样
+function _fmtBatchTime(v){
+  try{
+    const d = new Date(v);
+    if(isNaN(d.getTime())) return '';
+    const p = function(n){ return String(n).padStart(2, '0'); };
+    return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }catch(e){ return ''; }
+}
+function freightBatchLabel(bid, items){
+  if(!bid || bid === '未分组') return bid || '';
+  let t = '';
+  (items || []).forEach(function(f){
+    const s = _fmtBatchTime(f && f.created_at);
+    if(s && (!t || s < t)) t = s; // 取最早一条 = 导入时刻
+  });
+  if(t) return t;
+  const parts = String(bid).split('_');
+  // fr_batch_日期_base36时间戳_随机段：时间戳在第 4 段；逐段扫更稳，避免批次号格式微调后失效
+  for(let i = 2; i < parts.length; i++){
+    const ms = parseInt(parts[i], 36);
+    if(!isNaN(ms) && ms > 1e12){ const s = _fmtBatchTime(ms); if(s) return s; }
+  }
+  const m = String(bid).match(/(\d{4}-\d{2}-\d{2})/);
+  return m ? m[1] : bid;
+}
+
 function renderFreightBatchList(){
   const el = document.getElementById('freightBatchList');
   if(!el) return;
@@ -14404,7 +14431,7 @@ function renderFreightBatchList(){
       const items = itemsOf[k] || [];
       html += '<details style="margin:6px 0;border:1px solid #cbd5e1;border-radius:6px;overflow:hidden">'+
         '<summary style="padding:8px 12px;cursor:pointer;background:#f1f5f9;display:flex;align-items:center;gap:12px">'+
-          '<span style="font-weight:600">'+escapeHtml(k)+'</span>'+
+          '<span style="font-weight:600" title="批次号：'+escapeHtml(k)+'">🕓 '+escapeHtml(freightBatchLabel(k, items))+'</span>'+
           '<span style="color:#475569">'+batches[k].count+' 条</span>'+
           '<span style="color:#16a34a">¥'+batches[k].total.toFixed(2)+'</span>'+
           (k!=='未分组' ? '<button class="btn" style="margin-left:auto;padding:2px 8px;font-size:12px" onclick="event.preventDefault();event.stopPropagation();deleteFreightBatch(decodeURIComponent(\''+encodeURIComponent(k)+'\'))">删除批次</button>' : '')+
