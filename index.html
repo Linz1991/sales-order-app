@@ -36,6 +36,12 @@ function _initSupabase(){
     window.addEventListener('DOMContentLoaded', function(){
       setTimeout(function(){ try{ if(typeof detectProductCalibColumn === 'function') detectProductCalibColumn(); }catch(e){} }, 1200);
     });
+    // v2026102902：页面就绪后探测 products 表是否有库存列（stock_qty/warn_qty）。
+    // 探测为 true 时会把库存列并入商品拉取白名单并全量重拉一次——不提前到启动阶段的话，
+    // 只有进入商品页才探测，其它页面（下单/订单/台账）拉到的商品一律缺库存字段。
+    window.addEventListener('DOMContentLoaded', function(){
+      setTimeout(function(){ try{ if(typeof detectProductStockColumn === 'function') detectProductStockColumn(); }catch(e){} }, 1500);
+    });
     // v2026091705：启动自愈历史脏数据（orders/aftersales 的 items 若被存成字符串则归一化为数组）
     window.addEventListener('DOMContentLoaded', function(){
       setTimeout(function(){ try{ if(typeof healJsonArrayFields === 'function') healJsonArrayFields(); }catch(e){ console.warn('[heal] 初始化失败：', (e && e.message) || e); } }, 600);
@@ -1724,7 +1730,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026102308</div>
+          <div class="brand-sub">v2026102901</div>
         </div>
       </div>
     </div>
@@ -8401,6 +8407,29 @@ async function detectProductStockColumn(){
     }else{
       window._stockProbeStarted = false;
       return null;
+    }
+    // v2026102902 修复「采购已入库、商品管理库存却恒为 0」根因：
+    //   商品拉取用的是显式白名单 DB._PRODUCTS_COLS，其中并不含 stock_qty / warn_qty。
+    //   于是每次拉回的商品行都没有库存字段 → 本机 stockQty 恒为默认 0（云端其实已入库），
+    //   更糟的是本机一旦编辑该商品并保存，还会把云端真实库存回写成 0。
+    //   与 need_calibration 同机制：探测确认列存在后，① 把库存列并入白名单 ② 强制全量重拉一次，
+    //   让本机立刻学到云端权威库存（此前拉取的行都缺库存字段，增量补不回来）。
+    if(window._prodHasStockCol === true && typeof DB !== 'undefined'){
+      if(DB._PRODUCTS_COLS){
+        if(DB._PRODUCTS_COLS.indexOf('stock_qty') < 0) DB._PRODUCTS_COLS = DB._PRODUCTS_COLS + ',stock_qty';
+        if(DB._PRODUCTS_COLS.indexOf('warn_qty') < 0) DB._PRODUCTS_COLS = DB._PRODUCTS_COLS + ',warn_qty';
+      }
+      if(typeof DB.loadProductsFromCloud === 'function' && !window._stockFullRefetchDone){
+        window._stockFullRefetchDone = true;
+        try{
+          DB.loadProductsFromCloud({ forceFull: true }).then(function(){
+            try{
+              if(typeof renderProducts === 'function') renderProducts();
+              if(typeof renderStockLedger === 'function') renderStockLedger();
+            }catch(e){}
+          }).catch(function(){});
+        }catch(e){}
+      }
     }
     if(typeof renderProducts === 'function') renderProducts(); // 探测完成后重渲染，使库存列/出入库按钮生效
     return window._prodHasStockCol;
