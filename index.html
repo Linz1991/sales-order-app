@@ -42,6 +42,11 @@ function _initSupabase(){
     window.addEventListener('DOMContentLoaded', function(){
       setTimeout(function(){ try{ if(typeof detectProductStockColumn === 'function') detectProductStockColumn(); }catch(e){} }, 1500);
     });
+    // v20261029：利润成本独立字段探测 + 本地初始化（把利润成本空的商品批量填为采购成本）
+    window.addEventListener('DOMContentLoaded', function(){
+      setTimeout(function(){ try{ if(typeof detectProductProfitColumn === 'function') detectProductProfitColumn(); }catch(e){} }, 1700);
+      setTimeout(function(){ try{ if(typeof initProfitCostFromCost === 'function') initProfitCostFromCost(); }catch(e){} }, 1800);
+    });
     // v2026091705：启动自愈历史脏数据（orders/aftersales 的 items 若被存成字符串则归一化为数组）
     window.addEventListener('DOMContentLoaded', function(){
       setTimeout(function(){ try{ if(typeof healJsonArrayFields === 'function') healJsonArrayFields(); }catch(e){ console.warn('[heal] 初始化失败：', (e && e.message) || e); } }, 600);
@@ -1730,7 +1735,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026102901</div>
+          <div class="brand-sub">v2026102902</div>
         </div>
       </div>
     </div>
@@ -3392,6 +3397,7 @@ const DB = {
       if(table === 'products'){
         const prodCols = new Set(['id','name','price','cost','status','category','created_at']);
         if(window._prodHasCalibCol === true) prodCols.add('need_calibration'); // v20260917 可选列（未加列时不能传，否则整批 400）
+        if(window._prodHasProfitCol === true) prodCols.add('profit_cost'); // v20261029 利润成本独立列（未加列时不传，否则整批 400）
         snakeData = snakeData.map(function(o){
           const f = {};
           Object.keys(o).forEach(function(k){ if(prodCols.has(k)) f[k] = o[k]; });
@@ -3654,6 +3660,7 @@ const DB = {
       // 含 updated_at：让商品修改刷新云端 updated_at，使其他设备增量拉取能捕获
       // （修复原 prodCols 不含 updated_at 导致「改商品后其他端看不到」且增量漏改的问题）。
       const prodCols = new Set(['id','name','price','cost','status','category','created_at','updated_at']);
+      if(window._prodHasProfitCol === true) prodCols.add('profit_cost'); // v20261029 利润成本独立列（未加列时不传，否则整批 400）
       snakeData = snakeData.map(function(o){ const f={}; Object.keys(o).forEach(function(k){ if(prodCols.has(k)) f[k]=o[k]; }); return f; });
       // 确保 updated_at 非空（北京时间 YYYY-MM-DD HH:MM:SS，与云端 timestamp 列一致），新建/未带时补 nowStr
       snakeData.forEach(function(o){ if(o.updated_at == null || o.updated_at === ''){ o.updated_at = (typeof window.nowStr === 'function' ? window.nowStr().slice(0,19) : ''); } });
@@ -8436,6 +8443,58 @@ async function detectProductStockColumn(){
   }catch(e){ window._stockProbeStarted = false; return null; }
 }
 const PRODUCT_STOCK_SQL = 'ALTER TABLE products ADD COLUMN IF NOT EXISTS stock_qty integer DEFAULT 0; ALTER TABLE products ADD COLUMN IF NOT EXISTS warn_qty integer DEFAULT 0;';
+// v20261029：利润成本独立字段（与采购成本分离）。
+// 算利润用的「利润成本」单独维护，采购入库只回写采购成本(cost)、绝不碰利润成本，
+// 避免采购价波动（最后一批覆盖）导致订单利润被带偏。复用 stock/calib 同机制的「列存在才推送」保护。
+window._prodHasProfitCol = null; // null=未探测 / true=有列 / false=无列
+async function detectProductProfitColumn(){
+  try{
+    if(window._prodHasProfitCol !== null) return window._prodHasProfitCol;
+    if(window._profitProbeStarted) return null; // 已发起过探测，不重复打请求（防渲染循环）
+    if(!window._sbpbClient) return null;
+    window._profitProbeStarted = true;
+    const { error } = await window._sbpbClient.from('products').select('profit_cost').limit(1);
+    // 只有「列确实不存在」的确定性错误才判 false；网络/其它临时错误保持 null，允许后续重试（与 stock/calib 一致）。
+    if(!error){
+      window._prodHasProfitCol = true;
+    }else if(error && (error.code === '42703' || error.code === 'PGRST204' || /does not exist|Could not find the|PGRST204/i.test(String(error.message || '')))){
+      window._prodHasProfitCol = false;
+    }else{
+      window._profitProbeStarted = false; // 临时错误：复位探测标记，允许下次重试
+      return null;
+    }
+    // 探测确认有列：① 把利润成本列并入读取白名单 ② 强制全量重拉，让本机立刻学到云端权威利润成本
+    if(window._prodHasProfitCol === true && typeof DB !== 'undefined'){
+      if(DB._PRODUCTS_COLS && DB._PRODUCTS_COLS.indexOf('profit_cost') < 0) DB._PRODUCTS_COLS = DB._PRODUCTS_COLS + ',profit_cost';
+      if(typeof DB.loadProductsFromCloud === 'function' && !window._profitFullRefetchDone){
+        window._profitFullRefetchDone = true;
+        try{
+          DB.loadProductsFromCloud({ forceFull: true }).then(function(){
+            try{ if(typeof renderProducts === 'function') renderProducts(); if(typeof renderStockLedger === 'function') renderStockLedger(); }catch(e){}
+          }).catch(function(){});
+        }catch(e){}
+      }
+    }
+    if(typeof renderProducts === 'function') renderProducts();
+    return window._prodHasProfitCol;
+  }catch(e){ window._profitProbeStarted = false; return null; }
+}
+const PRODUCT_PROFIT_SQL = 'ALTER TABLE products ADD COLUMN IF NOT EXISTS profit_cost numeric DEFAULT 0;';
+// 本地初始化：把利润成本空的商品批量填为当前采购成本（保证上线后利润数字不变；云端有列时由用户执行 UPDATE 或编辑触发同步）。
+// 不自动标脏行，避免 800+ 商品一次性 upsert 触发限流；云端统一回填交给一条 SQL（见部署说明）。
+function initProfitCostFromCost(){
+  try{
+    const products = DB.get('products') || [];
+    let changed = false;
+    products.forEach(function(p){
+      if(p && (p.profitCost === undefined || p.profitCost === null || p.profitCost === '')){
+        p.profitCost = (p.cost != null ? p.cost : (p.price != null ? p.price : 0)) || 0;
+        changed = true;
+      }
+    });
+    if(changed) DB.set('products', products);
+  }catch(e){}
+}
 // v2026102102 库存系统：suppliers/purchases/stock_logs 三表存在性探测（与商品 stock 列探测同机制的"表存在才推送/拉取"保护）
 window._invTablesReady = null; // null=未探测 / true=三表已建 / false=未建
 async function detectInventoryTables(){
@@ -9604,7 +9663,9 @@ function renderOrderDetail(){
                   ${isAdmin ? `<td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}">${money(itemProfit)}</td>` : ''}
                   ${(isAdmin || isOperator) ? `<td style="font-size:12px">${(()=>{ const _w=String(it.shipWarehouse || order.shipWarehouse || '本仓').trim(); 
                     // v2026102302 发货仓填写入口移至订单详情页：待下单且该商品未下单时可改，其余只读
-                    const _canEditWh = !editMode && order.status === 'pending' && !it.ordered;
+                    // v20261029：发货仓可改到「订单真正出库/完成」之前（旧逻辑仅待下单且未下单可改，导致下单后想改仓被锁死）。出库扣库存在读取 shipWarehouse 时发生，故发货前改都有效
+                    const _outboundDone = (order.status === 'shipped' || order.status === 'completed');
+                    const _canEditWh = !editMode && !_outboundDone;
                     if(!_canEditWh){
                       if(_w==='本仓') return '系统默认仓';
                       if(_w==='待填写') return '<span style="color:var(--warning)">手动填写(待补仓名)</span>';
@@ -9711,6 +9772,13 @@ function renderOrderDetail(){
         </div>
         ` : ''}
       </div>
+      ${(isAdmin || isOperator) ? `
+        <div style="margin-top:12px">
+          <label class="form-label">出库 / 转仓备注 <span style="font-weight:400;color:var(--text-muted)">（独立于订单备注，记录如「原定A供应商直发，X日改由B仓发」）</span></label>
+          <textarea class="form-control" id="outboundRemark" style="min-height:46px" placeholder="记录发货仓变更原因，仅留痕、不影响库存逻辑" onchange="saveOrderOutboundRemark('${order.id}', this.value)">${escapeHtml(order.outboundRemark||'')}</textarea>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:6px">💡 出库 / 完成前可随时修改每行「发货仓」：系统默认仓 = 扣减系统库存，手动填写 = 仅留痕、不扣库存。</div>
+        </div>
+      ` : ''}
       ${(editMode && !isPending) ? `
         <div style="margin-top:12px">
           <label class="form-label">修改备注</label>
@@ -11600,13 +11668,21 @@ function detectExpressCompany(trackingNo) {
 // - 订单处于「待下单」且该商品尚未下单 → 成本实时跟随商品库（商品管理改成本，订单成本/利润随之变化）；
 // - 该商品已点「下单」或订单已转「已下单」（及以后状态）→ 成本用下单瞬间固化的快照 it.cost
 //   （改商品库成本不影响已下单订单的利润，保证历史利润不被篡改）。
+// v20261029：利润成本优先取值——算利润用「利润成本」独立字段，利润为 null/空时回落采购成本。
+// 全系统利润核算统一走这里，避免 effectiveItemCost/freezeOrderItemCosts/markItemOrdered/报表 各处重复且口径漂移。
+function prodProfitCost(prod){
+  if(prod && prod.profitCost != null && prod.profitCost !== '') return Number(prod.profitCost);
+  return prod ? (Number(prod.cost) || 0) : 0;
+}
+
 function effectiveItemCost(order, item, products){
   // v2026101602 性能优化：允许调用方传入已就绪的商品数组或 Map（如渲染/导出前一次性构建），
   //   避免每个订单项都 DB.get('products') 重新解析 localStorage（1040+ 单 × 多商品时构建期百万级读取）。
   //   不传则回退原行为（兼容所有旧调用点）。
   products = products || DB.get('products');
   const prod = (products instanceof Map) ? products.get(item.productId) : (products||[]).find(p => p.id === item.productId);
-  const prodCost = prod ? (prod.cost || 0) : 0;
+  // v20261029：利润成本核算优先用「利润成本」独立字段，回落采购成本；利润成本与采购价解耦，采购价波动不影响利润
+  const prodCost = prodProfitCost(prod);
   const isPending = (order && order.status === 'pending') && item.ordered !== true;
   if(isPending){
     // 待下单：成本跟随「商品库当前值」（管理员改商品成本即生效）；商品库无成本则退 item.cost，再退售价兜底
@@ -11624,7 +11700,8 @@ function freezeOrderItemCosts(order){
   const products = DB.get('products');
   order.items.forEach(function(it){
     const prod = products.find(function(p){ return p.id === it.productId; });
-    const prodCost = prod ? (prod.cost || 0) : 0;
+    // v20261029：利润成本独立字段优先，回落采购成本（统一走 prodProfitCost 辅助函数）
+    const prodCost = prodProfitCost(prod);
     // 转已下单时固化「当前商品库成本」（待下单期管理员改过的商品成本即此值），此后不再随商品库变动。
     // 若商品库无成本，则保留现有 item.cost（缺则退售价），避免清零导致利润跳变。
     if(prodCost > 0) it.cost = prodCost;
@@ -11814,6 +11891,18 @@ function onShipWhModeChange(orderId, itemIndex, value){
     if(inp && inp.parentNode) inp.parentNode.removeChild(inp);
   }
 }
+// v20261029：订单级「出库/转仓备注」，独立于订单主备注，专门记录发货仓变更原因（如 原定A供应商→改B仓），随出库流水写入库存台账
+function saveOrderOutboundRemark(orderId, val){
+  const orders = DB.get('orders');
+  const idx = orders.findIndex(o => o.id === orderId);
+  if(idx < 0) return;
+  orders[idx].outboundRemark = (val || '').trim();
+  orders[idx].updatedAt = nowStr();
+  DB.set('orders', orders);
+  _pinWriteLock(orderId);
+  schedulePushToCloud();
+  showToast('出库备注已保存', 'success', 1500);
+}
 
 // 管理员对订单逐商品标记"已下单"：点击后该商品 ordered=true；全部商品已下单则订单状态转为"已下单"(confirmed)
 // 支持所有订单类型（普通/留仓/上门），始终停留在订单详情页不跳转
@@ -11837,7 +11926,10 @@ async function markItemOrdered(orderId, idx){
   if(o.items[idx].ordered === true) return;
   // 下单瞬间固化成本快照：此后该商品成本不再随商品库变动（待下单阶段已实时跟随商品库最新值）
   const _pc = DB.get('products').find(x => x.id === o.items[idx].productId);
-  if(_pc && _pc.cost != null) o.items[idx].cost = _pc.cost;
+  // v20261029：固化口径与 effectiveItemCost/freezeOrderItemCosts 对齐——优先「利润成本」，回落采购成本
+  const _fc = prodProfitCost(_pc);
+  if(_fc > 0) o.items[idx].cost = _fc;
+  else if(o.items[idx].cost == null || o.items[idx].cost === '') o.items[idx].cost = (o.items[idx].price != null ? o.items[idx].price : 0);
   o.items[idx].ordered = true;
   o.items[idx].orderedAt = new Date().toISOString();
   const allOrdered = o.items.length > 0 && o.items.every(it => it.ordered === true);
@@ -13699,7 +13791,7 @@ async function renderProducts(){
       ` : ''}
       ${needCostAlert ? `<div style="margin:10px 0;padding:10px 14px;background:#fff7ed;border:1px solid #fed7aa;border-left:4px solid #ea580c;border-radius:6px;font-size:13px;color:#9a3412;display:flex;align-items:center;gap:10px;cursor:pointer" onclick="gotoProductPage(1)">
         <span style="font-size:18px">🔶</span>
-        <div>有 <b>${calibProducts.length}</b> 个商品由销售新增，<b>售价与成本待你校准</b>（已置顶在列表最上方）。请点击「编辑」补全真实采购成本并核对售价后保存，保存后自动移出本区。</div>
+        <div>有 <b>${calibProducts.length}</b> 个商品由销售新增，<b>售价与成本待你校准</b>（已置顶在列表最上方）。请点击「编辑」补全成本并核对售价后保存，保存后自动移出本区。</div>
       </div>` : ''}
       ${(isAdmin && window._prodHasCalibCol === false) ? `<div style="margin:10px 0;padding:10px 14px;background:#f1f5f9;border:1px solid #cbd5e1;border-left:4px solid #64748b;border-radius:6px;font-size:13px;color:#334155">
         <div>⚙️ <b>数据库小升级（仅需一次）</b>：销售新增商品的「待校准」提醒要在<b>任意设备</b>都能看到，需在 Supabase 执行一次 SQL。未执行时不影响下单、加购、同步，只是换设备后看不到待校准提醒。</div>
@@ -13732,7 +13824,7 @@ async function renderProducts(){
               <th>商品名称</th>
               <th>分类</th>
               <th>售价</th>
-              ${isAdmin ? '<th>成本</th><th>利润</th>' : ''}
+              ${isAdmin ? '<th>利润</th>' : ''}
               ${canStock ? '<th>库存</th>' : ''}
               <th>状态</th>
               ${isAdmin ? '<th>操作</th>' : ''}
@@ -13796,7 +13888,7 @@ function renderProductRowsHtml(){
   }
   return pageItems.map((p, idx)=>{
     const no = start + idx + 1;
-    const profit = p.price - p.cost;
+    const profit = p.price - prodProfitCost(p); // v20261029：利润核算用独立「利润成本」（prodProfitCost 优先利润成本，回落采购成本）
     const profitColor = profit >= 0 ? 'var(--success)' : 'var(--danger)';
     const profitText = profit >= 0 ? '+'+profit : profit;
     const needCalibration = isAdmin && isUncalibrated(p);
@@ -13810,7 +13902,7 @@ function renderProductRowsHtml(){
         </td>
         <td>${escAttr(p.category)||'-'}</td>
         <td style="font-weight:600">${money(p.price)}</td>
-        ${isAdmin ? `<td>${money(p.cost)}</td><td style="color:${profitColor};font-weight:600">${profitText}</td>` : ''}
+        ${isAdmin ? `<td style="color:${profitColor};font-weight:600">${profitText}</td>` : ''}
         ${canStock ? `<td>
           ${(()=>{ const sq=Number(p.stockQty)||0; const wq=Number(p.warnQty)||0; const low = wq>0 && sq<=wq; const neg = sq<0; return `<b style="color:${(low||neg)?'var(--danger)':'inherit'}">${sq}</b>${low?' ⚠️':''}${neg&&isAdmin?' <span class="badge badge-danger" style="font-size:10px">负库存</span>':''}`; })()}
           <button class="btn-link" onclick="openStockAdjustModal('${p.id}')" title="手动出入库">出入库</button><button class="btn-link" onclick="openStockTakeModal('${p.id}')" title="盘库（设为实际库存并记流水）">盘库</button>${isAdmin ? `${(()=>{ const wq=Number(p.warnQty)||0; const sq=Number(p.stockQty)||0; return (sq<=0 || (wq>0 && sq<=wq)) ? ` <button class="btn-link" style="color:#f59e0b" onclick="quickReplenish('${p.id}')" title="库存不足/低于预警，一键开补货采购单">补货</button>` : ''; })()}` : ''}
@@ -14624,7 +14716,7 @@ function batchExportProducts(){
 function downloadProductsCSV(list, filename){
   if(currentUser.role !== 'admin'){ showToast('仅管理员可导出','error'); return; }
   if(!list || !list.length){ showToast('没有可导出的商品','error'); return; }
-  const header = ['序号','商品名称','分类','售价','成本','利润','状态'];
+  const header = ['序号','商品名称','分类','售价','采购成本','利润成本','利润','状态'];
   const escapeCell = (cell) => {
     const s = String(cell == null ? '' : cell).replace(/"/g,'""');
     return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
@@ -14634,8 +14726,9 @@ function downloadProductsCSV(list, filename){
     p.name,
     p.category || '',
     p.price,
-    p.cost,
-    (p.price - p.cost),
+    (p.cost != null ? p.cost : ''),
+    (p.profitCost != null && p.profitCost !== '' ? Number(p.profitCost) : ''),
+    (p.price - prodProfitCost(p)),
     (p.status === 'on' ? '在售' : '已下架')
   ]);
   const csv = [header, ...rows].map(r => r.map(escapeCell).join(',')).join('\r\n');
@@ -15073,7 +15166,7 @@ function openProductModal(productId){
           <button class="modal-close" onclick="closeModal()">×</button>
         </div>
         <div class="modal-body">
-          ${uncal ? '<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:10px;margin-bottom:12px;color:#9a3412;font-size:13px;font-weight:500">🔶 该商品为销售新增，<b>售价与成本待校准</b>：请核对售价并补全真实采购成本后保存，保存后提示自动消失。</div>' : ''}
+          ${uncal ? '<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:10px;margin-bottom:12px;color:#9a3412;font-size:13px;font-weight:500">🔶 该商品为销售新增，<b>售价与成本待校准</b>：请核对售价并补全成本后保存，保存后提示自动消失。</div>' : ''}
           <input type="hidden" id="productId" value="${product?escAttr(product.id):''}">
           <div class="form-group">
             <label class="form-label">商品名称 <span class="required">*</span></label>
@@ -15089,10 +15182,12 @@ function openProductModal(productId){
               <input type="number" class="form-control" id="productPrice" value="${product?product.price:''}" placeholder="售价" min="0" step="1">
             </div>
             ${isAdmin ? `<div class="form-group">
-              <label class="form-label">成本（元）<span class="required">*</span></label>
-              <input type="number" class="form-control" id="productCost" value="${product?product.cost:''}" placeholder="成本" min="0" step="1">
+              <label class="form-label">成本（元）</label>
+              <input type="number" class="form-control" id="productProfitCost" value="${product?product.profitCost:''}" placeholder="新商品默认=售价，可改" min="0" step="1">
             </div>` : ''}
           </div>
+          ${isAdmin ? `<div style="font-size:12px;color:#64748b;margin:-4px 0 10px;line-height:1.5">本页「成本」用于订单利润核算，与采购入库自动记录的采购成本分开；<b>采购成本由采购入库自动记录，仅在「商品导出 / 库存导出」中查看</b>。</div>` : ''}
+          ${isAdmin && product && product.profitCost != null && product.profitCost !== '' && Number(product.profitCost) !== Number(product.cost) ? `<div style="font-size:12px;color:#b45309;margin:-4px 0 10px;line-height:1.5">⚠️ 采购成本已更新为 ¥${money(product.cost)}，「成本」仍锁定 ¥${money(product.profitCost)}（利润按「成本」核算，不受采购价波动影响）。</div>` : ''}
           ${isAdmin ? `<div class="form-row">
             <div class="form-group">
               <label class="form-label">库存数量</label>
@@ -15149,6 +15244,11 @@ function _productRowToSnake(p){
   if(window._prodHasStockCol === true && p.stockQty !== undefined && p.stockQty !== null){
     row.stock_qty = Number(p.stockQty) || 0;
     row.warn_qty = Number(p.warnQty) || 0;
+  }
+  // v20261029：利润成本独立字段——仅当云端已加该列才推送，否则 PGRST204 导致整条商品推送失败。
+  // 留空（undefined/null/''）时不传该列，避免把云端已算好的利润成本覆盖成 0。
+  if(window._prodHasProfitCol === true && p.profitCost !== undefined && p.profitCost !== null && p.profitCost !== ''){
+    row.profit_cost = Number(p.profitCost) || 0;
   }
   return row;
 }
@@ -15385,12 +15485,13 @@ async function deductStockForOrder(order){
     if(!it || !it.productId) continue;
     const qty = Number(it.qty) || 0;
     if(qty <= 0) continue;
+    const _obRmk = (order.outboundRemark && order.outboundRemark.trim()) ? ' · ' + order.outboundRemark.trim() : '';
     let wh = (it.shipWarehouse && String(it.shipWarehouse).trim()) || (order.shipWarehouse && String(order.shipWarehouse).trim()) || '本仓';
     const _inp = document.getElementById('itWh_'+(order.id)+'_'+i); // 待下单列表/详情页管理员刚填的发货仓
     if(_inp && _inp.value && _inp.value.trim()) wh = _inp.value.trim();
     if(wh === '本仓'){
       // 默认仓（本仓）：真实扣减系统库存 + 写出库流水
-      const r = await applyStockChange({ productId: it.productId, delta: -qty, type:'outbound', warehouse: wh, relId: order.id, remark: '订单出库 · '+(order.customerName||order.id) });
+      const r = await applyStockChange({ productId: it.productId, delta: -qty, type:'outbound', warehouse: wh, relId: order.id, remark: '订单出库 · '+(order.customerName||order.id) + _obRmk });
       if(!r.ok){ anyFail = true; failMsg = r.err; }
       else if(r.after < 0){ negStock = true; }
     } else {
@@ -15399,7 +15500,7 @@ async function deductStockForOrder(order){
         const products = DB.get('products')||[];
         const p = products.find(x => x.id === it.productId);
         const cur = p ? (Number(p.stockQty)||0) : 0;
-        writeStockLog({ productId: it.productId, productName: p ? p.name : '', type:'outbound_other', delta: -qty, beforeQty: cur, afterQty: cur, warehouse: wh, relId: order.id, operator:(currentUser&&currentUser.name)||'', remark: '从「'+wh+'」发出（非系统仓，未扣减默认仓库存）· '+(order.customerName||order.id) });
+        writeStockLog({ productId: it.productId, productName: p ? p.name : '', type:'outbound_other', delta: -qty, beforeQty: cur, afterQty: cur, warehouse: wh, relId: order.id, operator:(currentUser&&currentUser.name)||'', remark: '从「'+wh+'」发出（非系统仓，未扣减默认仓库存）· '+(order.customerName||order.id) + _obRmk });
       }catch(e){}
     }
   }
@@ -15587,7 +15688,7 @@ function filterPurchases(){
     const _inbounded = (p.items||[]).reduce(function(s,it){return s+(Number(it.inboundQty)||0);},0);
     const ops = isAdmin ? `<td class="row-actions">${p.status !== 'inbound' ? `<button class="btn-link" onclick="openInboundModal('${p.id}')">${_inbounded>0?'继续入库':'入库'}</button>` : ''}<button class="btn-link danger" onclick="deletePurchase('${p.id}')">删除</button></td>` : '';
     return `<tr>
-      <td>${escapeHtml(p.id || '')}</td>
+      <td>${purchaseIdCell(p.id)}</td>
       <td>${escapeHtml(p.supplierName || '')}</td>
       <td>${itemCount}</td>
       <td>¥${Number(p.totalAmount||0).toFixed(2)}</td>
@@ -15887,6 +15988,99 @@ function deletePurchase(id){
   showToast('已删除', 'success');
   renderPurchases();
 }
+// 采购单号单元格：点击查看详情，📋 复制单号（与订单号单元格同风格）
+function purchaseIdCell(id){
+  if(!id) return '';
+  var sid = (''+id).replace(/'/g, "\\'");
+  return '<span class="oid-box" title="查看采购单详情"><span class="oid-text" onclick="event.stopPropagation();openPurchaseDetail(\''+sid+'\')" style="cursor:pointer">'+sid+'</span><button type="button" class="oid-copy" title="复制单号" onclick="event.stopPropagation();copyToClipboard(\''+sid+'\',\'采购单号\')">📋</button></span>';
+}
+// v20261029：点击采购单号 → 查看该单完整信息（商品明细 / 入库进度 / 状态），管理员可在此直接编辑、入库、删除
+function openPurchaseDetail(id){
+  const purchases = DB.get('purchases') || [];
+  const p = purchases.find(function(x){ return x.id === id; });
+  if(!p){ showToast('采购单不存在', 'error'); return; }
+  const isAdmin = !!(currentUser && currentUser.role === 'admin');
+  const sid = (''+p.id).replace(/'/g, "\\'");
+  const statusLabel = p.status === 'inbound' ? '<span class="badge badge-success">已入库</span>' : ((p.items||[]).some(function(it){ return (Number(it.inboundQty)||0) > 0 && (Number(it.inboundQty)||0) < (Number(it.qty)||0); }) ? '<span class="badge badge-info">部分入库</span>' : '<span class="badge badge-warning">已下单</span>');
+  const itemRows = (p.items || []).map(function(it){
+    const qty = Number(it.qty) || 0;
+    const inb = Number(it.inboundQty) || 0;
+    const remain = Math.max(0, qty - inb);
+    const unit = Number(it.unitCost) || 0;
+    const sub = qty * unit;
+    return '<tr>'
+      + '<td>'+escAttr(it.productName || it.productId)+'</td>'
+      + '<td style="text-align:right">'+qty+'</td>'
+      + '<td style="text-align:right">¥'+unit.toFixed(2)+'</td>'
+      + '<td style="text-align:right">¥'+sub.toFixed(2)+'</td>'
+      + '<td style="text-align:right">'+inb+' / '+qty+'</td>'
+      + '<td style="text-align:right">'+(remain>0?'<span style="color:var(--text-muted)">待入 '+remain+'</span>':'<span style="color:#16a34a">已入完</span>')+'</td>'
+      + '</tr>';
+  }).join('');
+  const totalQty = (p.items||[]).reduce(function(s,it){ return s + (Number(it.qty)||0); }, 0);
+  const inbTotal = (p.items||[]).reduce(function(s,it){ return s + (Number(it.inboundQty)||0); }, 0);
+  const pct = totalQty ? Math.round(inbTotal / totalQty * 100) : 0;
+  const ops = isAdmin ? `<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+      ${p.status !== 'inbound' ? '<button class="btn btn-primary btn-sm" onclick="closeModal();openInboundModal(\''+sid+'\')">📥 入库 / 继续入库</button>' : ''}
+      <button class="btn btn-secondary btn-sm" onclick="closeModal();openPurchaseModal(\''+sid+'\')">✏️ 编辑</button>
+      <button class="btn btn-secondary btn-sm" onclick="closeModal();deletePurchase(\''+sid+'\')">🗑️ 删除</button>
+    </div>` : '';
+  const modalHtml = `
+    <div class="modal-mask" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:680px">
+        <div class="modal-header"><h3>📥 采购单详情</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+        <div class="modal-body">
+          <div style="display:flex;flex-wrap:wrap;gap:10px 24px;margin-bottom:14px;align-items:center">
+            <div><div style="font-size:12px;color:var(--text-muted)">单号</div><div style="font-weight:600;font-size:14px">${escAttr(p.id||'')} <button type="button" class="oid-copy" title="复制单号" onclick="copyToClipboard('${sid}','采购单号')">📋</button></div></div>
+            <div><div style="font-size:12px;color:var(--text-muted)">状态</div><div>${statusLabel}</div></div>
+            <div><div style="font-size:12px;color:var(--text-muted)">供应商</div><div style="font-weight:600">${escAttr(p.supplierName||'—')}</div></div>
+            <div><div style="font-size:12px;color:var(--text-muted)">预计到货</div><div>${escAttr(p.expectDate||'—')}</div></div>
+            <div><div style="font-size:12px;color:var(--text-muted)">创建时间</div><div>${escAttr((p.createdAt||'').slice(0,16).replace('T',' '))}</div></div>
+          </div>
+          ${p.remark ? '<div style="margin-bottom:12px;padding:8px 10px;background:var(--bg);border-radius:8px;font-size:13px"><b>备注：</b>'+escAttr(p.remark)+'</div>' : ''}
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead><tr><th>商品</th><th style="text-align:right">数量</th><th style="text-align:right">单价</th><th style="text-align:right">小计</th><th style="text-align:right">已入库</th><th style="text-align:right">待入库</th></tr></thead>
+              <tbody>${itemRows || '<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">该单无商品</td></tr>'}</tbody>
+            </table>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;flex-wrap:wrap;gap:8px">
+            <div style="font-size:13px;color:var(--text-muted)">入库进度：${inbTotal} / ${totalQty}（${pct}%）</div>
+            <div style="font-size:16px">合计：<b>¥${Number(p.totalAmount||0).toFixed(2)}</b></div>
+          </div>
+          ${ops}
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal()">关闭</button>
+          <button class="btn btn-primary" onclick="copyPurchaseInfo('${sid}')">复制采购单信息</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('modalContainer').innerHTML = modalHtml;
+}
+// 复制采购单完整信息（单号 / 供应商 / 明细 / 进度 / 合计），与订单复制同机制
+function copyPurchaseInfo(id){
+  const p = (DB.get('purchases')||[]).find(function(x){ return x.id === id; });
+  if(!p){ showToast('采购单不存在','error'); return; }
+  const statusLabel = p.status === 'inbound' ? '已入库' : ((p.items||[]).some(function(it){ return (Number(it.inboundQty)||0) > 0 && (Number(it.inboundQty)||0) < (Number(it.qty)||0); }) ? '部分入库' : '已下单');
+  const lines = [];
+  lines.push('采购单号：' + (p.id||''));
+  lines.push('供应商：' + (p.supplierName||''));
+  lines.push('状态：' + statusLabel);
+  lines.push('预计到货：' + (p.expectDate||'—'));
+  lines.push('创建时间：' + (p.createdAt||'').slice(0,16));
+  if(p.items && p.items.length){
+    lines.push('商品明细：');
+    p.items.forEach(function(it){
+      const qty = Number(it.qty)||0;
+      const unit = Number(it.unitCost)||0;
+      lines.push('  ' + (it.productName||it.productId) + ' ×' + qty + ' 单价¥' + unit.toFixed(2) + ' 小计¥' + (qty*unit).toFixed(2) + ' 已入' + (Number(it.inboundQty)||0));
+    });
+  }
+  lines.push('合计：¥' + Number(p.totalAmount||0).toFixed(2));
+  if(p.remark && p.remark.trim()) lines.push('备注：' + p.remark.trim());
+  copyToClipboardWithMsg(lines.join('\n'));
+}
 
 // ---------- 库存台账（管理员或操作员）----------
 const STOCK_TYPE_LABEL = { outbound:'出库', outbound_other:'他仓出库', purchase:'采购入库', adjust:'手动调整', count:'盘点', correction:'纠错', initial:'初始化' };
@@ -15902,10 +16096,10 @@ function renderStockLedger(){
   const negStock = products.filter(function(pr){ return (Number(pr.stockQty)||0) < 0; });
   const html = `
     <div class="kpi-row">
-      <div class="kpi-card"><div class="kpi-value">${products.length}</div><div class="kpi-label">商品总数</div></div>
-      <div class="kpi-card ${lowStock.length ? 'kpi-danger' : ''}"><div class="kpi-value">${lowStock.length}</div><div class="kpi-label">低于预警阈值</div></div>
-      <div class="kpi-card"><div class="kpi-value">${products.reduce(function(s,p){ return s + (Number(p.stockQty)||0); }, 0)}</div><div class="kpi-label">库存总量(件)</div></div>
-      <div class="kpi-card ${negStock.length ? 'kpi-danger' : ''}"><div class="kpi-value">${negStock.length}</div><div class="kpi-label">负库存商品</div></div>
+      <div class="kpi-card" style="cursor:pointer" title="点击查看全部商品及库存" onclick="openStockKpiDetail('all')"><div class="kpi-value">${products.length}</div><div class="kpi-label">商品总数</div></div>
+      <div class="kpi-card ${lowStock.length ? 'kpi-danger' : ''}" style="cursor:pointer" title="点击查看低于预警阈值的商品" onclick="openStockKpiDetail('low')"><div class="kpi-value">${lowStock.length}</div><div class="kpi-label">低于预警阈值</div></div>
+      <div class="kpi-card" style="cursor:pointer" title="点击查看全部商品（按库存降序）" onclick="openStockKpiDetail('total')"><div class="kpi-value">${products.reduce(function(s,p){ return s + (Number(p.stockQty)||0); }, 0)}</div><div class="kpi-label">库存总量(件)</div></div>
+      <div class="kpi-card ${negStock.length ? 'kpi-danger' : ''}" style="cursor:pointer" title="点击查看负库存商品" onclick="openStockKpiDetail('neg')"><div class="kpi-value">${negStock.length}</div><div class="kpi-label">负库存商品</div></div>
     </div>
     ${lowStock.length ? `<div class="alert alert-warning">⚠️ 库存预警：${lowStock.map(function(p){ return escAttr(p.name) + '(' + (Number(p.stockQty)||0) + '/' + (Number(p.warnQty)||0) + ')'; }).join('、')}</div>` : ''}
     <div class="page-actions">
@@ -15929,6 +16123,59 @@ function renderStockLedger(){
     </div>`;
   document.getElementById('mainContent').innerHTML = html;
   filterStockLedger();
+}
+// v20261029：库存台账顶部指标卡可点击 → 弹窗查看对应商品及库存明细
+// kind: all=商品总数 / low=低于预警阈值 / total=库存总量(按库存降序) / neg=负库存商品
+function openStockKpiDetail(kind){
+  const products = DB.get('products') || [];
+  let list = [], title = '', note = '';
+  if(kind === 'low'){
+    list = products.filter(function(pr){ const sq=Number(pr.stockQty)||0; const wq=Number(pr.warnQty)||0; return wq>0 && sq<=wq; })
+      .sort(function(a,b){ return (Number(a.stockQty)||0)-(Number(b.stockQty)||0); });
+    title = '⚠️ 低于预警阈值的商品';
+    note = '库存 ≤ 预警阈值（阈值大于 0 才参与预警）';
+  } else if(kind === 'neg'){
+    list = products.filter(function(pr){ return (Number(pr.stockQty)||0) < 0; });
+    title = '🔴 负库存商品';
+    note = '库存数量小于 0，请尽快盘点纠错';
+  } else if(kind === 'total'){
+    list = products.slice().sort(function(a,b){ return (Number(b.stockQty)||0)-(Number(a.stockQty)||0); });
+    title = '📦 全部商品（按库存降序）';
+    note = '库存总量 = 各商品库存之和';
+  } else {
+    list = products.slice().sort(function(a,b){ return (a.name||'').localeCompare(b.name||''); });
+    title = '📋 全部商品';
+  }
+  const totalQty = list.reduce(function(s,p){ return s+(Number(p.stockQty)||0); },0);
+  const rows = list.map(function(pr){
+    const sq = Number(pr.stockQty)||0;
+    const wq = Number(pr.warnQty)||0;
+    const low = wq>0 && sq<=wq;
+    const color = sq<0 ? 'var(--danger)' : (low ? '#d97706' : 'inherit');
+    return '<tr>'
+      + '<td>'+escAttr(pr.name||'')+'</td>'
+      + '<td>'+escAttr(pr.category||'—')+'</td>'
+      + '<td style="text-align:right;font-weight:600;color:'+color+'">'+sq+'</td>'
+      + '<td style="text-align:right">'+(wq>0?wq:'—')+'</td>'
+      + '</tr>';
+  }).join('');
+  const modalHtml = `
+    <div class="modal-mask" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header"><h3>${title}（${list.length}）</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+        <div class="modal-body">
+          <div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">${note ? note + ' · ' : ''}合计库存 ${totalQty} 件</div>
+          <div style="max-height:55vh;overflow-y:auto">
+            <table class="data-table">
+              <thead><tr><th>商品</th><th>分类</th><th style="text-align:right">库存</th><th style="text-align:right">预警阈值</th></tr></thead>
+              <tbody>${rows || '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">无商品</td></tr>'}</tbody>
+            </table>
+          </div>
+        </div>
+        <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">关闭</button></div>
+      </div>
+    </div>`;
+  document.getElementById('modalContainer').innerHTML = modalHtml;
 }
 function filterStockLedger(){
   const logs = (DB.get('stock_logs') || []).slice().sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
@@ -15968,6 +16215,7 @@ function filterStockLedger(){
 
 // v20261022：库存台账导出 CSV（按当前筛选结果），带 BOM 防 Excel 中文乱码
 function exportStockLedgerCSV(){
+  if(currentUser.role !== 'admin'){ showToast('仅管理员可导出','error'); return; }
   const logs = (DB.get('stock_logs') || []).slice().sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
   const kw = (document.getElementById('ledgerProduct') ? document.getElementById('ledgerProduct').value : '').trim().toLowerCase();
   const type = document.getElementById('ledgerType') ? document.getElementById('ledgerType').value : '';
@@ -15979,10 +16227,12 @@ function exportStockLedgerCSV(){
     return true;
   });
   if(!list.length){ showToast('当前筛选无数据可导出','error'); return; }
-  const headers = ['时间','商品','类型','变动','变动前','变动后','仓库','关联单号','操作人','备注'];
+  const _prodCostMap = {};
+  (DB.get('products')||[]).forEach(function(p){ _prodCostMap[p.id] = (p.cost != null ? p.cost : ''); });
+  const headers = ['时间','商品','采购成本','类型','变动','变动前','变动后','仓库','关联单号','操作人','备注'];
   const typeLabel = { outbound:'出库', outbound_other:'他仓出库', purchase:'采购入库', adjust:'手动调整', count:'盘点', correction:'纠错', initial:'初始化' };
   const rows = list.map(function(l){
-    return [ (l.createdAt||'').replace('T',' ').slice(0,19), l.productName||'', typeLabel[l.type]||l.type||'', (Number(l.delta)>0?'+':'')+(Number(l.delta)||0), Number(l.beforeQty)||0, Number(l.afterQty)||0, l.warehouse||'', l.relId||'', l.operator||'', l.remark||'' ];
+    return [ (l.createdAt||'').replace('T',' ').slice(0,19), l.productName||'', (_prodCostMap[l.productId] != null ? _prodCostMap[l.productId] : ''), typeLabel[l.type]||l.type||'', (Number(l.delta)>0?'+':'')+(Number(l.delta)||0), Number(l.beforeQty)||0, Number(l.afterQty)||0, l.warehouse||'', l.relId||'', l.operator||'', l.remark||'' ];
   });
   const csv = [headers].concat(rows).map(function(r){
     return r.map(function(c){ c = String(c); if(c.indexOf(',')>=0 || c.indexOf('"')>=0 || c.indexOf('\n')>=0){ c = '"' + c.replace(/"/g,'""') + '"'; } return c; }).join(',');
@@ -16036,15 +16286,24 @@ async function saveProduct(){
   const name = document.getElementById('productName').value.trim();
   const category = document.getElementById('productCategory').value.trim();
   const price = parseInt(document.getElementById('productPrice').value);
-  // v20260917：销售端不展示成本输入框（成本由管理员维护），此处按原值回填 / 新建时等于售价
-  const _costEl = document.getElementById('productCost');
-  let cost;
-  if(_costEl){
-    cost = parseInt(_costEl.value);
-    if(isNaN(cost) || cost < 0){ showToast('请输入有效成本','error'); return; }
+  // v20261029：采购成本不再在编辑页展示（由采购入库自动回写）。编辑时沿用原采购成本；
+  //  新建商品默认 0（从未采购过、没有采购成本），采购入库后再回写真实采购价——避免采购单单价默认值污染成「售价/利润成本」。
+  const _oldCostP = id ? (DB.get('products') || []).find(p => p.id === id) : null;
+  let cost = _oldCostP ? (Number(_oldCostP.cost) || 0) : 0;
+  // v20261029：利润成本独立字段。
+  //  - 有值则用值；
+  //  - 新增商品留空：默认 = 售价（初始利润为零），后期由用户在编辑页维护真实进货成本；
+  //  - 编辑现有商品留空：沿用原利润成本（仍为空则回落采购成本）。
+  const _pcEl = document.getElementById('productProfitCost');
+  let profitCost;
+  if(_pcEl && _pcEl.value !== ''){
+    profitCost = parseInt(_pcEl.value);
+    if(isNaN(profitCost) || profitCost < 0){ showToast('请输入有效利润成本','error'); return; }
+  }else if(!id){
+    profitCost = price; // 新增商品：利润成本默认等于售价
   }else{
-    const _old = id ? (DB.get('products') || []).find(p => p.id === id) : null;
-    cost = _old ? (Number(_old.cost) || 0) : price;
+    const _oldP = (DB.get('products') || []).find(p => p.id === id);
+    profitCost = (_oldP && _oldP.profitCost != null && _oldP.profitCost !== '') ? _oldP.profitCost : undefined;
   }
   if(!name){ showToast('请输入商品名称','error'); return; }
   if(isNaN(price) || price < 0){ showToast('请输入有效售价','error'); return; }
@@ -16094,7 +16353,7 @@ async function saveProduct(){
     if(idx >= 0){
       _origName = products[idx].name; // 记录编辑前原名，撞唯一索引时回滚
       _wasUncal = isUncalibrated(products[idx]); // v20261008：必须在覆盖前取，覆盖后 auto_added 已删就取不到了
-      products[idx] = {...products[idx], name, category, price, cost, stockQty, warnQty, updatedAt: _nowStr};
+      products[idx] = {...products[idx], name, category, price, cost, stockQty, warnQty, profitCost, updatedAt: _nowStr};
       delete products[idx].auto_added;
       if(isAdmin){
         // 校准完成（成本已填且≠售价，或管理员勾选了「成本已核实」）→ 清除待校准；否则继续保持提醒
@@ -16105,7 +16364,7 @@ async function saveProduct(){
     }
   }else{
     savedProduct = {
-      id: DB.uid('p_'), name, category, price, cost, status:'on', stockQty, warnQty, createdAt: _nowStr, updatedAt: _nowStr
+      id: DB.uid('p_'), name, category, price, cost, status:'on', stockQty, warnQty, profitCost, createdAt: _nowStr, updatedAt: _nowStr
     };
     if(!isAdmin){
       // 销售在商品管理页新增：成本默认=售价，并标记待校准，提醒管理员补全真实成本
