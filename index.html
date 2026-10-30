@@ -82,6 +82,17 @@ function _initSupabase(){
     window.addEventListener('DOMContentLoaded', function(){
       setTimeout(function(){ try{ if(typeof detectProductProfitColumn === 'function') detectProductProfitColumn(); }catch(e){} }, 1700);
       setTimeout(function(){ try{ if(typeof initProfitCostFromCost === 'function') initProfitCostFromCost(); }catch(e){} }, 1800);
+      // v2026103001：探测重试。此前只探一次，一旦那次因网络抖动/客户端未就绪失败，
+      // _prodHasProfitCol 就永远停在 null → 整场会话 profit_cost 既不拉取也不推送，
+      // 管理员改的利润成本全部只存本地、刷新即丢。这里补几次递增重试兜底。
+      [4000, 9000, 20000, 45000].forEach(function(delay){
+        setTimeout(function(){
+          try{
+            if(window._prodHasProfitCol === true) return;
+            if(typeof detectProductProfitColumn === 'function') detectProductProfitColumn({ force: true });
+          }catch(e){}
+        }, delay);
+      });
     });
     // v2026091705：启动自愈历史脏数据（orders/aftersales 的 items 若被存成字符串则归一化为数组）
     window.addEventListener('DOMContentLoaded', function(){
@@ -1771,7 +1782,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026102903</div>
+          <div class="brand-sub">v2026103001</div>
         </div>
       </div>
     </div>
@@ -8483,10 +8494,13 @@ const PRODUCT_STOCK_SQL = 'ALTER TABLE products ADD COLUMN IF NOT EXISTS stock_q
 // 算利润用的「利润成本」单独维护，采购入库只回写采购成本(cost)、绝不碰利润成本，
 // 避免采购价波动（最后一批覆盖）导致订单利润被带偏。复用 stock/calib 同机制的「列存在才推送」保护。
 window._prodHasProfitCol = null; // null=未探测 / true=有列 / false=无列
-async function detectProductProfitColumn(){
+// opts: { force: 忽略"已发起过"标记重新探测（保存商品前用）,
+//         skipRefetch: 探测成功后不做全量重拉（保存场景用，否则云端旧值会把刚改的利润成本覆盖回去） }
+async function detectProductProfitColumn(opts){
+  opts = opts || {};
   try{
-    if(window._prodHasProfitCol !== null) return window._prodHasProfitCol;
-    if(window._profitProbeStarted) return null; // 已发起过探测，不重复打请求（防渲染循环）
+    if(!opts.force && window._prodHasProfitCol !== null) return window._prodHasProfitCol;
+    if(!opts.force && window._profitProbeStarted) return null; // 已发起过探测，不重复打请求（防渲染循环）
     if(!window._sbpbClient) return null;
     window._profitProbeStarted = true;
     const { error } = await window._sbpbClient.from('products').select('profit_cost').limit(1);
@@ -8502,7 +8516,7 @@ async function detectProductProfitColumn(){
     // 探测确认有列：① 把利润成本列并入读取白名单 ② 强制全量重拉，让本机立刻学到云端权威利润成本
     if(window._prodHasProfitCol === true && typeof DB !== 'undefined'){
       if(DB._PRODUCTS_COLS && DB._PRODUCTS_COLS.indexOf('profit_cost') < 0) DB._PRODUCTS_COLS = DB._PRODUCTS_COLS + ',profit_cost';
-      if(typeof DB.loadProductsFromCloud === 'function' && !window._profitFullRefetchDone){
+      if(!opts.skipRefetch && typeof DB.loadProductsFromCloud === 'function' && !window._profitFullRefetchDone){
         window._profitFullRefetchDone = true;
         try{
           DB.loadProductsFromCloud({ forceFull: true }).then(function(){
@@ -8522,11 +8536,19 @@ function initProfitCostFromCost(){
   try{
     const products = DB.get('products') || [];
     let changed = false;
+    // v2026103001 修复：原写法 `p.cost != null ? p.cost : ...` 在 p.cost=0 时命中前半支 →
+    //   写入 profitCost=0，成为「0 污染」的制造源头（0 再被推送回云端，扩散到全表）。
+    // 现在：只在能取到「正数」时才填（cost 优先，其次售价）；取不到就跳过，绝不写 0。
+    // 顺带自愈：已存在但为 0/非法的 profitCost 也一并按同样规则补齐。
     products.forEach(function(p){
-      if(p && (p.profitCost === undefined || p.profitCost === null || p.profitCost === '')){
-        p.profitCost = (p.cost != null ? p.cost : (p.price != null ? p.price : 0)) || 0;
-        changed = true;
-      }
+      if(!p) return;
+      const cur = Number(p.profitCost);
+      const hasValid = (p.profitCost !== undefined && p.profitCost !== null && p.profitCost !== '') && !isNaN(cur) && cur > 0;
+      if(hasValid) return;
+      const c = Number(p.cost) || 0;
+      const pr = Number(p.price) || 0;
+      const fill = c > 0 ? c : (pr > 0 ? pr : 0);
+      if(fill > 0){ p.profitCost = fill; changed = true; }
     });
     if(changed) DB.set('products', products);
   }catch(e){}
@@ -11707,8 +11729,16 @@ function detectExpressCompany(trackingNo) {
 // v20261029：利润成本优先取值——算利润用「利润成本」独立字段，利润为 null/空时回落采购成本。
 // 全系统利润核算统一走这里，避免 effectiveItemCost/freezeOrderItemCosts/markItemOrdered/报表 各处重复且口径漂移。
 function prodProfitCost(prod){
-  if(prod && prod.profitCost != null && prod.profitCost !== '') return Number(prod.profitCost);
-  return prod ? (Number(prod.cost) || 0) : 0;
+  // v2026103001 修复：0 视为「未设置」，必须回落采购成本。
+  // 原因：云端 profit_cost 列带 DEFAULT 0，未回填/被清零的商品都是 0；
+  //   若把 0 当有效值，利润会算成「售价 − 0」= 整单毛利虚高（此前 805 个商品中招）。
+  //   只有「明确为正数」的利润成本才生效，否则一律回落到采购成本。
+  if(prod){
+    const _pc = Number(prod.profitCost);
+    if(!isNaN(_pc) && _pc > 0) return _pc;
+    return Number(prod.cost) || 0;
+  }
+  return 0;
 }
 
 function effectiveItemCost(order, item, products){
@@ -14767,7 +14797,7 @@ function downloadProductsCSV(list, filename){
     p.category || '',
     p.price,
     (p.cost != null ? p.cost : ''),
-    (p.profitCost != null && p.profitCost !== '' ? Number(p.profitCost) : ''),
+    prodProfitCost(p), // v2026103001：与页面/利润计算同一口径（0 视为未设置，回落采购成本），避免导出显示 0 而利润却按采购成本算
     (p.price - prodProfitCost(p)),
     (p.status === 'on' ? '在售' : '已下架')
   ]);
@@ -15227,7 +15257,7 @@ function openProductModal(productId){
             </div>` : ''}
           </div>
           ${isAdmin ? `<div style="font-size:12px;color:#64748b;margin:-4px 0 10px;line-height:1.5">本页「成本」用于订单利润核算，与采购入库自动记录的采购成本分开；<b>采购成本由采购入库自动记录，仅在「商品导出 / 库存导出」中查看</b>。</div>` : ''}
-          ${isAdmin && product && product.profitCost != null && product.profitCost !== '' && Number(product.profitCost) !== Number(product.cost) ? `<div style="font-size:12px;color:#b45309;margin:-4px 0 10px;line-height:1.5">⚠️ 采购成本已更新为 ¥${money(product.cost)}，「成本」仍锁定 ¥${money(product.profitCost)}（利润按「成本」核算，不受采购价波动影响）。</div>` : ''}
+          ${isAdmin && product && Number(product.profitCost) > 0 && Number(product.profitCost) !== Number(product.cost) ? `<div style="font-size:12px;color:#b45309;margin:-4px 0 10px;line-height:1.5">⚠️ 采购成本已更新为 ¥${money(product.cost)}，「成本」仍锁定 ¥${money(product.profitCost)}（利润按「成本」核算，不受采购价波动影响）。</div>` : ''}
           ${isAdmin ? `<div class="form-row">
             <div class="form-group">
               <label class="form-label">库存数量</label>
@@ -15287,8 +15317,14 @@ function _productRowToSnake(p){
   }
   // v20261029：利润成本独立字段——仅当云端已加该列才推送，否则 PGRST204 导致整条商品推送失败。
   // 留空（undefined/null/''）时不传该列，避免把云端已算好的利润成本覆盖成 0。
-  if(window._prodHasProfitCol === true && p.profitCost !== undefined && p.profitCost !== null && p.profitCost !== ''){
-    row.profit_cost = Number(p.profitCost) || 0;
+  // v2026103001 修复（严重）：原判定 `p.profitCost !== undefined/null/''` 挡不住 **0** ——
+  //   0 不是 undefined/null/''，条件成立 → `Number(0) || 0` = 0 → 把云端已有利润成本清零。
+  //   且 0 会自我复制：推 0 → 拉回本地 profitCost=0 → 再次推送又写 0，一旦出现就扩散到全表
+  //   （2026-10-30 实测：809 个商品里 805 个 profit_cost 被清零，只剩用户手动改的 4 个幸免）。
+  // 现在只在「明确的正数」时才推送；0 / 空 / 非法值一律不传，保留云端原值。
+  if(window._prodHasProfitCol === true){
+    const _pc = Number(p.profitCost);
+    if(!isNaN(_pc) && _pc > 0) row.profit_cost = _pc;
   }
   return row;
 }
@@ -16343,7 +16379,9 @@ async function saveProduct(){
     profitCost = price; // 新增商品：利润成本默认等于售价
   }else{
     const _oldP = (DB.get('products') || []).find(p => p.id === id);
-    profitCost = (_oldP && _oldP.profitCost != null && _oldP.profitCost !== '') ? _oldP.profitCost : undefined;
+    // v2026103001：只沿用「正数」的旧利润成本。若旧值是 0（被污染过），沿用会把 0 重新写回去 —— 置 undefined 不推送，让云端/回落逻辑处理。
+    const _oldPc = _oldP ? Number(_oldP.profitCost) : NaN;
+    profitCost = (!isNaN(_oldPc) && _oldPc > 0) ? _oldPc : undefined;
   }
   if(!name){ showToast('请输入商品名称','error'); return; }
   // v2026102903：售价必须 > 0。此前只判 < 0，导致能存出「售价 0」的商品；
@@ -16463,6 +16501,13 @@ async function saveProduct(){
   renderSidebar(); // 编辑保存后实时刷新左侧「待校准」角标数量
   // ② 单条上推云端，保证跨设备同步且不会把本地旧缓存糊回云端；并把同步结果明确告诉用户
   //    （此前推云成功与否完全无提示，管理员在别的设备看不到时会误以为没保存）
+  // v2026103001：推送前必须确保 profit_cost 列探测已完成。
+  //   此前若探测没成功（_prodHasProfitCol 停在 null），profit_cost 不在推送白名单里 →
+  //   编辑页改的成本只写进本地，下次同步/刷新被云端旧值覆盖回去 —— 用户看到「改完一会又跳回原价」。
+  //   skipRefetch：探测成功后不要全量重拉，否则云端旧值会把刚改好的利润成本又覆盖掉。
+  if(window._prodHasProfitCol !== true && typeof detectProductProfitColumn === 'function'){
+    try{ await detectProductProfitColumn({ force: true, skipRefetch: true }); }catch(e){}
+  }
   let _cloudOk = false;
   try{ _cloudOk = await pushSingleProductToCloud(savedProduct); }catch(e){ _cloudOk = false; }
   if(_cloudOk && _cloudOk.conflictResolved){
