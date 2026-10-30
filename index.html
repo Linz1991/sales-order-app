@@ -1782,7 +1782,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026103011</div>
+          <div class="brand-sub">v2026103012</div>
         </div>
       </div>
     </div>
@@ -12091,9 +12091,27 @@ function _shipWhChangeBlocked(order, prevWh, newWh){
 function _resolveShipSupplier(wh){
   const w = String(wh || '').trim();
   if(!w || w === '本仓' || w === '待填写') return null;
+  const _norm = function(s){ return String(s || '').trim().toLowerCase(); };
   const list = DB.get('suppliers') || [];
+  // ① 精确匹配优先（原逻辑，保持行为不变）
   for(let i = 0; i < list.length; i++){
     if(String(list[i].name || '').trim() === w) return list[i];
+  }
+  // ② 双向包含匹配（大小写不敏感）：历史单据的发货仓常填简称，与供应商表全名精确匹配不上
+  //    才被误显示成「手动填写·不扣库存」。实例：方正→山东方正国际家居用品有限公司、
+  //    jo→Jolie成都市玖鲤贸易有限公司、谷→谷腾。
+  const nw = _norm(w);
+  const hits = [];
+  for(let i = 0; i < list.length; i++){
+    const nn = _norm(list[i].name);
+    if(!nn || nn === nw) continue; // 精确相等的上面已返回，此处跳过避免重复入列
+    if(nn.indexOf(nw) >= 0 || nw.indexOf(nn) >= 0) hits.push(list[i]);
+  }
+  if(hits.length === 1) return hits[0];
+  if(hits.length > 1){
+    // 多个候选（如「谷」同时命中「谷腾」「谷之歌」）：取名称最短者——包含关系最特异、误判概率最低
+    hits.sort(function(a, b){ return String(a.name || '').length - String(b.name || '').length; });
+    return hits[0];
   }
   return null;
 }
@@ -12108,14 +12126,14 @@ function _shipWhCtlHtml(orderId, itemIndex, wh, inpStyle, opt){
   const noDef = !!(opt && opt.noDefault);
   let extra = '';
   if(sup){
-    extra = `<button type="button" class="btn-link" onclick="openShipSupplierPicker('${orderId}',${itemIndex})" title="${noDef ? '已出库：可随时更换发货供应商（不扣减库存）' : '供应商直发：不扣减系统默认仓库存，仅记录台账。点击可重新选择'}" style="font-size:12px;white-space:nowrap;text-align:left">🏭 ${escapeHtml(sup.name)}${noDef ? ' <span style="color:var(--text-muted)">（可更换）</span>' : ''}</button>`;
+    extra = `<button type="button" class="btn-link" onclick="openShipSupplierPicker('${orderId}',${itemIndex})" title="${noDef ? '已出库：可随时更换发货供应商（不扣减库存）' : '供应商直发：不扣减系统默认仓库存，仅记录台账。点击可重新选择'}" style="font-size:12px;white-space:nowrap;text-align:left">${escapeHtml(sup.name)}${noDef ? ' <span style="color:var(--text-muted)">（可更换）</span>' : ''}</button>`;
   } else if(hasCustom){
     const _customVal = (w === '待填写') ? '' : w;
     extra = `<input type="text" class="form-control wh-ctl" id="itWh_${orderId}_${itemIndex}" value="${escapeHtml(_customVal)}" placeholder="仓库名(不扣库存)" title="手动填写的仓库不扣系统库存，仅留痕" style="${inpStyle || 'margin-top:4px'}" onchange="saveItemShipWarehouse('${orderId}',${itemIndex},this.value || '待填写')">`;
   }
   const opts = `<option value="本仓"${isDef ? ' selected' : ''}${noDef ? ' disabled title="订单已出库，不能再从供应商切回系统默认仓"' : ''}>系统默认仓${noDef ? '（已出库不可切回）' : ''}</option>`
     + `<option value="__supplier__"${(!isDef && sup) ? ' selected' : ''}>选择供应商…</option>`
-    + (hasCustom ? `<option value="__custom__" selected>手动填写：${escapeHtml(w === '待填写' ? '(待补仓名)' : w)}</option>` : '');
+    + (hasCustom ? `<option value="__custom__" selected>${escapeHtml(w === '待填写' ? '(待补仓名)' : w)}</option>` : '');
   const tip = noDef
     ? '订单已出库：此行走供应商直发（未扣默认仓库存），可随时更换供应商；但不可再切回系统默认仓'
     : '系统默认仓=扣减系统库存；选择供应商=供应商直发，仅记录不扣库存';
@@ -12129,8 +12147,8 @@ function _shipWhReadonlyHtml(wh){
   if(w === '本仓') return '<span style="font-size:12px">系统默认仓</span>';
   if(w === '待填写') return '<span style="color:var(--warning);font-size:12px">选择供应商(待指定)</span>';
   const sup = _resolveShipSupplier(w);
-  if(sup) return '<span style="font-size:12px">🏭 ' + escapeHtml(sup.name) + ' <span style="color:var(--text-muted)">(供应商发货·不扣库存)</span></span>';
-  return '<span style="font-size:12px">' + escapeHtml(w) + ' <span style="color:var(--text-muted)">(手动填写·不扣库存)</span></span>';
+  if(sup) return '<span style="font-size:12px">' + escapeHtml(sup.name) + '</span>';
+  return '<span style="font-size:12px">' + escapeHtml(w) + '</span>';
 }
 // 选中某供应商后局部重绘该行控件（不整页刷新，避免同行其它输入丢失）
 function _refreshShipWhCtl(orderId, itemIndex){
@@ -12172,7 +12190,7 @@ function openShipSupplierPicker(orderId, itemIndex){
   const modalHtml = `
     <div class="modal-mask" onclick="if(event.target===this)closeShipSupplierPicker()">
       <div class="modal" style="max-width:560px">
-        <div class="modal-header"><h3>🏭 选择发货供应商</h3><button class="modal-close" onclick="closeShipSupplierPicker()">×</button></div>
+        <div class="modal-header"><h3>选择发货供应商</h3><button class="modal-close" onclick="closeShipSupplierPicker()">×</button></div>
         <div class="modal-body">
           <input type="text" class="form-control" id="shipSupSearch" placeholder="搜索供应商名称 / 联系人 / 电话（空格分隔多关键字）" autocomplete="off" oninput="renderShipSupplierPickerList()" onkeydown="if(event.key==='Enter'){event.preventDefault();_pickFirstShipSupplier();}" style="margin-bottom:10px">
           <div id="shipSupPickerList" style="max-height:320px;overflow:auto;border:1px solid var(--border);border-radius:6px"></div>
