@@ -1782,7 +1782,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026103004</div>
+          <div class="brand-sub">v2026103005</div>
         </div>
       </div>
     </div>
@@ -1903,7 +1903,14 @@ const DB = {
     shipWarehouse:'ship_warehouse', outboundRemark:'outbound_remark', _stockDeducted:'_stock_deducted',
     supplierId:'supplier_id', supplierName:'supplier_name', totalAmount:'total_amount',
     expectDate:'expect_date', inboundAt:'inbound_at',
-    productName:'product_name', beforeQty:'before_qty', afterQty:'after_qty', relId:'rel_id'
+    productName:'product_name', beforeQty:'before_qty', afterQty:'after_qty', relId:'rel_id',
+    // v2026103005（严重修复）：利润成本 profitCost <-> profit_cost 映射缺失，是「改了成本过一会儿跳回原值」的根因。
+    //   _snakeToCamel 由本表反向推导（见 _initMapping），缺这一项会导致：
+    //     ① 读取侧：云端行的 profit_cost 无法还原成 camel → prodProfitCost() 读 prod.profitCost 恒 undefined
+    //        → 回落到采购成本 cost 显示（用户体感＝「成本变回原值」「售价变成本」，实为回落值恰好等于售价）。
+    //     ② 写入侧：批量推送经 _toSnake 时利润成本仍叫 profitCost，被 products 列白名单过滤丢弃 → 批量同步丢成本。
+    //   补上映射后两侧同时修复。列不存在时白名单本就不含 profit_cost，不会引发 400。
+    profitCost:'profit_cost'
   },
   _snakeToCamel: {},
   // JSONB 字段（需要序列化/反序列化）
@@ -4143,21 +4150,40 @@ const DB = {
       const _c = (typeof p.cost === 'number') ? p.cost : 0;
       return (_c && _c > 0) ? _c : 0;
     };
+    // 利润成本取值：只认正数，兼容 camel(profitCost)/snake(profit_cost) 两种形态。
+    const _pcOf = function(p){
+      if(!p) return 0;
+      const v = (typeof p.profitCost === 'number') ? p.profitCost : ((typeof p.profit_cost === 'number') ? p.profit_cost : undefined);
+      return (typeof v === 'number' && v > 0) ? v : 0;
+    };
     const _guardPrice = function(list){
       if(!Array.isArray(list)) return list;
       return list.map(function(r){
-        if(!r || r.id == null || typeof r.price !== 'number') return r;
+        if(!r || r.id == null) return r;
         let l = null;
         (local || []).forEach(function(x){ if(x && x.id === r.id) l = x; });
-        if(!l || typeof l.price !== 'number') return r;
-        const rCost = _costOf(r);
-        const lCost = _costOf(l);
-        if(rCost > 0 && r.price <= rCost && l.price > lCost){
-          const _nr = Object.assign({}, r);
-          _nr.price = l.price; // 云端 price 疑似脏 → 保留本地可信售价，不落地脏值
-          return _nr;
+        if(!l) return r;
+        let out = r;
+        // ① 售价守卫（v2026103004）
+        if(typeof r.price === 'number' && typeof l.price === 'number'){
+          const rCost = _costOf(r);
+          const lCost = _costOf(l);
+          if(rCost > 0 && r.price <= rCost && l.price > lCost){
+            out = Object.assign({}, out);
+            out.price = l.price; // 云端 price 疑似脏 → 保留本地可信售价，不落地脏值
+          }
         }
-        return r;
+        // ② 利润成本守卫（v2026103005）：云端 profit_cost 缺失/为 0 而本地有正数时，保留本地值。
+        //    否则全量同步整条覆盖会把刚改好的成本冲成 0，随后又被 initProfitCostFromCost
+        //    当「未设置」回填成采购成本 —— 这正是「北鼎G525 改 1000 后跳回 1150」的完整链路。
+        //    只在本地明确为正数、云端缺失时才干预；云端有正数则照常采纳云端（保证跨端正常同步）。
+        const lPc = _pcOf(l);
+        if(lPc > 0 && !(_pcOf(out) > 0)){
+          out = Object.assign({}, out);
+          out.profitCost = lPc;
+          delete out.profit_cost; // 归一化为 camel，避免后续逻辑再误判
+        }
+        return out;
       });
     };
     if(useInc){
@@ -8573,6 +8599,15 @@ function initProfitCostFromCost(){
     // 顺带自愈：已存在但为 0/非法的 profitCost 也一并按同样规则补齐。
     products.forEach(function(p){
       if(!p) return;
+      // v2026103005：蛇形字段归一化。历史从云端同步下来的行会把利润成本存成 profit_cost(snake)，
+      //   若不先迁回 camel，下方 hasValid 会误判「未设置」→ 用采购成本/售价回填，把用户手工改的成本吞掉
+      //   （实测：北鼎G525 改 1000 后被回填成采购成本 1150，正是此路径）。先迁移再判定。
+      if((p.profitCost === undefined || p.profitCost === null || p.profitCost === '')
+         && p.profit_cost !== undefined && p.profit_cost !== null && p.profit_cost !== ''){
+        p.profitCost = p.profit_cost;
+        delete p.profit_cost;
+        changed = true;
+      }
       const cur = Number(p.profitCost);
       const hasValid = (p.profitCost !== undefined && p.profitCost !== null && p.profitCost !== '') && !isNaN(cur) && cur > 0;
       if(hasValid) return;
@@ -11765,8 +11800,14 @@ function prodProfitCost(prod){
   // 原因：云端 profit_cost 列带 DEFAULT 0，未回填/被清零的商品都是 0；
   //   若把 0 当有效值，利润会算成「售价 − 0」= 整单毛利虚高（此前 805 个商品中招）。
   //   只有「明确为正数」的利润成本才生效，否则一律回落到采购成本。
+  // v2026103005 兜底：兼容 camelCase(profitCost) 与 snake_case(profit_cost) 两种形态。
+  //   _toCamel 的映射已修复，但①历史已落本地的商品对象可能仍是 snake 形态；
+  //   ②个别路径不经 _toCamel 直接使用云端行。缺此兜底时会误判为「未设置」→ 回落采购成本 → 用户改的成本被吞掉。
   if(prod){
-    const _pc = Number(prod.profitCost);
+    const _raw = (prod.profitCost !== undefined && prod.profitCost !== null && prod.profitCost !== '')
+      ? prod.profitCost
+      : prod.profit_cost;
+    const _pc = Number(_raw);
     if(!isNaN(_pc) && _pc > 0) return _pc;
     return Number(prod.cost) || 0;
   }
