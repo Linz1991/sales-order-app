@@ -454,7 +454,7 @@ function refreshAdminSyncBtnLabel(){
   let st = {};
   try{ st = JSON.parse(localStorage.getItem('soms_repair_retry') || '{}') || {}; }catch(e){ st = {}; }
   const _limit = DB._repairRetryLimit();
-  const _used = (st.date === new Date().toISOString().slice(0,10)) ? (st.count || 0) : 0;
+  const _used = (st.date === todayStr()) ? (st.count || 0) : 0;
   const _left = Math.max(0, _limit - _used);
   _btn.textContent = _left > 0 ? ('🔄 同步订单（今日剩 '+_left+' 次）') : '🔄 同步订单（今日已用完）';
 }
@@ -1782,7 +1782,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026103005</div>
+          <div class="brand-sub">v2026103011</div>
         </div>
       </div>
     </div>
@@ -2639,7 +2639,7 @@ const DB = {
     return _isAdmin ? 50 : 10;
   },
   _canRetryRepairToday(){
-    const _today = new Date().toISOString().slice(0,10);
+    const _today = todayStr();
     let st = {};
     try{ st = JSON.parse(localStorage.getItem('soms_repair_retry') || '{}') || {}; }catch(e){ st = {}; }
     if(st.date !== _today) st = { date: _today, count: 0 };
@@ -2863,7 +2863,7 @@ const DB = {
   // 计数用 head:true + count:'exact'：响应体为空，只有响应头带总数，egress 仅几十字节。
   async auditOrderCount(){
     if(!window._sbpbClient) return;
-    const _today = new Date().toISOString().slice(0,10);
+    const _today = todayStr();
     try{ if(localStorage.getItem('soms_order_audit_date') === _today) return; }catch(e){}
     let _cloudCount = -1;
     try{
@@ -4464,6 +4464,25 @@ function fmtDateTime(s){
   const p = n => String(n).padStart(2,'0');
   return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+
     p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());
+}
+// v2026103006：取某时间戳的「北京时间日期」YYYY-MM-DD。
+// 用途：库存台账按日期筛选。云端 createdAt 统一存 UTC（如 2026-10-30T05:18:35+00:00），
+// 旧的本地数据则是裸本地时间（'2026-10-30 13:18:35'，无时区后缀）——new Date 对前者按时区换算、
+// 对后者按本地时间解析，两种都得到正确的北京时间，故新旧数据均可直接用本函数比较。
+function fmtDateCN(s){
+  if(!s) return '';
+  const d = new Date(s);
+  if(isNaN(d.getTime())) return String(s).slice(0,10); // 无法解析时退化为原串前10位
+  const p = n => String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());
+}
+// v2026103007：取订单的「北京时间日期」——优先下单日期（下单员手填的纯日期串），
+// 缺失时回退创建时间（UTC ISO，需经 fmtDateCN 换算）。用于订单列表/看板的日期区间筛选，
+// 保证与界面上「今天」是同一个北京时间日历日。
+function _orderYmd(o){
+  if(!o) return '';
+  if(o.orderDate) return String(o.orderDate).slice(0,10);
+  return fmtDateCN(o.createdAt);
 }
 
 // ===== 列表排序/姓名兜底（v20261007 修复）=====
@@ -7223,12 +7242,7 @@ async function renderOrders(){
             if(canStock){
               // v2026102302 发货仓填写入口移至订单详情页；待下单列表仅只读展示（点「查看」进详情修改）
               const _whRaw = String((it.shipWarehouse && String(it.shipWarehouse).trim()) || (o.shipWarehouse && String(o.shipWarehouse).trim()) || '本仓').trim();
-              const _isDefWh = (_whRaw === '本仓');
-              let _whHtml;
-              if(_whRaw === '待填写'){ _whHtml = '<span style="color:var(--warning)">手动填写(待补仓名)</span>'; }
-              else if(_isDefWh){ _whHtml = '系统默认仓'; }
-              else { _whHtml = escapeHtml(_whRaw); }
-              html += `<td style="font-size:12px">${_whHtml}</td>`;
+              html += `<td style="font-size:12px">${_shipWhReadonlyHtml(_whRaw)}</td>`;
             }
             html += `</tr>`;
           });
@@ -7262,8 +7276,7 @@ async function renderOrders(){
             if(canStock){
               // 已下单 Tab：发货仓只读展示（仅管理员/操作员可见），下单后再不可改
               const _wh = (it.shipWarehouse && String(it.shipWarehouse).trim()) || (o.shipWarehouse && String(o.shipWarehouse).trim()) || '本仓';
-              const _isDefault = _wh === '本仓';
-              html += `<td style="font-size:12px">${escapeHtml(_isDefault ? '系统默认仓' : _wh)}</td>`;
+              html += `<td style="font-size:12px">${_shipWhReadonlyHtml(_wh)}</td>`;
             }
             html += `</tr>`;
           });
@@ -7274,8 +7287,39 @@ async function renderOrders(){
         html += `<tr><td colspan="3" class="table-empty">暂无已下单订单</td></tr>`;
       }
       html += `</tbody></table></div>`;
+    } else if(activeTab === 'feedback'){
+      // 待反馈Tab（v2026103006）：此前走「简单列表」看不到商品，需在列表处直接核对商品/运单。
+      // 全部只读：此时出库已完成，发货仓不可再改（改仓需在出库/完成前完成）。
+      html += `<div class="table-wrap"><table><thead><tr><th>客户</th><th>商品明细</th><th>操作</th></tr></thead><tbody id="adminFeedbackTbody">`;
+      if(filtered.length){
+        filtered.forEach(o => {
+          html += `<tr>`;
+          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span>${o.salesName?`<br><span style="font-size:11px;color:var(--text-muted)">销售 ${escapeHtml(o.salesName)}</span>`:''}</td>`;
+          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/><col/>':''}${canStock?'<col class="wh-col"/>':''}<col/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}${canStock?'<th>发货仓</th>':''}<th>运单号</th></tr></thead><tbody>`;
+          (o.items||[]).forEach((it, idx) => {
+            const cost = effectiveItemCost(o, it, _productMap);
+            const waste = it.waste || 0;
+            const profit = (it.price||0)*(it.qty||0) - cost*(it.qty||0) - waste;
+            html += `<tr><td>${escapeHtml(it.name)}${it.itemRemark ? '<div style="font-size:11px;color:#b45309;margin-top:2px;white-space:pre-wrap">商品备注：'+escapeHtml(it.itemRemark)+'</div>' : ''}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
+            if(isAdmin){
+              html += `<td>${money(cost)}</td><td style="font-weight:600;color:var(--danger)">${money(waste)}</td><td style="color:${profit>=0?'var(--success)':'var(--danger)'};font-weight:600">${money(profit)}</td>`;
+            }
+            if(canStock){
+              const _wh = (it.shipWarehouse && String(it.shipWarehouse).trim()) || (o.shipWarehouse && String(o.shipWarehouse).trim()) || '本仓';
+              html += `<td style="font-size:12px">${_shipWhReadonlyHtml(_wh)}</td>`;
+            }
+            html += `<td style="font-size:12px">${o.noTracking ? '<span style="color:var(--text-muted)">无需物流</span>' : (escapeHtml(it.trackingNo) || '<span style="color:var(--text-muted)">-</span>')}</td>`;
+            html += `</tr>`;
+          });
+          html += `</tbody></table></td>`;
+          html += `<td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}', true)">查看</button>${o.status === 'feedback' ? ` <button class="btn btn-warning btn-sm" style="margin-left:4px" onclick="markOrderFeedbackDone('${o.id}')">确认已反馈</button>` : ''}</td></tr>`;
+        });
+      } else {
+        html += `<tr><td colspan="3" class="table-empty">暂无待反馈订单</td></tr>`;
+      }
+      html += `</tbody></table></div>`;
     } else {
-      // 全部/待反馈/已完成：简单列表（含类型与状态列）
+      // 全部/已完成：简单列表（含类型与状态列）
       const colCount = 6;
       html += `<div class="table-wrap"><table><thead><tr><th>客户</th><th>金额</th><th>类型</th><th>状态</th><th>发货日期</th><th>操作</th></tr></thead><tbody id="adminSimpleTbody">`;
       if(filtered.length){
@@ -7336,8 +7380,9 @@ async function renderOrders(){
   }
   const salesDateStart = window._salesDateStart || '';
   const salesDateEnd = window._salesDateEnd || '';
-  if(salesDateStart){ baseBeforeType = baseBeforeType.filter(o => { var d = (o.createdAt||'').slice(0,10); return d >= salesDateStart; }); }
-  if(salesDateEnd){ baseBeforeType = baseBeforeType.filter(o => { var d = (o.createdAt||'').slice(0,10); return d <= salesDateEnd; }); }
+  // v2026103007：按「北京时间日期」筛选（旧逻辑直接截 UTC 前10位，北京时间 08:00 前的单会被归到前一天）
+  if(salesDateStart){ baseBeforeType = baseBeforeType.filter(o => { var d = fmtDateCN(o.createdAt); return d >= salesDateStart; }); }
+  if(salesDateEnd){ baseBeforeType = baseBeforeType.filter(o => { var d = fmtDateCN(o.createdAt); return d <= salesDateEnd; }); }
 
   // 类型分段角标（各类型总数，不受当前选中类型与状态影响，但受关键词+日期影响）
   const typeCounts = {
@@ -7402,8 +7447,9 @@ async function renderOrders(){
           if(listType === 'normal') base = base.filter(o => o.type !== 'warehouse' && o.type !== 'door');
           else if(listType === 'warehouse') base = base.filter(o => o.type === 'warehouse');
           else if(listType === 'door') base = base.filter(o => o.type === 'door');
-          if(salesDateStart) base = base.filter(o => { var d = (o.createdAt||'').slice(0,10); return d >= salesDateStart; });
-          if(salesDateEnd) base = base.filter(o => { var d = (o.createdAt||'').slice(0,10); return d <= salesDateEnd; });
+          // v2026103007：按「北京时间日期」筛选
+          if(salesDateStart) base = base.filter(o => { var d = fmtDateCN(o.createdAt); return d >= salesDateStart; });
+          if(salesDateEnd) base = base.filter(o => { var d = fmtDateCN(o.createdAt); return d <= salesDateEnd; });
           const cnt = base.length;
           return `<button class="seg-item ${status===t.key?'active':''}" onclick="filterOrders('${t.key}','status')">${t.label} <span class="seg-count">${cnt}</span></button>`;
         }).join('')}
@@ -9786,21 +9832,14 @@ function renderOrderDetail(){
                   ${isAdmin ? `<td><input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px;color:var(--danger);font-weight:600" id="wasteItem_${i}" oninput="saveItemWaste('${order.id}',${i},this.value)" onchange="saveItemWaste('${order.id}',${i},this.value)"></td>` : ''}
                   ${isAdmin ? `<td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}">${money(itemProfit)}</td>` : ''}
                   ${(isAdmin || isOperator) ? `<td style="font-size:12px">${(()=>{ const _w=String(it.shipWarehouse || order.shipWarehouse || '本仓').trim(); 
-                    // v2026102302 发货仓填写入口移至订单详情页：待下单且该商品未下单时可改，其余只读
-                    // v20261029：发货仓可改到「订单真正出库/完成」之前（旧逻辑仅待下单且未下单可改，导致下单后想改仓被锁死）。出库扣库存在读取 shipWarehouse 时发生，故发货前改都有效
-                    const _outboundDone = (order.status === 'shipped' || order.status === 'completed');
-                    const _canEditWh = !editMode && !_outboundDone;
-                    if(!_canEditWh){
-                      if(_w==='本仓') return '系统默认仓';
-                      if(_w==='待填写') return '<span style="color:var(--warning)">手动填写(待补仓名)</span>';
-                      return escapeHtml(_w) + ' <span style="color:var(--text-muted)">(手动填写·不扣库存)</span>';
-                    }
-                    const _isDefWh = (_w === '本仓');
-                    const _customVal = (_w === '待填写') ? '' : _w;
-                    return `<select class="form-control wh-ctl" id="itWhSel_${order.id}_${i}" onchange="onShipWhModeChange('${order.id}',${i},this.value)" title="系统默认仓=扣减系统库存；手动填写=仅记录，不扣库存">
-                        <option value="本仓"${_isDefWh?' selected':''}>系统默认仓</option>
-                        <option value="__custom__"${_isDefWh?'':' selected'}>手动填写…</option>
-                      </select>` + (_isDefWh ? '' : `<input type="text" class="form-control wh-ctl" id="itWh_${order.id}_${i}" value="${escapeHtml(_customVal)}" placeholder="仓库名(不扣库存)" title="手动填写的仓库不扣系统库存，仅留痕" style="margin-top:4px" onchange="saveItemShipWarehouse('${order.id}',${i},this.value || '待填写')">`);
+                    // v2026103010：发货仓可否变更按「是否已真正扣库存 + 本行当前发货方式」判定——
+                    //   ① 未出库（待下单）→ 系统默认仓 ⇄ 供应商 自由切换
+                    //   ② 已出库 且 本行是本仓 → 库存已扣，锁定只读（改了库存凭空少且无回滚流水）
+                    //   ③ 已出库 且 本行是供应商/手填 → 从未扣过本仓库存，任何时候都能换供应商
+                    const _deducted = _isStockDeducted(order);
+                    const _canEditWh = !editMode && !(_deducted && _w === '本仓');
+                    if(!_canEditWh) return _shipWhReadonlyHtml(_w);
+                    return _shipWhCtlHtml(order.id, i, _w, 'margin-top:4px', (_deducted && _w !== '本仓') ? { noDefault: true } : null);
                   })()}</td>` : ''}
                   ${((isAdmin || isOperator) && (order.status==='pending' || order.items && order.items.some(it=>it.ordered))) ? `<td>${it.ordered ? '<button class="btn btn-sm" title="双击撤回下单" ondblclick="markItemUnordered(\''+order.id+'\','+i+')" style="background:#3b82f6;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer">已下单</button>' : '<button class="btn btn-success btn-sm" onclick="markItemOrdered(\''+order.id+'\','+i+')">下单</button>'}</td>` : ''}
                   ${(isAdmin && order.type==='warehouse' && !hideInlineTracking) ? `<td><input type="text" class="form-control" id="whTrackItem_${i}" value="${escapeHtml(it.trackingNo) || ''}" placeholder="输入运单号" style="padding:6px 10px;min-width:150px">${it.trackingNo ? `<a class="btn-link" style="margin-left:6px;white-space:nowrap" onclick="queryLogistics(escapeJsStr(order.id), ${i}, document.getElementById('whTrackItem_${i}').value)">查询</a>` : ''}</td>` : ''}
@@ -9885,6 +9924,15 @@ function renderOrderDetail(){
                 <div style="display:flex;align-items:center;gap:8px">${govCell}</div>
                 <div style="display:flex;align-items:center;gap:8px"><span style="font-size:13px;color:#555">货到店</span>${stockCell}</div>
                 <div style="display:flex;align-items:center;gap:8px"><span style="font-size:13px;color:#555">货到客户</span>${arrivalCell}</div>
+                ${((isAdmin || isOperator) && !editMode) ? `<div style="display:flex;align-items:center;gap:8px"><span style="font-size:13px;color:#555">发货仓</span>${(()=>{ const _w=String(it.shipWarehouse || order.shipWarehouse || '本仓').trim();
+                  // v2026103010：发货仓可否变更不再一刀切按订单状态判定——
+                  //   ① 未出库（待下单）→ 系统默认仓 ⇄ 供应商 自由切换
+                  //   ② 已出库 且 本行走「系统默认仓」→ 库存已扣，锁定只读（避免改后库存凭空消失）
+                  //   ③ 已出库 且 本行走「供应商/手动填写」→ 从未扣过默认仓库存，可随时更换供应商
+                  const _deducted = _isStockDeducted(order);
+                  if(_deducted && _w === '本仓') return _shipWhReadonlyHtml(_w);
+                  return _shipWhCtlHtml(order.id, i, _w, 'width:140px', (_deducted && _w !== '本仓') ? { noDefault: true } : null);
+                })()}</div>` : ''}
                 ${editMode ? `<button class="btn-link danger" style="margin-left:auto" onclick="removeEditItem(${i})">删除</button>` : ''}
               </div>
             </div>`;
@@ -10923,6 +10971,7 @@ function autoDoorConfirmIfAllStocked(order){
     order.status = 'confirmed';
     order.confirmedAt = nowStr();
     order.updatedAt = nowStr();
+    _outboundOnShipped(order); // v2026103007：待下单 → 已下单 即出库（扣库存 + 写台账）
     return true;
   }
   return false;
@@ -11746,8 +11795,9 @@ async function updateOrderStatus(orderId, status){
       orders[idx].completedAt = nowStr();
     }
     if(status === 'shipped') orders[idx].shippedAt = nowStr();
-    // v2026102102 出库联动库存：普通/留仓单到「已发货」、上门单到「完成」即触发扣减；_stockDeducted 防重复
-    const _isOutbound = (status === 'shipped') || (orders[idx].type === 'door' && status === 'completed');
+    // v2026103007 出库联动库存：订单推进到「已下单」即出库（普通/留仓/上门统一）；
+    // 后续的已发货/待反馈/已完成状态同样放行，作为绕过 confirmed 路径的兜底，靠 _stockDeducted 防重复
+    const _isOutbound = (status !== 'pending');
     if(_isOutbound && !orders[idx]._stockDeducted){
       const _mode = DB.get('stockMode') || 'loose';
       if(_mode !== 'loose'){
@@ -11993,42 +12043,201 @@ function saveItemWaste(orderId, itemIndex, value) {
   if(currentRoute === 'orders') renderOrders();
 }
 // v2026102102 库存系统：逐行设置发货仓（默认本仓，支持一行一仓）
+// v2026103009：发货仓来源由「手动填写」升级为「选择供应商」——历史手动填写的仓名按兼容路径保留（仍可编辑），不可丢弃
 function saveItemShipWarehouse(orderId, itemIndex, value){
   const orders = DB.get('orders');
   const idx = orders.findIndex(o => o.id === orderId);
-  if(idx < 0) return;
-  orders[idx].items[itemIndex].shipWarehouse = (value || '').trim() || '本仓';
-  orders[idx].updatedAt = nowStr();
+  if(idx < 0) return false;
+  const od = orders[idx];
+  const _prevWh = (String((od.items[itemIndex] || {}).shipWarehouse || '').trim() || '本仓');
+  const _newWh = (value || '').trim() || '本仓';
+  // v2026103010 守卫：订单一旦出库（库存已实际扣减），「系统默认仓」的发货方式即锁定，不可再切换。
+  //   · 本仓→供应商：当初扣掉的默认仓库存不会自动退回 → 库存凭空少一批、台账无回滚记录；
+  //   · 供应商→本仓：等于事后补扣库存，同样脱离正常出库流程。
+  //   反向也拦：已出库的供应商行不允许切回「系统默认仓」（供应商⇄供应商 之间随时可换，不碰库存）。
+  //   UI 层已按此规则置灰/只读，这里是防绕过（直接调函数、旧页面缓存）的最后一道防线。
+  if(_shipWhChangeBlocked(od, _prevWh, _newWh)){
+    showToast('该订单已出库，「系统默认仓」的发货方式不能再变更（如需调整请先处理已生成的出库流水）；供应商之间可随时更换', 'error', 6000);
+    return false;
+  }
+  od.items[itemIndex].shipWarehouse = _newWh;
+  od.updatedAt = nowStr();
   DB.set('orders', orders);
   _pinWriteLock(orderId);
   schedulePushToCloud();
+  return true;
 }
-// v2026102102 发货仓下拉切换：系统默认仓(本仓，扣库存) ⇄ 手动填写(自定义仓名，不扣系统库存)
-// 切到「手动填写」时先落一个占位值『待填写』——它不等于「本仓」，因此出库时必定走 outbound_other 只留痕、绝不扣减默认仓库存。
-function onShipWhModeChange(orderId, itemIndex, value){
-  const sel = document.getElementById('itWhSel_' + orderId + '_' + itemIndex);
-  if(value === '__custom__'){
-    saveItemShipWarehouse(orderId, itemIndex, '待填写');
-    if(sel && sel.parentNode){
-      let inp = document.getElementById('itWh_' + orderId + '_' + itemIndex);
-      if(!inp){
-        inp = document.createElement('input');
-        inp.type = 'text';
-        inp.className = 'form-control wh-ctl';
-        inp.id = 'itWh_' + orderId + '_' + itemIndex;
-        inp.placeholder = '仓库名(不扣库存)';
-        inp.title = '手动填写的仓库不扣系统库存，仅留痕';
-        inp.style.cssText = 'margin-top:4px';
-        inp.onchange = function(){ saveItemShipWarehouse(orderId, itemIndex, this.value || '待填写'); };
-        sel.parentNode.appendChild(inp);
-      }
-      try{ inp.focus(); }catch(e){}
-    }
-  } else {
-    saveItemShipWarehouse(orderId, itemIndex, value);
-    const inp = document.getElementById('itWh_' + orderId + '_' + itemIndex);
-    if(inp && inp.parentNode) inp.parentNode.removeChild(inp);
+// v2026103010 订单是否已实际发生库存扣减：显式标记优先（历史数据），否则按 v2026103007 的
+//   出库时点口径——出库在「待下单→已下单(confirmed)」即触发，故非 pending 一律视为已扣。
+function _isStockDeducted(order){
+  if(!order) return false;
+  if(order._stockDeducted === true) return true;
+  const st = String(order.status || '').trim();
+  return (st !== '' && st !== 'pending' && st !== 'canceled' && st !== 'cancelled');
+}
+// v2026103010 是否禁止本次发货仓变更：仅当「已出库」且 本仓⇄非本仓 口径翻转时拦截。
+//   供应商→供应商、手填仓名→手填仓名、以及任何未出库订单的修改，一概放行。
+function _shipWhChangeBlocked(order, prevWh, newWh){
+  const p = (String(prevWh).trim() || '本仓'), n = (String(newWh).trim() || '本仓');
+  if(p === n) return false;                 // 无变化，放行
+  if(!_isStockDeducted(order)) return false; // 未出库，完全自由
+  return (p === '本仓') !== (n === '本仓');  // 已出库：只允许在非本仓之间更换（供应商⇄供应商/手填）
+}
+// v2026103009 发货仓「选择供应商」：发货仓仅两种来源——
+//   ① 系统默认仓：真实扣减系统库存 + 写出库流水
+//   ② 供应商：由该供应商直接发货，不扣减默认仓库存，仅在库存台账留痕（outbound_other）
+// 存储沿用 shipWarehouse（存供应商名称），出库/台账显示逻辑无需改造，也不引入新的云端字段。
+// 历史"手动填写"的自定义仓名：名称匹配不到供应商时按兼容路径显示，仍可编辑，不会被丢弃。
+function _resolveShipSupplier(wh){
+  const w = String(wh || '').trim();
+  if(!w || w === '本仓' || w === '待填写') return null;
+  const list = DB.get('suppliers') || [];
+  for(let i = 0; i < list.length; i++){
+    if(String(list[i].name || '').trim() === w) return list[i];
   }
+  return null;
+}
+// 发货仓控件（下拉 + 附属控件）HTML：订单详情表格、上门订单卡片共用同一段，保证两处行为完全一致
+function _shipWhCtlHtml(orderId, itemIndex, wh, inpStyle, opt){
+  const w = String(wh || '本仓').trim();
+  const sup = _resolveShipSupplier(w);
+  const isDef = (w === '本仓');
+  const hasCustom = !isDef && !sup; // 历史手动填写的仓名 → 保留文本框，否则旧数据会变成既不正确又不可改
+  // noDefault：订单已出库且本行走供应商直发 → 仍可随时更换供应商，但不允许切回「系统默认仓」
+  //   （切回 = 事后补扣库存，脱离正常出库流程）。此时该项置灰并给出原因，避免用户困惑。
+  const noDef = !!(opt && opt.noDefault);
+  let extra = '';
+  if(sup){
+    extra = `<button type="button" class="btn-link" onclick="openShipSupplierPicker('${orderId}',${itemIndex})" title="${noDef ? '已出库：可随时更换发货供应商（不扣减库存）' : '供应商直发：不扣减系统默认仓库存，仅记录台账。点击可重新选择'}" style="font-size:12px;white-space:nowrap;text-align:left">🏭 ${escapeHtml(sup.name)}${noDef ? ' <span style="color:var(--text-muted)">（可更换）</span>' : ''}</button>`;
+  } else if(hasCustom){
+    const _customVal = (w === '待填写') ? '' : w;
+    extra = `<input type="text" class="form-control wh-ctl" id="itWh_${orderId}_${itemIndex}" value="${escapeHtml(_customVal)}" placeholder="仓库名(不扣库存)" title="手动填写的仓库不扣系统库存，仅留痕" style="${inpStyle || 'margin-top:4px'}" onchange="saveItemShipWarehouse('${orderId}',${itemIndex},this.value || '待填写')">`;
+  }
+  const opts = `<option value="本仓"${isDef ? ' selected' : ''}${noDef ? ' disabled title="订单已出库，不能再从供应商切回系统默认仓"' : ''}>系统默认仓${noDef ? '（已出库不可切回）' : ''}</option>`
+    + `<option value="__supplier__"${(!isDef && sup) ? ' selected' : ''}>选择供应商…</option>`
+    + (hasCustom ? `<option value="__custom__" selected>手动填写：${escapeHtml(w === '待填写' ? '(待补仓名)' : w)}</option>` : '');
+  const tip = noDef
+    ? '订单已出库：此行走供应商直发（未扣默认仓库存），可随时更换供应商；但不可再切回系统默认仓'
+    : '系统默认仓=扣减系统库存；选择供应商=供应商直发，仅记录不扣库存';
+  return `<span id="itWhWrap_${orderId}_${itemIndex}" style="display:inline-flex;flex-direction:column;gap:4px;align-items:flex-start">`
+    + `<select class="form-control wh-ctl" id="itWhSel_${orderId}_${itemIndex}" onchange="onShipWhModeChange('${orderId}',${itemIndex},this.value)" title="${tip}" style="width:auto;min-width:110px">${opts}</select>`
+    + extra + `</span>`;
+}
+// 只读态（订单已出库/完成后）展示：区分「系统默认仓 / 供应商直发 / 历史手动填写」
+function _shipWhReadonlyHtml(wh){
+  const w = String(wh || '本仓').trim();
+  if(w === '本仓') return '<span style="font-size:12px">系统默认仓</span>';
+  if(w === '待填写') return '<span style="color:var(--warning);font-size:12px">选择供应商(待指定)</span>';
+  const sup = _resolveShipSupplier(w);
+  if(sup) return '<span style="font-size:12px">🏭 ' + escapeHtml(sup.name) + ' <span style="color:var(--text-muted)">(供应商发货·不扣库存)</span></span>';
+  return '<span style="font-size:12px">' + escapeHtml(w) + ' <span style="color:var(--text-muted)">(手动填写·不扣库存)</span></span>';
+}
+// 选中某供应商后局部重绘该行控件（不整页刷新，避免同行其它输入丢失）
+function _refreshShipWhCtl(orderId, itemIndex){
+  const wrap = document.getElementById('itWhWrap_' + orderId + '_' + itemIndex);
+  if(!wrap) return;
+  const od = (DB.get('orders') || []).find(function(o){ return o.id === orderId; });
+  const it = od && od.items ? od.items[itemIndex] : null;
+  if(!it) return;
+  const _w = String(it.shipWarehouse || od.shipWarehouse || '本仓').trim();
+  // 重绘后权限态必须与首次渲染一致：已出库的本仓行不该在重绘后又冒出可编辑控件（双保险，UI 层通常已直接走只读）
+  if(_isStockDeducted(od) && _w === '本仓'){ return; }
+  const _opt = (_isStockDeducted(od) && _w !== '本仓') ? { noDefault: true } : null;
+  wrap.outerHTML = _shipWhCtlHtml(orderId, itemIndex, _w, 'margin-top:4px', _opt);
+}
+// 发货仓来源选择：系统默认仓(本仓，扣库存) ⇄ 选择供应商(供应商直发，不扣库存)
+function onShipWhModeChange(orderId, itemIndex, value){
+  if(value === '__supplier__'){ openShipSupplierPicker(orderId, itemIndex); return; }
+  if(value === '__custom__'){
+    // 切出可编辑文本框前先落占位值『待填写』——它不等于「本仓」，出库时必定走 outbound_other 只留痕、绝不扣减默认仓库存
+    if(!saveItemShipWarehouse(orderId, itemIndex, '待填写')){ _refreshShipWhCtl(orderId, itemIndex); return; }
+    _refreshShipWhCtl(orderId, itemIndex);
+    try{ const el = document.getElementById('itWh_' + orderId + '_' + itemIndex); if(el) el.focus(); }catch(e){}
+    return;
+  }
+  // 保存被守卫拒绝（如已出库的本仓行试图切供应商）→ 重绘回滚下拉选中态，避免界面显示与实际数据不符
+  saveItemShipWarehouse(orderId, itemIndex, value);
+  _refreshShipWhCtl(orderId, itemIndex);
+}
+// ---------- v2026103009 发货供应商选择器（可检索） ----------
+function openShipSupplierPicker(orderId, itemIndex){
+  const list = DB.get('suppliers') || [];
+  if(!list.length){
+    showToast('暂无供应商，请先到「供应商管理」添加供应商', 'error', 4000);
+    return;
+  }
+  const od = (DB.get('orders') || []).find(function(o){ return o.id === orderId; });
+  const it = od && od.items ? od.items[itemIndex] : null;
+  window._shipPickerCtx = { orderId: orderId, itemIndex: itemIndex, oldWh: String((it && it.shipWarehouse) || '本仓') };
+  const modalHtml = `
+    <div class="modal-mask" onclick="if(event.target===this)closeShipSupplierPicker()">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header"><h3>🏭 选择发货供应商</h3><button class="modal-close" onclick="closeShipSupplierPicker()">×</button></div>
+        <div class="modal-body">
+          <input type="text" class="form-control" id="shipSupSearch" placeholder="搜索供应商名称 / 联系人 / 电话（空格分隔多关键字）" autocomplete="off" oninput="renderShipSupplierPickerList()" onkeydown="if(event.key==='Enter'){event.preventDefault();_pickFirstShipSupplier();}" style="margin-bottom:10px">
+          <div id="shipSupPickerList" style="max-height:320px;overflow:auto;border:1px solid var(--border);border-radius:6px"></div>
+          <div style="margin-top:10px;font-size:12px;color:var(--text-muted)">选中的供应商表示该商品由<b>供应商直接发货</b>：不扣减系统默认仓库存，仅在库存台账留痕，便于后续追溯从哪家供应商发出。</div>
+        </div>
+        <div class="modal-footer">
+          <span style="margin-right:auto;font-size:12px;color:var(--text-muted)">共 ${list.length} 家供应商</span>
+          <button class="btn btn-secondary" onclick="closeShipSupplierPicker()">取消</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('modalContainer').innerHTML = modalHtml;
+  renderShipSupplierPickerList();
+  try{ const el = document.getElementById('shipSupSearch'); if(el){ el.focus(); el.select(); } }catch(e){}
+}
+function renderShipSupplierPickerList(){
+  const box = document.getElementById('shipSupPickerList');
+  if(!box) return;
+  const ctx = window._shipPickerCtx || {};
+  const kwEl = document.getElementById('shipSupSearch');
+  const kws = (kwEl ? kwEl.value.trim().toLowerCase() : '').split(/\s+/).filter(Boolean);
+  const cur = _resolveShipSupplier(ctx.oldWh);
+  const list = (DB.get('suppliers') || []).filter(function(s){
+    if(!kws.length) return true;
+    const hay = ((s.name || '') + ' ' + (s.contact || '') + ' ' + (s.phone || '') + ' ' + (s.remark || '') + ' ' + (s.address || '')).toLowerCase();
+    return kws.every(function(k){ return hay.indexOf(k) >= 0; });
+  });
+  window._shipPickFirstId = list.length ? list[0].id : '';
+  if(!list.length){
+    box.innerHTML = '<div style="padding:26px;text-align:center;color:var(--text-muted)">没有匹配的供应商<br><span style="font-size:12px">换个关键字，或到「供应商管理」新增</span></div>';
+    return;
+  }
+  box.innerHTML = list.map(function(s){
+    const on = !!(cur && cur.id === s.id);
+    const sub = [s.contact, s.phone].filter(Boolean).join(' / ');
+    return `<div onclick="pickShipSupplier('${ctx.orderId}',${ctx.itemIndex},'${s.id}')"
+        style="padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer;background:${on ? '#eff6ff' : 'transparent'}"
+        onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='${on ? '#eff6ff' : 'transparent'}'">
+        <div style="font-weight:600">${on ? '✓ ' : ''}${escapeHtml(s.name || '')}</div>
+        ${sub ? `<div style="font-size:12px;color:var(--text-muted);margin-top:2px">${escapeHtml(sub)}</div>` : ''}
+      </div>`;
+  }).join('');
+}
+function _pickFirstShipSupplier(){
+  if(!window._shipPickFirstId) return;
+  const ctx = window._shipPickerCtx || {};
+  pickShipSupplier(ctx.orderId, ctx.itemIndex, window._shipPickFirstId);
+}
+// 落库：把发货仓写成供应商名称（沿用 shipWarehouse 字段，出库/台账无需改造）
+function pickShipSupplier(orderId, itemIndex, supplierId){
+  const s = (DB.get('suppliers') || []).find(function(x){ return x.id === supplierId; });
+  if(!s){ showToast('供应商不存在，请重新选择', 'error'); return; }
+  // 守卫拒绝时不关弹窗、不报成功（如订单已出库且本行原本是系统默认仓）
+  if(!saveItemShipWarehouse(orderId, itemIndex, s.name)){ _refreshShipWhCtl(orderId, itemIndex); return; }
+  window._shipPickerCtx = null;
+  try{ closeModal(); }catch(e){}
+  _refreshShipWhCtl(orderId, itemIndex);
+  showToast('已设为供应商直发：' + s.name + '（不扣减系统默认仓库存）', 'success', 3000);
+}
+// 取消/关闭：此时尚未写入任何数据，回滚下拉到打开前的选择
+function closeShipSupplierPicker(){
+  const ctx = window._shipPickerCtx;
+  window._shipPickerCtx = null;
+  try{ closeModal(); }catch(e){}
+  if(ctx) _refreshShipWhCtl(ctx.orderId, ctx.itemIndex);
 }
 // v20261029：订单级「出库/转仓备注」，独立于订单主备注，专门记录发货仓变更原因（如 原定A供应商→改B仓），随出库流水写入库存台账
 function saveOrderOutboundRemark(orderId, val){
@@ -12101,6 +12310,7 @@ async function markItemOrdered(orderId, idx){
         if(!o2.confirmedAt) o2.confirmedAt = nowStr(); // v2026100109：利润归属日期依赖此字段，此前漏写导致首页利润统计不到
         o2.updatedAt = nowStr();
         DB.set('orders', orders2);
+        _outboundOnShipped(o2); // v2026103007：待下单 → 已下单 即出库（扣库存 + 写台账）
         _pinWriteLock(orderId); // 写入窗口锁：状态推进到 confirmed，3 秒内禁止云端回退为 pending
         await syncOrdersNow().catch(function(){});
         showToast('✅ 订单状态已改为「已下单」','success');
@@ -12132,6 +12342,7 @@ async function markItemOrdered(orderId, idx){
         if(!o2.confirmedAt) o2.confirmedAt = nowStr(); // v2026100109：利润归属日期依赖此字段，此前漏写导致首页利润统计不到
         o2.updatedAt = nowStr();
         DB.set('orders', orders2);
+        _outboundOnShipped(o2); // v2026103007：待下单 → 已下单 即出库（扣库存 + 写台账）
         _pinWriteLock(orderId); // 写入窗口锁：状态推进到 confirmed，3 秒内禁止云端回退为 pending
         await syncOrdersNow().catch(function(){});
         showToast('✅ 订单状态已改为「已下单」','success');
@@ -13377,7 +13588,7 @@ function exportCustomers(){
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = '客户信息_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.download = '客户信息_' + todayStr() + '.csv';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -13492,7 +13703,7 @@ function exportOrders(){
   const a = document.createElement('a');
   a.href = url;
   const fileTag = hasDateRange ? '全部' : '普通留仓';
-  const dateTag = (expStart || expEnd) ? (expStart||'') + (expEnd && expStart ? '_' + expEnd : (expEnd||'')) : new Date().toISOString().slice(0,10);
+  const dateTag = (expStart || expEnd) ? (expStart||'') + (expEnd && expStart ? '_' + expEnd : (expEnd||'')) : todayStr();
   a.download = '订单详情_' + fileTag + '_' + dateTag + '.csv';
   document.body.appendChild(a);
   a.click();
@@ -13595,7 +13806,7 @@ function exportAftersales(){
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  const dateTag = (asStart || asEnd) ? (asStart||'') + (asEnd && asStart ? '_' + asEnd : (asEnd||'')) : new Date().toISOString().slice(0,10);
+  const dateTag = (asStart || asEnd) ? (asStart||'') + (asEnd && asStart ? '_' + asEnd : (asEnd||'')) : todayStr();
   a.download = '售后工单_' + dateTag + '.csv';
   document.body.appendChild(a);
   a.click();
@@ -13625,7 +13836,8 @@ function exportScheduleOrders(){
   // 上门日期取值（与 renderSchedule 的 doorDateOf 一致：优先 completionDate 即上门日期，回退备货日期/创建日期）
   // 兼容两种字段写法：云端/部分同步路径可能存 snake_case(order_date/completion_date/created_at)，
   // 若只认 camelCase 会导致该单日期为空、日历上不显示（ORD20260930-chao9187373 即此问题）。
-  var doorDateOf = function(o){ return o.completionDate || o.completion_date || o.orderDate || o.order_date || (o.createdAt || o.created_at || '').slice(0,10); };
+  // 创建时间是 UTC ISO，需转北京时间后再取日期，否则 08:00 前创建的单会落到前一天
+  var doorDateOf = function(o){ return o.completionDate || o.completion_date || o.orderDate || o.order_date || fmtDateCN(o.createdAt || o.created_at); };
   var filtered = allDoorOrders;
   if(statusKey && doorStatusMap[statusKey]){
     filtered = filtered.filter(function(o){ return doorStatusMap[statusKey].indexOf(o.status) >= 0; });
@@ -13691,7 +13903,7 @@ function exportScheduleOrders(){
   var url = URL.createObjectURL(blob);
   var a = document.createElement('a');
   a.href = url;
-  var dateTag = (schDateStart || schDateEnd) ? (schDateStart||'') + (schDateEnd && schDateStart ? '_' + schDateEnd : (schDateEnd||'')) : new Date().toISOString().slice(0,10);
+  var dateTag = (schDateStart || schDateEnd) ? (schDateStart||'') + (schDateEnd && schDateStart ? '_' + schDateEnd : (schDateEnd||'')) : todayStr();
   a.download = '上门订单_' + dateTag + '.csv';
   document.body.appendChild(a);
   a.click();
@@ -13732,10 +13944,10 @@ function exportWarehouseOrders(){
     });
   }
   if(whDateStart){
-    filtered = filtered.filter(function(o){ var d = (o.orderDate||o.createdAt||'').slice(0,10); return d >= whDateStart; });
+    filtered = filtered.filter(function(o){ var d = _orderYmd(o); return d >= whDateStart; });
   }
   if(whDateEnd){
-    filtered = filtered.filter(function(o){ var d = (o.orderDate||o.createdAt||'').slice(0,10); return d <= whDateEnd; });
+    filtered = filtered.filter(function(o){ var d = _orderYmd(o); return d <= whDateEnd; });
   }
 
   if(!filtered.length){ showToast('当前筛选无留仓订单可导出','error'); return; }
@@ -13789,7 +14001,7 @@ function exportWarehouseOrders(){
   var url = URL.createObjectURL(blob);
   var a = document.createElement('a');
   a.href = url;
-  var dateTag = (whDateStart || whDateEnd) ? (whDateStart||'') + (whDateEnd && whDateStart ? '_' + whDateEnd : (whDateEnd||'')) : new Date().toISOString().slice(0,10);
+  var dateTag = (whDateStart || whDateEnd) ? (whDateStart||'') + (whDateEnd && whDateStart ? '_' + whDateEnd : (whDateEnd||'')) : todayStr();
   a.download = '留仓订单_' + dateTag + '.csv';
   document.body.appendChild(a);
   a.click();
@@ -14379,7 +14591,7 @@ function importFreightExcel(){
           }catch(e){ console.warn('[freight] 订单预拉取失败，仍继续匹配', e); }
           window._freightManualChoice = {}; // v2026101903：新导入清空上次的人工选择
           // v2026101904：batch_id 用毫秒36进制+随机串，杜绝同秒同毫秒导入两批导致批次号碰撞合并
-          window._freightBatchId = 'fr_batch_' + new Date().toISOString().slice(0,10) + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8);
+          window._freightBatchId = 'fr_batch_' + todayStr() + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8);
           const matched = matchFreightToOrders(parsed);
           window._lastFreightMatch = matched;
           renderFreightMatchResult(matched);
@@ -14601,7 +14813,7 @@ async function confirmImportFreight(){
     const oid = (window._freightManualChoice && window._freightManualChoice[key]) || x.orderIds[0];
     return {
       id: 'fr_' + Date.now() + '_' + Math.random().toString(36).slice(2,8),
-      batch_id: window._freightBatchId || ('fr_batch_' + new Date().toISOString().slice(0,10)),
+      batch_id: window._freightBatchId || ('fr_batch_' + todayStr()),
       order_id: oid,
       tracking_no: x.bill.tracking_no,
       phone: x.bill.phone || null,
@@ -14657,7 +14869,7 @@ function exportUnmatchedFreight(){
   const blob = new Blob(['\ufeff'+csv], { type:'text/csv;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = '未匹配运费清单_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.download = '未匹配运费清单_' + todayStr() + '.csv';
   a.click();
 }
 
@@ -14826,7 +15038,7 @@ function exportInvalidProducts(){
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = '失效商品_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.download = '失效商品_' + todayStr() + '.csv';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -14917,7 +15129,7 @@ function exportSelectedProducts(){
   if(ids.length === 0){ showToast('请先勾选要导出的商品','error'); return; }
   const products = DB.get('products');
   const list = products.filter(p => selectedIds[p.id]);
-  downloadProductsCSV(list, '商品导出_选中'+ids.length+'个_'+new Date().toISOString().slice(0,10)+'.csv');
+  downloadProductsCSV(list, '商品导出_选中'+ids.length+'个_'+todayStr()+'.csv');
 }
 
 // 导出当前筛选（含关键词）的全部商品
@@ -14926,7 +15138,7 @@ function exportAllProducts(){
   const keyword = window._productFilter || '';
   const list = _productVisibleFilter(DB.get('products').filter(p => !keyword || productMatchesKeyword(p, keyword)));
   if(!list.length){ showToast('当前筛选没有可导出的商品','error'); return; }
-  downloadProductsCSV(list, '商品导出_全部'+list.length+'个_'+new Date().toISOString().slice(0,10)+'.csv');
+  downloadProductsCSV(list, '商品导出_全部'+list.length+'个_'+todayStr()+'.csv');
 }
 
 // 切换单个商品选择
@@ -15673,7 +15885,11 @@ async function deductStockForOrder(order){
 function _outboundOnShipped(order){
   try{
     if(!order || order._stockDeducted) return;
-    if(order.type === 'door') return; // 上门单由「完成」触发（updateOrderStatus 已覆盖）
+    // v2026103007 规则变更：出库时点 = 订单推进到「已下单」（待下单 → 已下单）即出库，
+    // 不再等「已发货/待反馈/已完成」。三类订单（普通/留仓/上门）统一适用。
+    // 更后面的状态（shipped/feedback/completed/feedback_done）保留为兜底入口：
+    // 正常流转已在此前扣过，靠 order._stockDeducted 拦截，不会重复扣减。
+    if(order.status === 'pending') return;
     const _mode = DB.get('stockMode') || 'loose';
     if(_mode !== 'loose'){
       const _chk = _strictOutboundAllowed(order);
@@ -15875,7 +16091,7 @@ function filterPurchases(){
       <td>¥${Number(p.totalAmount||0).toFixed(2)}</td>
       <td>${escapeHtml(p.expectDate || '—')}</td>
       <td>${statusLabel}</td>
-      <td>${escapeHtml((p.createdAt||'').slice(0,10))}</td>
+      <td>${escapeHtml(fmtDateCN(p.createdAt))}</td>
       ${ops}
     </tr>`;
   }).join('');
@@ -16366,7 +16582,8 @@ function filterStockLedger(){
   const list = logs.filter(function(l){
     if(kw && (l.productName||'').toLowerCase().indexOf(kw) < 0) return false;
     if(type && l.type !== type) return false;
-    if(date && (l.createdAt||'').slice(0,10) !== date) return false;
+    // v2026103006：按「北京时间日期」筛选（旧逻辑直接截 UTC 前10位，跨时区的 23:00 后/08:00 前会串行）
+    if(date && fmtDateCN(l.createdAt) !== date) return false;
     return true;
   });
   const tbody = document.getElementById('ledgerTbody');
@@ -16380,7 +16597,7 @@ function filterStockLedger(){
     const deltaTxt = (delta > 0 ? '+' : '') + delta;
     const deltaColor = delta > 0 ? '#16a34a' : (delta < 0 ? 'var(--danger)' : 'inherit');
     return `<tr>
-      <td>${escapeHtml((l.createdAt||'').replace('T',' ').slice(0,19))}</td>
+      <td>${escapeHtml(fmtDateTime(l.createdAt))}</td>
       <td>${escapeHtml(l.productName || '')}</td>
       <td>${stockTypeBadge(l.type)}</td>
       <td style="color:${deltaColor};font-weight:600">${deltaTxt}</td>
@@ -16404,7 +16621,7 @@ function exportStockLedgerCSV(){
   const list = logs.filter(function(l){
     if(kw && (l.productName||'').toLowerCase().indexOf(kw) < 0) return false;
     if(type && l.type !== type) return false;
-    if(date && (l.createdAt||'').slice(0,10) !== date) return false;
+    if(date && fmtDateCN(l.createdAt) !== date) return false;
     return true;
   });
   if(!list.length){ showToast('当前筛选无数据可导出','error'); return; }
@@ -16413,7 +16630,7 @@ function exportStockLedgerCSV(){
   const headers = ['时间','商品','采购成本','类型','变动','变动前','变动后','仓库','关联单号','操作人','备注'];
   const typeLabel = { outbound:'出库', outbound_other:'他仓出库', purchase:'采购入库', adjust:'手动调整', count:'盘点', correction:'纠错', initial:'初始化' };
   const rows = list.map(function(l){
-    return [ (l.createdAt||'').replace('T',' ').slice(0,19), l.productName||'', (_prodCostMap[l.productId] != null ? _prodCostMap[l.productId] : ''), typeLabel[l.type]||l.type||'', (Number(l.delta)>0?'+':'')+(Number(l.delta)||0), Number(l.beforeQty)||0, Number(l.afterQty)||0, l.warehouse||'', l.relId||'', l.operator||'', l.remark||'' ];
+    return [ fmtDateTime(l.createdAt), l.productName||'', (_prodCostMap[l.productId] != null ? _prodCostMap[l.productId] : ''), typeLabel[l.type]||l.type||'', (Number(l.delta)>0?'+':'')+(Number(l.delta)||0), Number(l.beforeQty)||0, Number(l.afterQty)||0, l.warehouse||'', l.relId||'', l.operator||'', l.remark||'' ];
   });
   const csv = [headers].concat(rows).map(function(r){
     return r.map(function(c){ c = String(c); if(c.indexOf(',')>=0 || c.indexOf('"')>=0 || c.indexOf('\n')>=0){ c = '"' + c.replace(/"/g,'""') + '"'; } return c; }).join(',');
@@ -16504,8 +16721,17 @@ async function saveProduct(){
     warnQty = isNaN(_wq) || _wq < 0 ? 0 : _wq;
   }
   const calibConfirmed = (document.getElementById('productCalibConfirmed') || {}).checked === true;
-  // 管理员保存后是否仍需提示「待校准」：成本未填，或成本与售价完全相同且没勾「成本已核实」
-  const stillUncalibrated = !cost || (Number(cost) === Number(price) && !calibConfirmed);
+  // v2026103008 校准判定改看「利润成本」（此前看采购成本 cost，双成本模型下必然误判）：
+  //   v20261029 起编辑页已移除采购成本输入框（采购成本改由采购入库回写），管理员在编辑页唯一能维护的
+  //   就是「利润成本」；而旧判定的第一项 `!cost`（采购成本未录）对大量从未采购入库的商品恒为真（cost=0），
+  //   于是无论管理员把利润成本改成多少，保存后 stillUncalibrated 恒为 true →「待校准」标记永远消不掉。
+  //   实例：勒慕Glimmer银光 price=300 / cost=0，管理员把利润成本 300→278 保存成功、利润已正确显示 +22，
+  //   却仍被判为待校准。现改为以「真正参与利润核算的口径」判定（与 prodProfitCost 取值口径一致）：
+  //   优先取利润成本，利润成本未填/非正数时回落到采购成本（与利润列显示口径 prodProfitCost 完全一致）；
+  //   该基准未填，或仍与售价完全相同且未勾「成本已核实」→ 继续保持提醒。
+  //   新建商品利润成本默认=售价，仍会正常提醒。
+  const _calibBasis = Number(prodProfitCost({ profitCost: profitCost, cost: cost })) || 0;
+  const stillUncalibrated = !_calibBasis || (_calibBasis === Number(price) && !calibConfirmed);
 
   try{
   const products = DB.get('products');
@@ -16544,7 +16770,7 @@ async function saveProduct(){
       products[idx] = {...products[idx], name, category, price, cost, stockQty, warnQty, profitCost, updatedAt: _nowStr};
       delete products[idx].auto_added;
       if(isAdmin){
-        // 校准完成（成本已填且≠售价，或管理员勾选了「成本已核实」）→ 清除待校准；否则继续保持提醒
+        // v2026103008：校准完成（利润成本已填且≠售价，或管理员勾选了「成本已核实」）→ 清除待校准；否则继续保持提醒
         if(window._prodHasCalibCol === true) products[idx].need_calibration = !!stillUncalibrated;
         else if(!stillUncalibrated) markProductCalibratedLocally(id); // 无云端列时的本地降级
       }
@@ -16606,7 +16832,7 @@ async function saveProduct(){
     // v20261008：原本待校准、本次保存后已校准 → 明确告知已移出待校准列表（否则管理员不确定校准是否生效）
     showToast('✓ 校准完成：「' + escapeHtml(savedProduct.name) + '」已移出「待校准」列表', 'success', 4000);
   }else if(isAdmin && stillUncalibrated){
-    showToast('成本仍与售价相同（或未填），该商品继续保持「待校准」提醒；如真实成本确为售价，请勾选「成本已核实」后保存', 'warning', 6000);
+    showToast('利润成本未填，或利润成本与售价完全相同且未勾选「成本已核实」，该商品继续保持「待校准」提醒；如真实利润成本确为售价，请勾选「成本已核实」后保存', 'warning', 6000);
   }
   renderProducts();
   renderSidebar(); // 编辑保存后实时刷新左侧「待校准」角标数量
@@ -18682,7 +18908,7 @@ async function renderSchedule(){
   // 日历/筛选/列表统一按「上门日期」(completionDate) 归组；缺省回退到备货日期/创建日期
   // 兼容两种字段写法：云端/部分同步路径可能存 snake_case(order_date/completion_date/created_at)，
   // 若只认 camelCase 会导致该单日期为空、日历上不显示（ORD20260930-chao9187373 即此问题）。
-  function doorDateOf(o){ return o.completionDate || o.completion_date || o.orderDate || o.order_date || (o.createdAt || o.created_at || '').slice(0,10); }
+  function doorDateOf(o){ return o.completionDate || o.completion_date || o.orderDate || o.order_date || fmtDateCN(o.createdAt || o.created_at); }
 
   var statusKey = window._scheduleStatus || '';
   // 上门订单状态组：待下单 / 已下单 / 已完成；其余内部状态归入对应显示组
@@ -18833,7 +19059,7 @@ function showScheduleDayOrders(dateStr){
   var orders = DB.get('orders').filter(function(o){ return o.type === 'door' && !isOrderDeleted(o); });
   // 兼容两种字段写法：云端/部分同步路径可能存 snake_case(order_date/completion_date/created_at)，
   // 若只认 camelCase 会导致该单日期为空、日历上不显示（ORD20260930-chao9187373 即此问题）。
-  function doorDateOf(o){ return o.completionDate || o.completion_date || o.orderDate || o.order_date || (o.createdAt || o.created_at || '').slice(0,10); }
+  function doorDateOf(o){ return o.completionDate || o.completion_date || o.orderDate || o.order_date || fmtDateCN(o.createdAt || o.created_at); }
   var dayOrders = orders.filter(function(o){ return doorDateOf(o) === dateStr; });
   var el = document.getElementById('scheduleDayOrders');
   if(!el) return;
@@ -18879,10 +19105,10 @@ async function renderWarehouse(){
   }
   // 日期范围筛选
   if(whDateStart){
-    filtered = filtered.filter(function(o){ var d = (o.orderDate||o.createdAt||'').slice(0,10); return d >= whDateStart; });
+    filtered = filtered.filter(function(o){ var d = _orderYmd(o); return d >= whDateStart; });
   }
   if(whDateEnd){
-    filtered = filtered.filter(function(o){ var d = (o.orderDate||o.createdAt||'').slice(0,10); return d <= whDateEnd; });
+    filtered = filtered.filter(function(o){ var d = _orderYmd(o); return d <= whDateEnd; });
   }
   filtered = filtered.slice().sort(function(a,b){ return _createdAtDesc(a,b); });
 
@@ -19108,10 +19334,11 @@ function getProfitDate(order){
     // 完成时间：优先真实完成时间戳 completed_at，其次上门/完成日期 completion_date
     // （历史已完成门单多未写 completed_at，completion_date 即实际上门日）；
     // 留仓单可能两者皆缺，用下单日期兜底，避免已结束订单的利润凭空消失
-    return toPlain(order.completed_at) || toPlain(order.completionDate) || toPlain(order.orderDate) || toPlain(order.createdAt) || '';
+    // completed_at / createdAt 是 UTC 时间戳，需转成北京时间的日期再参与比较
+    return fmtDateCN(order.completed_at) || toPlain(order.completionDate) || toPlain(order.orderDate) || fmtDateCN(order.createdAt) || '';
   }
   // 普通订单：提交即算，归属到下单日期（缺失回退创建时间）
-  return toPlain(order.orderDate) || toPlain(order.createdAt) || '';
+  return toPlain(order.orderDate) || fmtDateCN(order.createdAt) || '';
 }
 /* ============ 人员管理 ============ */
 function renderUsers(){
@@ -19422,7 +19649,7 @@ async function renderDashboard2(){
   const monthStart = today.slice(0,7) + '-01';
   const filterDate = period === 'today' ? today : monthStart;
 
-  const filteredOrders = orders.filter(o => (o.orderDate || o.createdAt||'').slice(0,10) >= filterDate);
+  const filteredOrders = orders.filter(o => _orderYmd(o) >= filterDate);
   const salesMap = {};
   users.forEach(u => { salesMap[u.id] = {name:u.name, orderCount:0, revenue:0, profit:0}; });
   let totalRevenue = 0, totalProfit = 0, totalOrders = 0;
@@ -21509,7 +21736,7 @@ function closeConflictModal(v){ if(window._conflictResolve) window._conflictReso
 /* ===================== 订单列表虚拟滚动（管理员端） ===================== */
 // 仅当某表格行数超过阈值时启用窗口化渲染，上千条订单流畅滚动且不破坏嵌套子表
 function initAdminListVirtualScroll(){
-  const ids = ['adminPendingTbody','adminConfirmedTbody','adminSimpleTbody'];
+  const ids = ['adminPendingTbody','adminConfirmedTbody','adminFeedbackTbody','adminSimpleTbody'];
   const THRESHOLD = 120;
   const VIEWPORT = 560;
   window.__vsMaps = window.__vsMaps || {};
