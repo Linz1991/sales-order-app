@@ -1782,7 +1782,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026103001</div>
+          <div class="brand-sub">v2026103004</div>
         </div>
       </div>
     </div>
@@ -4130,6 +4130,36 @@ const DB = {
     const _npProducts = this._advanceCursorTs('products', cloud, maxTs);
     if(_npProducts) this._setIncTs('products', _npProducts);
     let merged;
+    // 🟠 v2026103004：全量/增量同步守卫——阻止云端脏 price（=成本）回灌覆盖本地可信售价。
+    // 根因：旧版本曾把采购/利润成本误写入商品 price 字段并落云端；全量同步整条云端覆盖会把脏 price
+    // 拉回本地，表现为「编辑商品改利润成本时售价变成本」。判据：正常经营商品售价>成本（有利润），
+    // 若云端 price≤成本(疑似脏) 且 本地 price>成本(可信)，则保留本地售价；其余场景不干预，避免过度。
+    // 成本读取：兼容「云端 snake(profit_cost) / 本地 camel(profitCost)」两种形态（_toCamel 白名单未含 profit_cost，
+    // 导致同步回来的商品成本停留在 snake 形式）。利润成本优先、正数才生效，否则回落采购成本。
+    const _costOf = function(p){
+      if(!p) return 0;
+      const _pc = (typeof p.profitCost === 'number') ? p.profitCost : ((typeof p.profit_cost === 'number') ? p.profit_cost : undefined);
+      if(typeof _pc === 'number' && _pc > 0) return _pc;
+      const _c = (typeof p.cost === 'number') ? p.cost : 0;
+      return (_c && _c > 0) ? _c : 0;
+    };
+    const _guardPrice = function(list){
+      if(!Array.isArray(list)) return list;
+      return list.map(function(r){
+        if(!r || r.id == null || typeof r.price !== 'number') return r;
+        let l = null;
+        (local || []).forEach(function(x){ if(x && x.id === r.id) l = x; });
+        if(!l || typeof l.price !== 'number') return r;
+        const rCost = _costOf(r);
+        const lCost = _costOf(l);
+        if(rCost > 0 && r.price <= rCost && l.price > lCost){
+          const _nr = Object.assign({}, r);
+          _nr.price = l.price; // 云端 price 疑似脏 → 保留本地可信售价，不落地脏值
+          return _nr;
+        }
+        return r;
+      });
+    };
     if(useInc){
       merged = this._mergeById(local, cloud, this.get('_deletedProductIds', []), 'products');
       const _localFlag = {};
@@ -4154,6 +4184,7 @@ const DB = {
         return r;
       });
     }
+    merged = _guardPrice(merged);
     // v2026101902：云端 need_calibration=false 权威落地（压过 LWW 时间戳与本机 auto_added 残留），增量/全量两分支统一生效
     merged = _applyCalibCloudAuthority(merged, cloud);
     localStorage.setItem('soms_products', JSON.stringify(merged));
@@ -10614,6 +10645,7 @@ function saveOrderEditTracking(orderId){
       order.status = 'shipped';
       order.shippedAt = nowStr();
     }
+    _outboundOnShipped(order); // v2026103002：发货即扣库存+写流水（此前绕过 updateOrderStatus 导致台账无出库记录）
   } else if(order.status === 'shipped' && allTracking && order.type !== 'door'){
     order.status = 'feedback';
     order.feedbackAt = nowStr();
@@ -12788,6 +12820,7 @@ function refreshAdminTrackCountAndMaybeFlow(orderId, orders, order, idx){
     showConfirm('所有商品物流单号已录入，确认将该订单转入「待反馈」？', function(){
       order.status = 'feedback';
       order.feedbackAt = nowStr();
+      _outboundOnShipped(order); // v2026103002：录满单号转待反馈 = 已发货，触发扣库存+写流水
       DB.set('orders', orders);
       logAudit({action:'edit_status', targetType:'order', targetId: orderId, targetLabel: order.customerName||'-', before: auditBeforeStatus, after: 'feedback', detail: '录入物流单号后转待反馈(查看页)'});
       window._orderTab = 'feedback';
@@ -12796,6 +12829,7 @@ function refreshAdminTrackCountAndMaybeFlow(orderId, orders, order, idx){
     }, function(){
       order.status = 'shipped';
       order.shippedAt = order.shippedAt || nowStr();
+      _outboundOnShipped(order); // v2026103002：保持运输中也是发货事实，触发扣库存+写流水
       DB.set('orders', orders);
       logAudit({action:'edit_status', targetType:'order', targetId: orderId, targetLabel: order.customerName||'-', before: auditBeforeStatus, after: 'shipped', detail: '查看页录入物流单号后保持运输中'});
       updateAdminTrackBtn(order); // 仅更新文案，不再二次弹提示（避免递归）
@@ -12825,6 +12859,7 @@ function saveTrackingNo(orderId, itemIndex, value) {
     showConfirm('所有商品物流单号已录入，确认将该订单转入「待反馈」？', () => {
       order.status = 'feedback';
       order.feedbackAt = nowStr();
+      _outboundOnShipped(order); // v2026103002：录满单号转待反馈 = 已发货，触发扣库存+写流水
       DB.set('orders', orders);
       logAudit({action:'edit_status', targetType:'order', targetId: orderId, targetLabel: order.customerName||'-', before: auditBeforeStatus, after: 'feedback', detail: '录入物流单号后转待反馈'});
       window._orderTab = 'feedback';
@@ -12833,6 +12868,7 @@ function saveTrackingNo(orderId, itemIndex, value) {
     }, () => {
       order.status = 'shipped';
       order.shippedAt = order.shippedAt || nowStr();
+      _outboundOnShipped(order); // v2026103002：保持运输中也是发货事实，触发扣库存+写流水
       DB.set('orders', orders);
       logAudit({action:'edit_status', targetType:'order', targetId: orderId, targetLabel: order.customerName||'-', before: auditBeforeStatus, after: 'shipped'});
       renderOrderDetail();
@@ -12845,10 +12881,12 @@ function saveTrackingNo(orderId, itemIndex, value) {
       order.status = 'feedback';
       order.feedbackAt = nowStr();
       showToast('所有商品均已填写物流，订单状态已更新为"待反馈"', 'success');
+      _outboundOnShipped(order); // v2026103002：发货即扣库存+写流水
     }else if(hasTracking){
       order.status = 'shipped';
       order.shippedAt = nowStr();
       showToast('已保存物流单号', 'success');
+      _outboundOnShipped(order); // v2026103002：发货即扣库存+写流水
     }
   }else if(order.status === 'shipped' && order.type !== 'door'){
     if(allTracking){
@@ -15252,8 +15290,8 @@ function openProductModal(productId){
               <input type="number" class="form-control" id="productPrice" value="${product?product.price:''}" placeholder="售价" min="0" step="1">
             </div>
             ${isAdmin ? `<div class="form-group">
-              <label class="form-label">成本（元）</label>
-              <input type="number" class="form-control" id="productProfitCost" value="${product?prodProfitCost(product):''}" placeholder="${product?'':'新商品默认=售价，可改'}" min="0" step="1">
+              <label class="form-label">利润成本（元）</label>
+              <input type="number" class="form-control" id="productProfitCost" value="${product?prodProfitCost(product):''}" placeholder="${product?'当前利润/进货成本，可改':'留空则默认=售价'}" min="0" step="1">
             </div>` : ''}
           </div>
           ${isAdmin ? `<div style="font-size:12px;color:#64748b;margin:-4px 0 10px;line-height:1.5">本页「成本」用于订单利润核算，与采购入库自动记录的采购成本分开；<b>采购成本由采购入库自动记录，仅在「商品导出 / 库存导出」中查看</b>。</div>` : ''}
@@ -15583,6 +15621,32 @@ async function deductStockForOrder(order){
   if(anyFail) showToast('部分商品出库失败（默认仓库存不足）：'+failMsg, 'error', 4500);
   else if(negStock) showToast('⚠️ 默认仓库存不足，已按实际扣减（出现负库存）。盘点补齐后可到「系统设置」切回严格模式', 'warning', 5500);
   return { ok:!anyFail };
+}
+
+// v2026103002：非 updateOrderStatus 发货路径的统一出库触发口。
+// 根因：物流单号录入（saveOrderEditTracking / refreshAdminTrackCountAndMaybeFlow / 详情页录单号）
+//       直接改 order.status='shipped'/'feedback'，绕过 updateOrderStatus → deductStockForOrder
+//       从未执行 → 出库扣库存与 stock_logs 流水一次都没记过（云端 0 条 outbound、台账只见盘点的根因）。
+// 说明：deductStockForOrder 内「改库存 + 写流水」位于其首个 await 之前，同步生效；
+//       _stockDeducted 标记在 .then 里补写（重新取 orders 再存，避免覆盖调用方刚 set 的状态）。
+function _outboundOnShipped(order){
+  try{
+    if(!order || order._stockDeducted) return;
+    if(order.type === 'door') return; // 上门单由「完成」触发（updateOrderStatus 已覆盖）
+    const _mode = DB.get('stockMode') || 'loose';
+    if(_mode !== 'loose'){
+      const _chk = _strictOutboundAllowed(order);
+      if(!_chk.ok){ showToast('⛔ 严格模式：'+escAttr(_chk.name)+' 库存不足（当前 '+_chk.have+'，需 '+_chk.need+'），请先补足库存', 'error', 6000); return; }
+    }
+    deductStockForOrder(order).then(function(_dr){
+      if(_dr && _dr.ok && !order._stockDeducted){
+        order._stockDeducted = true;
+        const _os = DB.get('orders') || [];
+        const _oi = _os.findIndex(function(o){ return o && o.id === order.id; });
+        if(_oi >= 0){ _os[_oi]._stockDeducted = true; _os[_oi].updatedAt = window.nowStr(); DB.set('orders', _os); }
+      }
+    }).catch(function(){});
+  }catch(e){ console.warn('出库联动异常', e); }
 }
 
 // v20261023：严格模式出库预检——所有本仓商品库存充足才允许；任一不足返回失败（配合 updateOrderStatus 阻断发货，避免「订单已出但库存账没动」的数据断档）
@@ -16362,6 +16426,9 @@ async function saveProduct(){
   const name = document.getElementById('productName').value.trim();
   const category = document.getElementById('productCategory').value.trim();
   const price = parseInt(document.getElementById('productPrice').value);
+  // v2026103003 铁律：售价与利润成本（成本框）完全解耦。price 严格只来自上方「售价」框，
+  // 任何情况下都不允许用 cost / profitCost / prodProfitCost(...) 去覆盖或回填 price ——
+  // 这是用户明确要求的「售价不变动、售价不改」，防止「售价被写成成本」的串味。
   // v20261029：采购成本不再在编辑页展示（由采购入库自动回写）。编辑时沿用原采购成本；
   //  新建商品默认 0（从未采购过、没有采购成本），采购入库后再回写真实采购价——避免采购单单价默认值污染成「售价/利润成本」。
   const _oldCostP = id ? (DB.get('products') || []).find(p => p.id === id) : null;
@@ -16453,6 +16520,9 @@ async function saveProduct(){
     }
     products.push(savedProduct);
   }
+  // v2026103003 双保险（运行时兜底）：「售价」强制等于「售价框解析值」，绝不允许被利润成本 profitCost 覆盖/污染。
+  // 这是用户明确要求的「售价不变动」。即使上方 spread 将来被误改（如误写 price: profitCost），此行也会纠正回来。
+  if(savedProduct){ savedProduct.price = price; }
   DB.set('products', products);
   // 校准商品后，同步清除引用该商品的订单项上的「待校准」快照标记（it.auto_added），
   // 否则商品库已校准、订单详情里仍显示 🔶 待校准，两端状态不一致。
@@ -16510,6 +16580,12 @@ async function saveProduct(){
   }
   let _cloudOk = false;
   try{ _cloudOk = await pushSingleProductToCloud(savedProduct); }catch(e){ _cloudOk = false; }
+  // v2026103003：利润成本保存保障——若本次编辑改动了正数利润成本且 profit_cost 列已探测存在，
+  // 但首次上推因网络/代理抖动失败（返回 false），立即重试一次，确保「改了利润成本一定上云、不再丢」。
+  // 根治用户反馈的「修改了利润成本，没有推送到云端被保存好」。
+  if(_cloudOk === false && window._prodHasProfitCol === true && savedProduct && Number(savedProduct.profitCost) > 0){
+    try{ _cloudOk = await pushSingleProductToCloud(savedProduct); }catch(e){ _cloudOk = false; }
+  }
   if(_cloudOk && _cloudOk.conflictResolved){
     // 唯一索引拦截：云端已有同名在架商品，改名/新建被拒绝。回滚本地，避免"本地新名 + 云端旧名"不一致导致改名静默丢失。
     const _dupName = savedProduct.name;
