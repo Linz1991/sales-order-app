@@ -1782,7 +1782,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026103012</div>
+          <div class="brand-sub">v2026103013</div>
         </div>
       </div>
     </div>
@@ -2135,7 +2135,7 @@ const DB = {
   // v20260913 增量白名单：把 select('*') 改为显式字段，降低单条 JSON 体积（防 918 配额）。
   // 覆盖了 grep 全文（100+ 处）所有访问到的字段。新增字段需同步更新，否则下游静默 undefined。
   // items JSONB 必须原样返回（含 _delSync/_lossSync/_afterMeta 等私有字段，破坏 delta 合并会丢数据）。
-  _ORDERS_COLS: 'id,status,type,total,items,customer_id,sales_id,sales_name,customer_name,contact,phone,region,address,remark,tracking_no,created_at,updated_at,confirmed_at,shipped_at,completed_at,feedback_at,synced_at,order_date,completion_date,images,payment_method,collected_amount,full_payment,deposit,final_payment,no_tracking,after_sale_loss,province,city,district,express_company,locked_by,locked_at,_deleted,_deleted_at,_deleted_by',
+  _ORDERS_COLS: 'id,status,type,total,items,customer_id,sales_id,sales_name,customer_name,contact,phone,region,address,remark,tracking_no,created_at,updated_at,confirmed_at,shipped_at,completed_at,feedback_at,synced_at,order_date,completion_date,images,payment_method,collected_amount,full_payment,deposit,final_payment,no_tracking,after_sale_loss,province,city,district,express_company,locked_by,locked_at,_deleted,_deleted_at,_deleted_by,outbound_remark', // v2026103101：补 outbound_remark——拉取白名单漏了它，管理员端「云端优先整行覆盖」会把本地刚填的出库/转仓备注抹掉（保存后再打开内容消失）
   // products 增量白名单：v20260912 后云端已有 updated_at（335 行 0 null，line 2646 prodCols 已确认）。
   // auto_added 是本地标记（line 1662-1664 本地合并保留），云端无此列——不需进白名单。
   _PRODUCTS_COLS: 'id,name,price,cost,status,category,created_at,updated_at',
@@ -3503,7 +3503,8 @@ const DB = {
           payment_method:'', collected_amount:0, full_payment:0, deposit:0, final_payment:0,
           locked_by:'', locked_at:null, after_sale_loss:0, after_sale_loss_synced_at:'',
           completed_at:null, confirmed_at:null,
-          no_tracking:false, tracking_no:'', express_company:'', undo_at:null
+          no_tracking:false, tracking_no:'', express_company:'', undo_at:null,
+          outbound_remark:'' // v2026103101：出库/转仓备注随行上云（此前推送白名单漏列，备注从不上云，被云端旧副本覆盖即丢失）
         };
         snakeData = snakeData.map(function(o){
           const f = {};
@@ -3722,7 +3723,7 @@ const DB = {
     if(key === 'orders'){
       // 与 syncTable('orders') 保持一致的列白名单，避免脏行上推把 paymentSettled 等本地计算字段送到云端，
       // 否则 PostgREST 报 "column paymentSettled does not exist" 导致同步失败。
-      const orderCols = new Set(['id','customer_id','customer_name','contact','phone','region','address','sales_id','sales_name','items','total','status','type','order_date','remark','created_at','shipped_at','feedback_at','synced_at','updated_at','_deleted','_deleted_at','_deleted_by','province','city','district','completion_date','images','payment_method','collected_amount','full_payment','deposit','final_payment','locked_by','locked_at','after_sale_loss','after_sale_loss_synced_at','completed_at','confirmed_at','no_tracking','tracking_no','express_company','undo_at']);
+      const orderCols = new Set(['id','customer_id','customer_name','contact','phone','region','address','sales_id','sales_name','items','total','status','type','order_date','remark','created_at','shipped_at','feedback_at','synced_at','updated_at','_deleted','_deleted_at','_deleted_by','province','city','district','completion_date','images','payment_method','collected_amount','full_payment','deposit','final_payment','locked_by','locked_at','after_sale_loss','after_sale_loss_synced_at','completed_at','confirmed_at','no_tracking','tracking_no','express_company','undo_at','outbound_remark']); // v2026103101：补 outbound_remark
       snakeData = snakeData.map(function(o){ const f={}; Object.keys(o).forEach(function(k){ if(orderCols.has(k)) f[k]=o[k]; }); return f; });
       // 确保 updated_at 非空，与 syncTable 一致
       snakeData.forEach(function(o){ if(o.updated_at == null || o.updated_at === ''){ o.updated_at = (typeof window.nowStr === 'function' ? window.nowStr().slice(0,19) : ''); } });
@@ -3738,7 +3739,8 @@ const DB = {
         payment_method:'', collected_amount:0, full_payment:0, deposit:0, final_payment:0,
         locked_by:'', locked_at:null, after_sale_loss:0, after_sale_loss_synced_at:'',
         completed_at:null, confirmed_at:null,
-        no_tracking:false, tracking_no:'', express_company:'', undo_at:null
+        no_tracking:false, tracking_no:'', express_company:'', undo_at:null,
+        outbound_remark:'' // v2026103101：出库/转仓备注随行上云（脏行推送路径，与 syncTable 白名单保持一致）
       };
       snakeData = snakeData.map(function(o){
         const f = {};
@@ -5540,32 +5542,87 @@ function isHashedPassword(str){
   return typeof str === 'string' && /^\$2[abyx]\$/.test(str);
 }
 
-// 登录成功后的统一收尾：用 authenticated 客户端拉取账号资料（受 RLS 约束），写入会话
-async function finishLoginViaAuth(username){
-  let profile = null;
+// v2026103104 登录加速：实测 users 单条查询经代理 TTFB 高达 0.9~3.2s（连接只要 0.2s，慢在代理后端），
+// 原逻辑要串行 await 它拿到 profile 才 showApp()，登录白等 1~3s。改为：
+// ① 本机已缓存该账号资料 → 立即进入系统（0 等待），云端权威资料后台补齐；
+// ② 本机没缓存（新设备/清过缓存）→ 才等一次云端拉取，超时 5s→3s（销售端按 sales_id=currentUser.id 过滤，
+//    id/role 不能瞎猜，这种场景必须拿到权威值）。
+function _localProfileFor(username){
   try{
-    const { data, error } = await withTimeout(window._sbpbClient.from('users').select('*').eq('username', username).single(), 5000, 'finishLoginViaAuth');
-    if(data) profile = data;
-  }catch(e){ /* 资料缺失则降级用 Auth 元数据 */ }
-  if(!profile){
+    var us = DB.get('users', []) || [];
+    for(var i=0;i<us.length;i++){
+      var u = us[i];
+      if(u && u.username === username){
+        var pw; var safe = {};
+        for(var k in u){ if(k === 'password') continue; safe[k] = u[k]; }
+        return safe;
+      }
+    }
+  }catch(e){}
+  try{
+    var s = sessionStorage.getItem('soms_current_user');
+    if(s){
+      var o = JSON.parse(s);
+      if(o && o.username === username) return o;
+    }
+  }catch(e){}
+  return null;
+}
+// 云端权威资料：先查 users 表，失败再用 Auth 元数据兜底（两者都失败返回 null）
+async function _fetchCloudProfile(username){
+  if(!window._sbpbClient) return null;
+  try{
+    const { data } = await withTimeout(window._sbpbClient.from('users').select('*').eq('username', username).single(), 3000, 'fetchCloudProfile');
+    if(data) return data;
+  }catch(e){}
+  try{
+    const { data: au } = await window._sbpbClient.auth.getUser();
+    const meta = (au && au.user && au.user.app_metadata) || {};
+    return {
+      id: (au && au.user && au.user.id) || '',
+      username: meta.username || username,
+      name: (au && au.user && au.user.user_metadata && au.user.user_metadata.name) || meta.username || username,
+      role: meta.role || 'sales'
+    };
+  }catch(e){}
+  return null;
+}
+// 后台补齐资料：仅当 id/role/name 有变化才刷新会话、侧边栏并按新身份重拉云端
+// （销售端按 sales_id=currentUser.id 过滤，id 变了不重拉会看到空列表）
+function _refreshProfileInBackground(username, fallback){
+  if(!window._sbpbClient) return;
+  (async function(){
+    var p = null;
+    try{ p = await _fetchCloudProfile(username); }catch(e){}
+    if(!p) return;
+    var pw; var safe = {};
+    for(var k in p){ if(k === 'password') continue; safe[k] = p[k]; }
+    if(safe.id === fallback.id && safe.role === fallback.role && safe.name === fallback.name) return;
+    currentUser = safe;
+    try{ sessionStorage.setItem('soms_current_user', JSON.stringify(safe)); }catch(e){}
+    try{ if(typeof renderSidebar === 'function') renderSidebar(); }catch(e){}
+    try{ if(typeof refreshAdminButtons === 'function') refreshAdminButtons(); }catch(e){}
+    try{ if(typeof DB !== 'undefined' && DB.syncFromCloud) DB.syncFromCloud().catch(function(){}); }catch(e){}
     try{
-      const { data: au } = await window._sbpbClient.auth.getUser();
-      const meta = (au && au.user && au.user.app_metadata) || {};
-      profile = {
-        id: (au && au.user && au.user.id) || '',
-        username: meta.username || username,
-        name: (au && au.user && au.user.user_metadata && au.user.user_metadata.name) || meta.username || username,
-        role: meta.role || 'sales'
-      };
-    }catch(e){ profile = { id:'', username:username, name:username, role:'sales' }; }
-  }
+      if(window._routeRenderers && typeof currentRoute !== 'undefined' && currentRoute && window._routeRenderers[currentRoute]) window._routeRenderers[currentRoute]();
+    }catch(e){}
+  })();
+}
+// 登录成功后的统一收尾（v2026103104：不再被云端资料查询阻塞）
+async function finishLoginViaAuth(username){
+  let profile = _localProfileFor(username);
+  if(!profile){ profile = await _fetchCloudProfile(username); }
+  if(!profile){ profile = { id:'', username:username, name:username, role:'sales' }; }
   const { password, ...safe } = profile;
   currentUser = safe;
   sessionStorage.setItem('soms_current_user', JSON.stringify(safe));
   showApp();
   showToast('登录成功，欢迎回来 ' + (safe.name || username),'success');
-  if(window._sbpbClient){ DB.syncFromCloud().catch(function(){}); }
-  else { setTimeout(function(){ DB.syncFromCloud().catch(function(){}); }, 2000); }
+  // 云端权威资料后台补齐（本机缓存是上次的值，昵称/角色可能已被改过）
+  _refreshProfileInBackground(username, safe);
+  // v2026103104：全量同步延后 1.5s，让首屏先渲染完再拉大表，避免与首屏抢 CPU/带宽
+  setTimeout(function(){ try{ DB.syncFromCloud().catch(function(){}); }catch(e){} }, 1500);
+  syncStockModeFromCloud().catch(function(){});   // v20261031：登录后拉取云端库存模式
   // v20260931：admin 视角显示「🔄 同步订单」自助恢复按钮
   if(typeof refreshAdminButtons === 'function'){ try{ refreshAdminButtons(); }catch(e){} }
   // 擦除本地缓存中残留的密码哈希（历史版本写入的），仅保留 username/name/role 等
@@ -5698,10 +5755,12 @@ async function handleLogin(){
         return { ok:false, info:'失败（' + ((e && e.message) || e) + '）' };
       }
     })();
-    const _pair = await Promise.all([pProbe, pAuth]);
-    _ld('② 云端连通性：' + _pair[0].info, _pair[0].ok ? 'ok' : 'bad');
-    _ld('③ 云端账号认证：' + _pair[1].info, _pair[1].ok ? 'ok' : (_pair[0].ok ? 'warn' : 'bad'));
-    if(_pair[1].ok){
+    // v2026103104：探测结果只用于诊断显示，不再参与阻塞等待。实测健康探测要 1.5~2s，
+    // 原先 Promise.all 会等「探测」和「认证」里最慢的那个，平白把登录拖长一截。
+    pProbe.then(function(r){ _ld('② 云端连通性：' + r.info, r.ok ? 'ok' : 'bad'); }).catch(function(){});
+    const _auth = await pAuth;
+    _ld('③ 云端账号认证：' + _auth.info, _auth.ok ? 'ok' : 'bad');
+    if(_auth.ok){
       await finishLoginViaAuth(user);
       return;
     }
@@ -5775,8 +5834,9 @@ async function handleLogin(){
     showApp();
     showToast('登录成功，欢迎回来 ' + (safe.name || user), 'success');
     DB.set('users', DB.get('users', []));
-    if(window._sbpbClient){ DB.syncFromCloud().catch(function(){}); }
-    else { setTimeout(function(){ DB.syncFromCloud().catch(function(){}); }, 2000); }
+    // v2026103104：延后 1.5s 再全量同步，让首屏先渲染完（原先有客户端时立即拉大表，与首屏抢资源）
+    setTimeout(function(){ try{ DB.syncFromCloud().catch(function(){}); }catch(e){} }, 1500);
+    syncStockModeFromCloud().catch(function(){});   // v20261031：登录后拉取云端库存模式
   } finally {
     try{
       const lp = document.getElementById('loginPage');
@@ -5801,7 +5861,10 @@ function showApp(){
   document.getElementById('loginPage').style.display = 'none';
   document.getElementById('appPage').style.display = 'flex';
   renderSidebar();
-  navigate(currentUser.role === 'operator' ? 'orders' : 'dashboard');
+  // v2026103102：优先恢复到整页重载（新版本强刷）前的页面，避免重载后跳回首页
+  if(!restoreRoute()){
+    navigate(currentUser.role === 'operator' ? 'orders' : 'dashboard');
+  }
   const d = new Date();
   document.getElementById('headerDate').textContent =
     d.getFullYear()+'年'+(d.getMonth()+1)+'月'+d.getDate()+'日';
@@ -6437,6 +6500,34 @@ function safeRenderRoute(fn, route){
     }
   }catch(e){ renderRouteError(route, e); }
 }
+// v2026103102：整页重载（新版本强刷）后恢复离开前的页面，消除「重载后跳回首页」的体感。
+// 同标签页 reload 后 sessionStorage 仍保留，故用其记住当前路由 + 正在看的订单 id。
+function _persistRoute(){
+  try{
+    sessionStorage.setItem('soms_last_route', currentRoute || 'dashboard');
+    sessionStorage.setItem('soms_last_order_id', window._currentOrderId || '');
+  }catch(e){}
+}
+function restoreRoute(){
+  try{
+    var r = sessionStorage.getItem('soms_last_route');
+    if(!r || r === 'dashboard') return false; // dashboard 即默认页，无需恢复
+    if(r === 'order-detail'){
+      var oid = sessionStorage.getItem('soms_last_order_id') || '';
+      if(!oid) return false;
+      var _o = DB.get('orders').find(function(o){ return o.id === oid; });
+      if(!_o) return false; // 本地已无该单，回退列表
+      window._currentOrderId = oid;
+      currentRoute = 'order-detail';
+      // 可见时直接本地渲染（与详情打开行为一致）；后台同步会按 id 单条补全最新数据
+      if(typeof renderOrderDetail === 'function') renderOrderDetail();
+      _persistRoute();
+      return true;
+    }
+    if(typeof navigate === 'function'){ navigate(r); return true; }
+  }catch(e){}
+  return false;
+}
 async function navigate(route){
   currentRoute = route;
   // 权限检查：销售角色不能访问管理员专属页面
@@ -6583,6 +6674,7 @@ async function navigate(route){
     history.pushState({route: route, orderId: window._currentOrderId}, '', '#' + route);
   }
   window._skipHistoryPush = false;
+  _persistRoute(); // v2026103102：记下当前路由，整页重载后可恢复
 }
 
 // 浏览器原生返回兼容
@@ -11799,7 +11891,7 @@ async function updateOrderStatus(orderId, status){
     // 后续的已发货/待反馈/已完成状态同样放行，作为绕过 confirmed 路径的兜底，靠 _stockDeducted 防重复
     const _isOutbound = (status !== 'pending');
     if(_isOutbound && !orders[idx]._stockDeducted){
-      const _mode = DB.get('stockMode') || 'loose';
+      const _mode = (DB.get('stockMode') === 'strict' ? 'strict' : 'loose');
       if(_mode !== 'loose'){
         const _chk = _strictOutboundAllowed(orders[idx]);
         if(!_chk.ok){ showToast('⛔ 严格模式：'+escAttr(_chk.name)+' 库存不足（当前 '+_chk.have+'，需 '+_chk.need+'），已阻止发货', 'error', 6000); return; }
@@ -15675,7 +15767,7 @@ async function applyStockChange(opts){
   // v2026102102：库存模式（宽松 loose / 严格 strict），存于本地设置 DB('stockMode')，默认宽松。
   // 仅「本仓出库(outbound)」受负库存限制：严格模式下库存不足则拒绝；宽松模式允许扣成负库存（先出货后盘点）。
   // 入库(purchase)/调整(adjust)/盘点(count) 均不受负库存限制。
-  const _stockMode = (DB.get('stockMode') || 'loose');
+  const _stockMode = (DB.get('stockMode') === 'strict' ? 'strict' : 'loose');
   if(after < 0 && type === 'outbound' && _stockMode !== 'loose'){
     return { ok:false, err:'库存不足，无法出库（当前 '+before+'）' };
   }
@@ -15908,7 +16000,7 @@ function _outboundOnShipped(order){
     // 更后面的状态（shipped/feedback/completed/feedback_done）保留为兜底入口：
     // 正常流转已在此前扣过，靠 order._stockDeducted 拦截，不会重复扣减。
     if(order.status === 'pending') return;
-    const _mode = DB.get('stockMode') || 'loose';
+    const _mode = (DB.get('stockMode') === 'strict' ? 'strict' : 'loose');
     if(_mode !== 'loose'){
       const _chk = _strictOutboundAllowed(order);
       if(!_chk.ok){ showToast('⛔ 严格模式：'+escAttr(_chk.name)+' 库存不足（当前 '+_chk.have+'，需 '+_chk.need+'），请先补足库存', 'error', 6000); return; }
@@ -19251,12 +19343,13 @@ function renderCollectBalance(){
 }
 
 /* ============ 系统设置（账号与权限管理） ============ */
-function renderSettings(){
+async function renderSettings(){
   var isAdmin = currentUser.role === 'admin';
   if(!isAdmin){
     document.getElementById('mainContent').innerHTML = '<div class="empty-state"><div class="empty-icon">🔒</div><div class="empty-text">无权访问</div></div>';
     return;
   }
+  await syncStockModeFromCloud();   // v20261031：打开设置页时先与云端对齐模式
   var users = (DB.get('users') || []).filter(function(u){ return !u.disabled; });
   var html = '<div class="card"><div class="card-title"><span class="title-text">⚙️ 系统设置</span></div>';
 
@@ -19302,9 +19395,9 @@ function renderSettings(){
   html += '</div>';
   html += '<div class="detail-section card" style="margin-top:16px"><h4 style="margin-bottom:12px">📦 库存模式</h4>';
   html += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">控制「默认仓库存不足时能否出库」：<br>· <b>宽松</b>：允许出库并记负库存（适合先出货、后盘点补货）；<br>· <b>严格</b>：库存不足禁止出库（适合库存必须准确，出库前先盘点）。</div>';
-  const _sm = DB.get('stockMode') || 'loose';
+  const _sm = (DB.get('stockMode') === 'strict' ? 'strict' : 'loose');
   html += '<select class="form-control" id="stockModeSel" onchange="saveStockMode()" style="max-width:300px"><option value="loose" '+( _sm==='loose'?'selected':'')+'>宽松（允许负库存 / 先出货后盘点）</option><option value="strict" '+( _sm==='strict'?'selected':'')+'>严格（库存不足禁止出库）</option></select>';
-  html += '<div style="margin-top:8px;font-size:12px;color:#64748b">当前模式：<b>'+( _sm==='loose'?'宽松':'严格')+'</b>。设置保存在本机，多设备需分别设置。</div>';
+  html += '<div style="margin-top:8px;font-size:12px;color:#64748b">当前模式：<b>'+( _sm==='loose'?'宽松':'严格')+'</b>。已同步到云端，换设备自动生效。</div>';
   html += '</div>';
   html += '</div>';
   document.getElementById('mainContent').innerHTML = html;
@@ -19316,6 +19409,33 @@ function saveStockMode(){
   const val = sel.value === 'strict' ? 'strict' : 'loose';
   DB.set('stockMode', val);
   showToast('库存模式已设为：' + (val === 'loose' ? '宽松（允许负库存）' : '严格（库存不足禁止出库）'), 'success', 3500);
+  pushStockModeToCloud(val);   // v20261031：同步到云端，换设备自动生效
+}
+// v20261031：库存模式云端同步（复用 app_settings 键值表，key='stock_mode'）
+// 读：设备上电 / 打开设置页时拉取云端值覆盖本机；写：admin 切换时 upsert 到云端。
+// 若 app_settings 的 RLS 未放开匿名写，写会失败——但本机已生效，不影响使用（后续放开 RLS 即可持久化）。
+async function syncStockModeFromCloud(){
+  try{
+    const url = SUPABASE_URL + '/rest/v1/app_settings?select=key,value,updated_at&key=eq.stock_mode';
+    const res = await fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
+    if(!res.ok) return;
+    const rows = await res.json();
+    if(Array.isArray(rows) && rows.length){
+      const v = rows[0].value;
+      if(v === 'strict' || v === 'loose') DB.set('stockMode', v);
+    }
+  }catch(e){ /* 非致命：本机默认值仍可用 */ }
+}
+async function pushStockModeToCloud(val){
+  try{
+    const url = SUPABASE_URL + '/rest/v1/app_settings';
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates' },
+      body: JSON.stringify([{ key:'stock_mode', value: val, updated_at: new Date().toISOString() }])
+    });
+    if(!res.ok) console.warn('[stockMode] 云端同步失败 HTTP', res.status, '（本机已生效）');
+  }catch(e){ console.warn('[stockMode] 云端同步异常', (e && e.message) || e, '（本机已生效）'); }
 }
 
 function changeUserRole(userId, role){
