@@ -1782,7 +1782,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026103013</div>
+          <div class="brand-sub">v2026103102</div>
         </div>
       </div>
     </div>
@@ -2135,7 +2135,7 @@ const DB = {
   // v20260913 增量白名单：把 select('*') 改为显式字段，降低单条 JSON 体积（防 918 配额）。
   // 覆盖了 grep 全文（100+ 处）所有访问到的字段。新增字段需同步更新，否则下游静默 undefined。
   // items JSONB 必须原样返回（含 _delSync/_lossSync/_afterMeta 等私有字段，破坏 delta 合并会丢数据）。
-  _ORDERS_COLS: 'id,status,type,total,items,customer_id,sales_id,sales_name,customer_name,contact,phone,region,address,remark,tracking_no,created_at,updated_at,confirmed_at,shipped_at,completed_at,feedback_at,synced_at,order_date,completion_date,images,payment_method,collected_amount,full_payment,deposit,final_payment,no_tracking,after_sale_loss,province,city,district,express_company,locked_by,locked_at,_deleted,_deleted_at,_deleted_by,outbound_remark', // v2026103101：补 outbound_remark——拉取白名单漏了它，管理员端「云端优先整行覆盖」会把本地刚填的出库/转仓备注抹掉（保存后再打开内容消失）
+  _ORDERS_COLS: 'id,status,type,total,items,customer_id,sales_id,sales_name,customer_name,contact,phone,region,address,remark,tracking_no,created_at,updated_at,confirmed_at,shipped_at,completed_at,feedback_at,synced_at,order_date,completion_date,images,payment_method,collected_amount,full_payment,deposit,final_payment,no_tracking,after_sale_loss,province,city,district,express_company,locked_by,locked_at,_deleted,_deleted_at,_deleted_by,outbound_remark,_stock_deducted', // v2026103102：补 _stock_deducted——拉取白名单漏了它，防重复扣减标记拉不回来、云端永远 false，管理员端云端优先覆盖会把本机 true 抹回 false，同一订单二次出库重复扣库存
   // products 增量白名单：v20260912 后云端已有 updated_at（335 行 0 null，line 2646 prodCols 已确认）。
   // auto_added 是本地标记（line 1662-1664 本地合并保留），云端无此列——不需进白名单。
   _PRODUCTS_COLS: 'id,name,price,cost,status,category,created_at,updated_at',
@@ -3504,7 +3504,8 @@ const DB = {
           locked_by:'', locked_at:null, after_sale_loss:0, after_sale_loss_synced_at:'',
           completed_at:null, confirmed_at:null,
           no_tracking:false, tracking_no:'', express_company:'', undo_at:null,
-          outbound_remark:'' // v2026103101：出库/转仓备注随行上云（此前推送白名单漏列，备注从不上云，被云端旧副本覆盖即丢失）
+          outbound_remark:'', // v2026103101：出库/转仓备注随行上云（此前推送白名单漏列，备注从不上云，被云端旧副本覆盖即丢失）
+          _stock_deducted:false // v2026103102：防重复扣减标记随行上云（此前漏列导致云端永远 false，同单二次出库重复扣库存）
         };
         snakeData = snakeData.map(function(o){
           const f = {};
@@ -3723,7 +3724,7 @@ const DB = {
     if(key === 'orders'){
       // 与 syncTable('orders') 保持一致的列白名单，避免脏行上推把 paymentSettled 等本地计算字段送到云端，
       // 否则 PostgREST 报 "column paymentSettled does not exist" 导致同步失败。
-      const orderCols = new Set(['id','customer_id','customer_name','contact','phone','region','address','sales_id','sales_name','items','total','status','type','order_date','remark','created_at','shipped_at','feedback_at','synced_at','updated_at','_deleted','_deleted_at','_deleted_by','province','city','district','completion_date','images','payment_method','collected_amount','full_payment','deposit','final_payment','locked_by','locked_at','after_sale_loss','after_sale_loss_synced_at','completed_at','confirmed_at','no_tracking','tracking_no','express_company','undo_at','outbound_remark']); // v2026103101：补 outbound_remark
+      const orderCols = new Set(['id','customer_id','customer_name','contact','phone','region','address','sales_id','sales_name','items','total','status','type','order_date','remark','created_at','shipped_at','feedback_at','synced_at','updated_at','_deleted','_deleted_at','_deleted_by','province','city','district','completion_date','images','payment_method','collected_amount','full_payment','deposit','final_payment','locked_by','locked_at','after_sale_loss','after_sale_loss_synced_at','completed_at','confirmed_at','no_tracking','tracking_no','express_company','undo_at','outbound_remark','_stock_deducted']); // v2026103101：补 outbound_remark；v2026103102：补 _stock_deducted（防重复扣库存标记，漏列会被云端 false 覆盖导致二次扣减）
       snakeData = snakeData.map(function(o){ const f={}; Object.keys(o).forEach(function(k){ if(orderCols.has(k)) f[k]=o[k]; }); return f; });
       // 确保 updated_at 非空，与 syncTable 一致
       snakeData.forEach(function(o){ if(o.updated_at == null || o.updated_at === ''){ o.updated_at = (typeof window.nowStr === 'function' ? window.nowStr().slice(0,19) : ''); } });
@@ -3740,7 +3741,8 @@ const DB = {
         locked_by:'', locked_at:null, after_sale_loss:0, after_sale_loss_synced_at:'',
         completed_at:null, confirmed_at:null,
         no_tracking:false, tracking_no:'', express_company:'', undo_at:null,
-        outbound_remark:'' // v2026103101：出库/转仓备注随行上云（脏行推送路径，与 syncTable 白名单保持一致）
+        outbound_remark:'', // v2026103101：出库/转仓备注随行上云（脏行推送路径，与 syncTable 白名单保持一致）
+        _stock_deducted:false // v2026103102：防重复扣减标记随行上云（脏行推送路径，与 syncTable 白名单保持一致）
       };
       snakeData = snakeData.map(function(o){
         const f = {};
@@ -15953,6 +15955,24 @@ async function saveStockTake(productId){
 // 普通/上门/留仓三类订单共用：统一在 updateOrderStatus 终态触发；_stockDeducted 防重复扣减。
 // 发货仓：逐项读 it.shipWarehouse（订单详情内管理员可改，默认本仓），回退到 order.shipWarehouse 或 '本仓'。
 // 注意：本函数只做扣减、不写 _stockDeducted 标记，由调用方（updateOrderStatus）在全部成功后才标记。
+// v2026103102：数据级幂等兜底。仅靠 _stockDeducted 布尔标记防重复有单点风险——
+// 该标记此前长期未同步（同步白名单漏列），一旦丢失/被覆盖，同一订单再次触发出库就会二次扣库存
+// （2026-10-31「ORD20261031-k2de6112357 德龙咖啡机 17:50 与 17:56 各扣一次」事故）。
+// 这里以「本订单 + 本商品」已有的出库流水为准计算待扣差额：已扣够则跳过，未扣够才补差额。
+// 好处：即使标记再次丢失也不会重复扣；部分商品扣减失败时，下次触发仍能补齐，不会被幂等卡死。
+function _outQtyAlreadyDone(orderId, productId){
+  try{
+    const logs = DB.get('stock_logs') || [];
+    let sum = 0;
+    for(let i=0;i<logs.length;i++){
+      const l = logs[i];
+      if(!l || l.relId !== orderId || l.productId !== productId) continue;
+      if(l.type !== 'outbound' && l.type !== 'outbound_other') continue;
+      sum += Math.abs(Number(l.delta) || 0);
+    }
+    return sum;
+  }catch(e){ return 0; }
+}
 async function deductStockForOrder(order){
   if(!order || order._stockDeducted) return { ok:true, skipped:true };
   const items = Array.isArray(order.items) ? order.items : [];
@@ -15962,13 +15982,17 @@ async function deductStockForOrder(order){
     if(!it || !it.productId) continue;
     const qty = Number(it.qty) || 0;
     if(qty <= 0) continue;
+    // v2026103102：扣除已完成的部分，只扣差额（幂等核心）
+    const already = _outQtyAlreadyDone(order.id, it.productId);
+    const remain = qty - already;
+    if(remain <= 0) continue;
     const _obRmk = (order.outboundRemark && order.outboundRemark.trim()) ? ' · ' + order.outboundRemark.trim() : '';
     let wh = (it.shipWarehouse && String(it.shipWarehouse).trim()) || (order.shipWarehouse && String(order.shipWarehouse).trim()) || '本仓';
     const _inp = document.getElementById('itWh_'+(order.id)+'_'+i); // 待下单列表/详情页管理员刚填的发货仓
     if(_inp && _inp.value && _inp.value.trim()) wh = _inp.value.trim();
     if(wh === '本仓'){
       // 默认仓（本仓）：真实扣减系统库存 + 写出库流水
-      const r = await applyStockChange({ productId: it.productId, delta: -qty, type:'outbound', warehouse: wh, relId: order.id, remark: '订单出库 · '+(order.customerName||order.id) + _obRmk });
+      const r = await applyStockChange({ productId: it.productId, delta: -remain, type:'outbound', warehouse: wh, relId: order.id, remark: '订单出库 · '+(order.customerName||order.id) + _obRmk });
       if(!r.ok){ anyFail = true; failMsg = r.err; }
       else if(r.after < 0){ negStock = true; }
     } else {
@@ -15977,7 +16001,7 @@ async function deductStockForOrder(order){
         const products = DB.get('products')||[];
         const p = products.find(x => x.id === it.productId);
         const cur = p ? (Number(p.stockQty)||0) : 0;
-        writeStockLog({ productId: it.productId, productName: p ? p.name : '', type:'outbound_other', delta: -qty, beforeQty: cur, afterQty: cur, warehouse: wh, relId: order.id, operator:(currentUser&&currentUser.name)||'', remark: '从「'+wh+'」发出（非系统仓，未扣减默认仓库存）· '+(order.customerName||order.id) + _obRmk });
+        writeStockLog({ productId: it.productId, productName: p ? p.name : '', type:'outbound_other', delta: -remain, beforeQty: cur, afterQty: cur, warehouse: wh, relId: order.id, operator:(currentUser&&currentUser.name)||'', remark: '从「'+wh+'」发出（非系统仓，未扣减默认仓库存）· '+(order.customerName||order.id) + _obRmk });
       }catch(e){}
     }
   }
