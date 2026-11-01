@@ -121,7 +121,7 @@ function _initSupabase(){
 // Supabase Realtime 默认会自动重连，本补偿仅兜底"断线期间错过的增量"，不影响正常订阅推送。
 function onRealtimeStatus(table, status){
   if(status === 'SUBSCRIBED'){
-    console.log('[Realtime] ' + table + ' 已订阅');
+    console.debug('[Realtime] ' + table + ' 已订阅');
     return;
   }
   if(status === 'CHANNEL_ERROR' || status === 'CLOSED' || status === 'TIMED_OUT'){
@@ -395,7 +395,7 @@ function startAutoReconcile(){
   try{
     window._autoReconcileTimer = setInterval(function(){ try{ autoReconcileOrders(); }catch(e){} }, 5 * 60 * 1000);
     setTimeout(function(){ try{ autoReconcileOrders(); }catch(e){} }, 8000);   // 启动后错峰跑一次，登录后尽快收敛
-    console.log('[autoReconcile] 已启动 5 分钟差量对账定时器');
+    console.debug('[autoReconcile] 已启动 5 分钟差量对账定时器');
   }catch(e){}
 }
 async function orderGapSyncNow(){
@@ -1782,7 +1782,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026103102</div>
+          <div class="brand-sub">v2026110101</div>
         </div>
       </div>
     </div>
@@ -3368,7 +3368,7 @@ const DB = {
       // 账号表：迁移到 Supabase Auth 后，users 由 Auth/后台管理，前端只拉不推，
       // 避免把本地旧的 sha256 密码误写回云端、或覆盖后台改过的角色/状态。
       if(table === 'users'){
-        console.log('表 [users] 已同步（仅拉取，Auth 接管写权限）');
+        console.debug('表 [users] 已同步（仅拉取，Auth 接管写权限）');
         return;
       }
       if(!data || data.length === 0){
@@ -3376,7 +3376,7 @@ const DB = {
         // 历史逻辑曾在此处清空整张云端表，导致强刷后本地缓存为空、云端查询因网络/权限返回空时，
         // 165 条商品库被误删。商品/客户等主数据删除必须通过显式入口（批量删除/排除集）传播，
         // 绝不能由“空查询”触发全表清空。
-        console.log('表 ['+key+'] 本地与云端均为空，跳过同步');
+        console.debug('表 ['+key+'] 本地与云端均为空，跳过同步');
         return;
       }
       // ============ 修复（2026-0817）：删除标记必须上云 ============
@@ -3428,7 +3428,7 @@ const DB = {
           console.warn('同步 [customers] 失败:', e.message);
           this._syncErrorsByTable[key] = (this._syncErrorsByTable[key] || []).concat([(e && e.message) || String(e)]);
         }
-        console.log('表 [customers] 同步完成，共 '+data.length+' 条');
+        console.debug('表 [customers] 同步完成，共 '+data.length+' 条');
         return; // 客户表不执行下方通用云端反删逻辑
       }
       // aftersales 表：云端历史建表仅含基础列（缺 loss/remark/tracking_no/updated_at 等）。
@@ -3578,6 +3578,25 @@ const DB = {
           return f;
         });
       }
+      // v2026110101：库存三表（suppliers/purchases/stock_logs）列白名单 + 键归一化（全量路径）。
+      // 全量推送前会「本地+云端」合并，云端拉回行带 _deleted、本地新建行不带 → 混批 PGRST102；
+      // 与脏行路径同模式：强制每行补齐全部键（缺失按类型填默认值，绝不补 null）。
+      if(table === 'suppliers' || table === 'purchases' || table === 'stock_logs'){
+        const _invColDefaults = {
+          suppliers:   { id:'', name:'', contact:'', phone:'', address:'', remark:'', created_at:null, updated_at:null, _deleted:false },
+          purchases:   { id:'', supplier_id:'', supplier_name:'', items:'[]', total_amount:0, status:'ordered', order_date:'', expect_date:'', inbound_at:null, remark:'', created_at:null, updated_at:null, _deleted:false },
+          'stock_logs':{ id:'', product_id:'', product_name:'', type:'adjust', delta:0, before_qty:0, after_qty:0, warehouse:'', rel_id:'', operator:'', remark:'', created_at:null, _deleted:false }
+        }[table];
+        snakeData = snakeData.map(function(o){
+          const f = {};
+          Object.keys(_invColDefaults).forEach(function(k){
+            var v = o.hasOwnProperty(k) ? o[k] : _invColDefaults[k];
+            if((k === 'created_at' || k === 'updated_at') && (v == null || v === '')) v = (typeof window.nowStr === 'function' ? window.nowStr().slice(0,19) : new Date().toISOString().slice(0,19).replace('T',' '));
+            f[k] = v;
+          });
+          return f;
+        });
+      }
       // upsert（按 id 冲突更新）：单条/单批失败不拖垮整批，但需上抛以便前端提示
       const upsertErrors = [];
       for(let i = 0; i < snakeData.length; i += batchSize){
@@ -3630,19 +3649,21 @@ const DB = {
                   upsertErrors.push(error.message || String(error));
                 }
               } else if(isKeyMismatch){
-                // PGRST102「All object keys must match」：批量中各行键集合不一致（如有的订单有 _editAt 有的没有）。
-                // 修复：收集所有行的并集键 → 每行补齐缺失键为 null → 重试。
-                const allKeys = new Set();
-                batch.forEach(function(row){ Object.keys(row).forEach(function(k){ allKeys.add(k); }); });
-                const normalized = batch.map(function(o){
-                  const f = {};
-                  allKeys.forEach(function(k){ f[k] = o.hasOwnProperty(k) ? o[k] : null; });
-                  return f;
+                // PGRST102「All object keys must match」：批量中各行键集合不一致（如有的供应商带 _deleted 有的不带）。
+                // v2026110101 重写：旧方案收集并集键、缺失补 null —— 但 _deleted 等 NOT NULL 列补 null
+                // 会触发 23502 整批报废（实测 suppliers 混批正是这样反复弹「部分数据同步失败」横幅）。
+                // 改为按键集合签名分组，各组单独 upsert；同组键一致，绝不引入 null。
+                const _sigGroups = {};
+                batch.forEach(function(row){
+                  const _sig = Object.keys(row).sort().join(',');
+                  (_sigGroups[_sig] = _sigGroups[_sig] || []).push(row);
                 });
-                try{
-                  const r2 = await window._sbpbClient.from(table).upsert(normalized, { onConflict: 'id' });
-                  if(r2.error) upsertErrors.push(r2.error.message || String(r2.error));
-                }catch(e2){ upsertErrors.push(e2.message || String(e2)); }
+                let _grpErr = null;
+                for(const _sig in _sigGroups){
+                  const r2 = await window._sbpbClient.from(table).upsert(_sigGroups[_sig], { onConflict: 'id' });
+                  if(r2.error){ _grpErr = r2.error; break; }
+                }
+                if(_grpErr) upsertErrors.push(_grpErr.message || String(_grpErr));
               } else {
                 upsertErrors.push(error.message || String(error));
               }
@@ -3679,7 +3700,7 @@ const DB = {
           if(delErr) console.warn('清理已删除记录失败 ['+key+']:', delErr.message);
         }
       }
-      console.log('表 ['+key+'] 同步完成，共 '+data.length+' 条');
+      console.debug('表 ['+key+'] 同步完成，共 '+data.length+' 条');
       // #3 容错：本表若有失败，节流提示用户（每 60 秒最多一次），不阻断其它表
       const _tblErrs = this._syncErrorsByTable && this._syncErrorsByTable[key];
       if(_tblErrs && _tblErrs.length){
@@ -3800,6 +3821,27 @@ const DB = {
         return f;
       });
     }
+    // v2026110101：库存三表（suppliers/purchases/stock_logs）列白名单 + 键归一化（脏行路径）。
+    // 此前三表裸推：本地新建行（saveSupplier/savePurchase/writeStockLog 不带 _deleted）与云端拉回行
+    // （带 _deleted）混进同一批 → PGRST102「All object keys must match」；且 syncTable 旧兜底补 null
+    // 会撞 _deleted NOT NULL（23502）整批报废 → 反复弹「部分数据同步失败（表：suppliers）」横幅。
+    // 与 orders 同模式：白名单过滤本地多余字段 + 强制每行补齐全部键（缺失按类型填默认值，绝不补 null）。
+    if(key === 'suppliers' || key === 'purchases' || key === 'stock_logs'){
+      const _invColDefaults = {
+        suppliers:   { id:'', name:'', contact:'', phone:'', address:'', remark:'', created_at:null, updated_at:null, _deleted:false },
+        purchases:   { id:'', supplier_id:'', supplier_name:'', items:'[]', total_amount:0, status:'ordered', order_date:'', expect_date:'', inbound_at:null, remark:'', created_at:null, updated_at:null, _deleted:false },
+        'stock_logs':{ id:'', product_id:'', product_name:'', type:'adjust', delta:0, before_qty:0, after_qty:0, warehouse:'', rel_id:'', operator:'', remark:'', created_at:null, _deleted:false }
+      }[key];
+      snakeData = snakeData.map(function(o){
+        const f = {};
+        Object.keys(_invColDefaults).forEach(function(k){
+          var v = o.hasOwnProperty(k) ? o[k] : _invColDefaults[k];
+          if((k === 'created_at' || k === 'updated_at') && (v == null || v === '')) v = (typeof window.nowStr === 'function' ? window.nowStr().slice(0,19) : new Date().toISOString().slice(0,19).replace('T',' '));
+          f[k] = v;
+        });
+        return f;
+      });
+    }
     // v20260911 推送侧状态保护（镜像 pull 侧 _mergeById 的 rank 保护）：
     // 推送脏行前批量取云端 status，若本地 status 等级低于云端则改用云端 status，
     // 杜绝「本地陈旧 feedback 副本把云端已完成覆盖回待反馈」（多端反馈无效根因，见 2431 行注释）。
@@ -3869,6 +3911,23 @@ const DB = {
               if(r2.error) throw r2.error;
               continue;
             }
+          }
+          // v2026110101：PGRST102「All object keys must match」兜底（脏行路径此前完全没有处理）。
+          // 按键集合签名分组后各组单独 upsert：同组键一致，绝不补 null —— _deleted 等 NOT NULL 列
+          // 补 null 会 23502 整批报废（suppliers 混批反复弹「部分数据同步失败」的根因之一）。
+          if(/All object keys must match|PGRST102/i.test(errMsg)){
+            const _sigGroups = {};
+            batch.forEach(function(row){
+              const _sig = Object.keys(row).sort().join(',');
+              (_sigGroups[_sig] = _sigGroups[_sig] || []).push(row);
+            });
+            let _grpErr = null;
+            for(const _sig in _sigGroups){
+              const r2 = await withTimeout(window._sbpbClient.from(key).upsert(_sigGroups[_sig], { onConflict:'id' }), 8000, '_pushDirtyRows regroup('+key+')');
+              if(r2 && r2.error){ _grpErr = r2.error; break; }
+            }
+            if(_grpErr) throw _grpErr;
+            continue;
           }
           // v20261006：唯一索引 products_name_uniq_active 命中兜底。
           // 批量 upsert 任一行撞「同名在架」即整批 23505 失败；改逐行上推，撞索引的行复用云端已有同名商品，
@@ -6004,8 +6063,15 @@ function startAutoSync(){
   // window._autoSyncTimer = setInterval(autoSyncTick, 300000);  // v20260915 关闭
   // 页面切后台时由 visibilitychange 监听 clearInterval 暂停自动同步，切回前台时调一次 autoSyncTick（不再重建 setInterval）。
   // 联网/断网自动处理：断网标记离线；联网后先拉云端再推本地，保证离线提交的订单不丢
+  // v2026110201：online 事件加 5s 节流。弱网 online/offline 反复抖动时，若不节流会连发多个全量
+  // syncFromCloud（每个都走 _fixFutureCursor + 两次 _maybeBackfillOrders + retryPendingOrderSyncs + 增量/全量），
+  // 造成 egress 暴涨与首屏卡顿。改为「首次立即执行、5s 内重复触发直接忽略」的节流语义。
+  let _lastOnlineSyncAt = 0;
   window.addEventListener('online', function(){
     if(typeof updateSyncBadge === 'function') updateSyncBadge('syncing');
+    const _now = Date.now();
+    if(_now - _lastOnlineSyncAt < 5000) return;
+    _lastOnlineSyncAt = _now;
     if(typeof DB !== 'undefined' && DB.syncFromCloud){
       DB.syncFromCloud().then(function(){
         if(typeof schedulePushToCloud === 'function') schedulePushToCloud();
@@ -6036,7 +6102,6 @@ function startAutoSync(){
 document.addEventListener('visibilitychange', function(){
   // —— 页面不可见：释放 Realtime 连接 + 暂停自动同步，砍掉后台空烧的 Egress（心跳/推送/轮询）——
   if(document.visibilityState !== 'visible'){
-    try{ if(window._autoSyncTimer){ clearInterval(window._autoSyncTimer); window._autoSyncTimer = null; } }catch(e){}
     try{ teardownRealtime(); }catch(e){}
     return;
   }
@@ -6168,7 +6233,7 @@ async function calibrateSupabaseClock(){
     const prev = window._clockSkewMs || 0;
     if(prev === 0 || Math.abs(skew - prev) > 50){
       window._clockSkewMs = skew;
-      try{ console.log('[Clock] 本地 vs supabase 服务端偏差 =', skew, 'ms (nowStr 已补偿)'); }catch(e){}
+      try{ console.debug('[Clock] 本地 vs supabase 服务端偏差 =', skew, 'ms (nowStr 已补偿)'); }catch(e){}
     }
   }catch(e){ /* CORS/网络失败 → 保持 _clockSkewMs 不变；旧逻辑退化为无补偿 */ }
 }
@@ -15412,7 +15477,7 @@ function cleanupDuplicateProducts(cloudProducts){
       })();
     }
 
-    console.log('已自动清理重复商品:', Object.keys(idMap).length, '条，保留:', keepProducts.length, '条');
+    console.debug('已自动清理重复商品:', Object.keys(idMap).length, '条，保留:', keepProducts.length, '条');
     // 如果当前在商品管理页，刷新显示
     if(currentRoute === 'products' && typeof renderProducts === 'function'){
       try{ renderProducts(); }catch(e){}
@@ -15489,7 +15554,7 @@ function cleanupDuplicateUsers(){
         await window._sbpbClient.from('users').delete().in('id', '(' + ids.join(',') + ')');
       }catch(e){ console.warn('批量云端删除重复账号失败:', e.message); }
     })();
-    console.log('已自动清理重复登录账号:', delArray.length, '条');
+    console.debug('已自动清理重复登录账号:', delArray.length, '条');
     if(currentRoute === 'settings' && typeof renderSettings === 'function'){
       try{ renderSettings(); }catch(e){}
     }
@@ -15538,7 +15603,7 @@ function cleanupDuplicateCustomers(){
 
     DB.set('customers', keep);
     const msg = '已清理重复客户 ' + Object.keys(idMap).length + ' 条，保留 ' + keep.length + ' 条';
-    console.log(msg);
+    console.debug(msg);
     showToast(msg, 'success');
     if(currentRoute === 'customers' && typeof renderCustomers === 'function'){ try{ renderCustomers(); }catch(e){} }
   }catch(e){
@@ -16219,7 +16284,7 @@ function filterPurchases(){
     const _inbounded = (p.items||[]).reduce(function(s,it){return s+(Number(it.inboundQty)||0);},0);
     const ops = isAdmin ? `<td class="row-actions">${p.status !== 'inbound' ? `<button class="btn-link" onclick="openInboundModal('${p.id}')">${_inbounded>0?'继续入库':'入库'}</button>` : ''}<button class="btn-link danger" onclick="deletePurchase('${p.id}')">删除</button></td>` : '';
     return `<tr>
-      <td>${purchaseIdCell(p.id)}</td>
+      <td>${purchaseIdCell(p)}</td>
       <td>${escapeHtml(p.supplierName || '')}</td>
       <td>${itemCount}</td>
       <td>¥${Number(p.totalAmount||0).toFixed(2)}</td>
@@ -16300,6 +16365,47 @@ function piHideDrop(inp){
     if(drop) drop.style.display = 'none';
   }, 180);
 }
+// v2026110102：采购单供应商选择支持关键字检索（原生 select 无法输入过滤，供应商多时只能滚动找）
+function poSearchSuppliers(inp){
+  const kw = (inp.value || '').trim().toLowerCase();
+  const suppliers = DB.get('suppliers') || [];
+  const box = inp.parentNode;
+  const drop = box.querySelector('.po-supplier-drop');
+  let list = suppliers;
+  if(kw) list = suppliers.filter(function(s){ return ((s.name || '') + ' ' + (s.contact || '') + ' ' + (s.phone || '')).toLowerCase().indexOf(kw) !== -1; });
+  const MAX = 50;
+  const cur = (box.querySelector('#poSupplier') || document.getElementById('poSupplier')).value;
+  let html = list.slice(0, MAX).map(function(s){
+    const selStyle = s.id === cur ? 'background:#eef6f6;font-weight:600;' : '';
+    return '<div class="po-sup-opt" data-sid="' + escAttr(s.id) + '" style="padding:8px 10px;cursor:pointer;border-bottom:1px solid var(--border);font-size:13px;' + selStyle + '">' + escAttr(s.name) + '</div>';
+  }).join('');
+  if(!list.length){ html = '<div style="padding:10px;color:var(--text-muted);font-size:13px">无匹配供应商</div>'; }
+  else if(list.length > MAX){ html += '<div style="padding:8px 10px;color:var(--text-muted);font-size:12px">共 ' + list.length + ' 家匹配，仅显示前 ' + MAX + ' 家，请继续输入关键字缩小范围</div>'; }
+  drop.innerHTML = html;
+  drop.style.display = 'block';
+  Array.prototype.forEach.call(drop.querySelectorAll('.po-sup-opt'), function(el){
+    // 用 mousedown：先于输入框 blur 触发，保证点选生效
+    el.addEventListener('mousedown', function(ev){
+      ev.preventDefault();
+      poPickSupplier(el);
+    });
+  });
+}
+function poPickSupplier(optEl){
+  const box = optEl.closest('.po-supplier-box');
+  const sid = optEl.getAttribute('data-sid');
+  const s = (DB.get('suppliers') || []).find(function(x){ return x.id === sid; });
+  const hidden = box.querySelector('#poSupplier') || document.getElementById('poSupplier');
+  if(hidden) hidden.value = sid;
+  box.querySelector('#poSupplierName').value = s ? s.name : '';
+  box.querySelector('.po-supplier-drop').style.display = 'none';
+}
+function poHideSupplierDrop(inp){
+  setTimeout(function(){
+    const drop = inp.parentNode.querySelector('.po-supplier-drop');
+    if(drop) drop.style.display = 'none';
+  }, 180);
+}
 // v20261022：库存低于预警时，管理员一键开补货采购单（预填该商品 + 建议补货量 + 最近采购价）
 function quickReplenish(productId){
   if(currentUser.role !== 'admin'){ showToast('仅管理员可创建采购单','error'); return; }
@@ -16317,7 +16423,9 @@ function openPurchaseModal(id){
   const purchases = DB.get('purchases') || [];
   const p = id ? purchases.find(function(x){ return x.id === id; }) : null;
   if(!suppliers.length){ showToast('请先到「供应商管理」添加至少一家供应商', 'error', 4000); return; }
-  const suppOpts = suppliers.map(function(s){ return `<option value="${s.id}" ${p && p.supplierId === s.id ? 'selected' : ''}>${escAttr(s.name)}</option>`; }).join('');
+  // v2026110102：供应商由原生 select 升级为「输入检索 + 点选」下拉（供应商多时滚动查找太慢）；
+  // 隐藏 input 仍叫 poSupplier 存 id，保存逻辑不变
+  const _presetSup = p ? (suppliers.find(function(s){ return s.id === p.supplierId; }) || null) : null;
   const modalHtml = `
     <div class="modal-mask" onclick="if(event.target===this)closeModal()">
       <div class="modal" style="max-width:660px">
@@ -16325,7 +16433,13 @@ function openPurchaseModal(id){
         <div class="modal-body">
           <input type="hidden" id="poId" value="${p ? p.id : ''}">
           <div class="form-row">
-            <div class="form-group"><label class="form-label">供应商 *</label><select class="form-control" id="poSupplier">${suppOpts}</select></div>
+            <div class="form-group"><label class="form-label">供应商 *</label>
+              <div style="position:relative" class="po-supplier-box">
+                <input type="hidden" id="poSupplier" value="${p && p.supplierId ? escAttr(p.supplierId) : ''}">
+                <input type="text" class="form-control" id="poSupplierName" placeholder="点击或输入关键字检索供应商" value="${_presetSup ? escAttr(_presetSup.name) : ''}" autocomplete="off" oninput="poSearchSuppliers(this)" onfocus="poSearchSuppliers(this)" onblur="poHideSupplierDrop(this)">
+                <div class="po-supplier-drop" style="display:none;position:absolute;top:100%;left:0;right:0;max-height:240px;overflow-y:auto;background:#fff;border:1px solid var(--border);border-radius:8px;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.12)"></div>
+              </div>
+            </div>
             <div class="form-group"><label class="form-label">预计到货</label><input type="date" class="form-control" id="poExpect" value="${p && p.expectDate ? p.expectDate : ''}"></div>
           </div>
           <label class="form-label">采购商品</label>
@@ -16384,11 +16498,27 @@ function recalcPurchaseTotal(){
   const el = document.getElementById('purchaseTotal');
   if(el) el.textContent = '¥' + total.toFixed(2);
 }
+// v2026110102：采购单号按创建时间生成，格式 CG + YYYYMMDD + 当日两位序号（如 CG2026110101）
+function genPurchaseOrderNo(createdAt){
+  var d = new Date(('' + (createdAt || '')).replace(/-/g, '/').replace('T', ' '));
+  if(isNaN(d.getTime())) d = new Date();
+  var y = d.getFullYear();
+  var m = ('0' + (d.getMonth() + 1)).slice(-2);
+  var day = ('0' + d.getDate()).slice(-2);
+  var prefix = 'CG' + y + m + day;
+  var n = 0;
+  (DB.get('purchases') || []).forEach(function(x){ if((x.orderNo || '').indexOf(prefix) === 0) n++; });
+  return prefix + ('0' + (n + 1)).slice(-2);
+}
 function savePurchase(){
   const supplierId = (document.getElementById('poSupplier').value || '').trim();
-  if(!supplierId){ showToast('请选择供应商', 'error'); return; }
+  const supplierNameInput = ((document.getElementById('poSupplierName') || {}).value || '').trim();
   const suppliers = DB.get('suppliers') || [];
   const supplier = suppliers.find(function(s){ return s.id === supplierId; });
+  // 检索式下拉防护：输入框里的名称必须与已选供应商一致（防止改了字没点选、或没选就保存）
+  if(!supplierId || !supplier || (supplierNameInput && supplier.name !== supplierNameInput)){
+    showToast('请从供应商检索列表中点选一家供应商', 'error', 4000); return;
+  }
   const products = DB.get('products') || [];
   const prodMap = {};
   products.forEach(function(pr){ prodMap[pr.id] = pr.name; });
@@ -16421,7 +16551,7 @@ function savePurchase(){
       purchases[idx] = Object.assign({}, purchases[idx], { supplierId: supplierId, supplierName: supplier ? supplier.name : '', items: items, totalAmount: totalAmount, expectDate: expectDate, remark: remark, updatedAt: _now });
     }
   } else {
-    purchases.unshift({ id: DB.uid('po_'), supplierId: supplierId, supplierName: supplier ? supplier.name : '', items: items, totalAmount: totalAmount, status: 'ordered', expectDate: expectDate, remark: remark, createdAt: _now, updatedAt: _now });
+    purchases.unshift({ id: DB.uid('po_'), orderNo: genPurchaseOrderNo(_now), supplierId: supplierId, supplierName: supplier ? supplier.name : '', items: items, totalAmount: totalAmount, status: 'ordered', expectDate: expectDate, remark: remark, createdAt: _now, updatedAt: _now });
   }
   DB.set('purchases', purchases);
   closeModal();
@@ -16519,11 +16649,12 @@ function deletePurchase(id){
   showToast('已删除', 'success');
   renderPurchases();
 }
-// 采购单号单元格：点击查看详情，📋 复制单号（与订单号单元格同风格）
-function purchaseIdCell(id){
-  if(!id) return '';
-  var sid = (''+id).replace(/'/g, "\\'");
-  return '<span class="oid-box" title="查看采购单详情"><span class="oid-text" onclick="event.stopPropagation();openPurchaseDetail(\''+sid+'\')" style="cursor:pointer">'+sid+'</span><button type="button" class="oid-copy" title="复制单号" onclick="event.stopPropagation();copyToClipboard(\''+sid+'\',\'采购单号\')">📋</button></span>';
+// 采购单号单元格：展示 orderNo（无则回退内部 id）；点击查看详情（按 id 定位），📋 复制订单号
+function purchaseIdCell(p){
+  if(!p) return '';
+  var sid = (''+(p.id||'')).replace(/'/g, "\\'");
+  var sno = (p.orderNo || p.id || '').replace(/'/g, "\\'");
+  return '<span class="oid-box" title="查看采购单详情"><span class="oid-text" onclick="event.stopPropagation();openPurchaseDetail(\''+sid+'\')" style="cursor:pointer">'+sno+'</span><button type="button" class="oid-copy" title="复制单号" onclick="event.stopPropagation();copyToClipboard(\''+sno+'\',\'采购单号\')">📋</button></span>';
 }
 // v20261029：点击采购单号 → 查看该单完整信息（商品明细 / 入库进度 / 状态），管理员可在此直接编辑、入库、删除
 function openPurchaseDetail(id){
@@ -16532,6 +16663,7 @@ function openPurchaseDetail(id){
   if(!p){ showToast('采购单不存在', 'error'); return; }
   const isAdmin = !!(currentUser && currentUser.role === 'admin');
   const sid = (''+p.id).replace(/'/g, "\\'");
+  const sno = (p.orderNo || p.id || '').replace(/'/g, "\\'");
   const statusLabel = p.status === 'inbound' ? '<span class="badge badge-success">已入库</span>' : ((p.items||[]).some(function(it){ return (Number(it.inboundQty)||0) > 0 && (Number(it.inboundQty)||0) < (Number(it.qty)||0); }) ? '<span class="badge badge-info">部分入库</span>' : '<span class="badge badge-warning">已下单</span>');
   const itemRows = (p.items || []).map(function(it){
     const qty = Number(it.qty) || 0;
@@ -16562,7 +16694,7 @@ function openPurchaseDetail(id){
         <div class="modal-header"><h3>📥 采购单详情</h3><button class="modal-close" onclick="closeModal()">×</button></div>
         <div class="modal-body">
           <div style="display:flex;flex-wrap:wrap;gap:10px 24px;margin-bottom:14px;align-items:center">
-            <div><div style="font-size:12px;color:var(--text-muted)">单号</div><div style="font-weight:600;font-size:14px">${escAttr(p.id||'')} <button type="button" class="oid-copy" title="复制单号" onclick="copyToClipboard('${sid}','采购单号')">📋</button></div></div>
+            <div><div style="font-size:12px;color:var(--text-muted)">单号</div><div style="font-weight:600;font-size:14px">${escAttr(p.orderNo || p.id || '')} <button type="button" class="oid-copy" title="复制单号" onclick="copyToClipboard('${sno}','采购单号')">📋</button></div></div>
             <div><div style="font-size:12px;color:var(--text-muted)">状态</div><div>${statusLabel}</div></div>
             <div><div style="font-size:12px;color:var(--text-muted)">供应商</div><div style="font-weight:600">${escAttr(p.supplierName||'—')}</div></div>
             <div><div style="font-size:12px;color:var(--text-muted)">预计到货</div><div>${escAttr(p.expectDate||'—')}</div></div>
@@ -16589,27 +16721,25 @@ function openPurchaseDetail(id){
     </div>`;
   document.getElementById('modalContainer').innerHTML = modalHtml;
 }
-// 复制采购单完整信息（单号 / 供应商 / 明细 / 进度 / 合计），与订单复制同机制
+// v2026110102：一键复制采购单信息 —— 精简为「单号/预计到货/创建时间/商品明细(含已入)」
+// （去除供应商、状态、单价、小计、合计，便于直接发给供应商；创建时间具体到时分）
 function copyPurchaseInfo(id){
   const p = (DB.get('purchases')||[]).find(function(x){ return x.id === id; });
   if(!p){ showToast('采购单不存在','error'); return; }
-  const statusLabel = p.status === 'inbound' ? '已入库' : ((p.items||[]).some(function(it){ return (Number(it.inboundQty)||0) > 0 && (Number(it.inboundQty)||0) < (Number(it.qty)||0); }) ? '部分入库' : '已下单');
   const lines = [];
-  lines.push('采购单号：' + (p.id||''));
-  lines.push('供应商：' + (p.supplierName||''));
-  lines.push('状态：' + statusLabel);
-  lines.push('预计到货：' + (p.expectDate||'—'));
-  lines.push('创建时间：' + (p.createdAt||'').slice(0,16));
+  lines.push('采购单号：' + (p.orderNo || p.id || ''));
+  lines.push('预计到货：' + (p.expectDate || '—'));
+  lines.push('创建时间：' + (p.createdAt || '').slice(0,16).replace('T', ' '));
   if(p.items && p.items.length){
     lines.push('商品明细：');
     p.items.forEach(function(it){
-      const qty = Number(it.qty)||0;
-      const unit = Number(it.unitCost)||0;
-      lines.push('  ' + (it.productName||it.productId) + ' ×' + qty + ' 单价¥' + unit.toFixed(2) + ' 小计¥' + (qty*unit).toFixed(2) + ' 已入' + (Number(it.inboundQty)||0));
+      const qty = Number(it.qty) || 0;
+      const inb = Number(it.inboundQty) || 0;
+      let line = '  ' + (it.productName || it.productId) + ' ×' + qty;
+      if(inb > 0) line += '  已入' + inb;
+      lines.push(line);
     });
   }
-  lines.push('合计：¥' + Number(p.totalAmount||0).toFixed(2));
-  if(p.remark && p.remark.trim()) lines.push('备注：' + p.remark.trim());
   copyToClipboardWithMsg(lines.join('\n'));
 }
 
@@ -21683,7 +21813,7 @@ window.onload = async function(){
       const set = JSON.parse(localStorage.getItem(delKey) || '[]');
       if(!set.includes('x')) set.push('x');
       localStorage.setItem(delKey, JSON.stringify(set));
-      console.log('已自动清理脏数据订单 id=x');
+      console.debug('已自动清理脏数据订单 id=x');
     }
   }catch(e){ console.warn('清理脏数据订单 id=x 失败:', e.message); }
 
