@@ -1782,7 +1782,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026110101</div>
+          <div class="brand-sub">v2026110102</div>
         </div>
       </div>
     </div>
@@ -16179,9 +16179,10 @@ function openSupplierModal(id){
         <div class="modal-body">
           <input type="hidden" id="supId" value="${s ? s.id : ''}">
           <div class="form-row">
-            <div class="form-group"><label class="form-label">供应商名称 *</label><input type="text" class="form-control" id="supName" value="${s ? escAttr(s.name) : ''}" placeholder="如 某某耗材厂"></div>
+            <div class="form-group"><label class="form-label">供应商名称 *</label><input type="text" class="form-control" id="supName" value="${s ? escAttr(s.name) : ''}" placeholder="如 某某耗材厂" oninput="checkSupplierDup()"></div>
             <div class="form-group"><label class="form-label">联系人</label><input type="text" class="form-control" id="supContact" value="${s ? escAttr(s.contact) : ''}" placeholder="联系人姓名"></div>
           </div>
+          <div id="supDupHint" style="display:none;color:#c0392b;font-size:12px;margin:-6px 0 10px"></div>
           <div class="form-row">
             <div class="form-group"><label class="form-label">电话</label><input type="text" class="form-control" id="supPhone" value="${s ? escAttr(s.phone) : ''}" placeholder="联系电话"></div>
             <div class="form-group"><label class="form-label">地址</label><input type="text" class="form-control" id="supAddress" value="${s ? escAttr(s.address) : ''}" placeholder="地址"></div>
@@ -16196,6 +16197,23 @@ function openSupplierModal(id){
     </div>`;
   document.getElementById('modalContainer').innerHTML = modalHtml;
 }
+function checkSupplierDup(){
+  const hint = document.getElementById('supDupHint');
+  if(!hint) return;
+  const id = (document.getElementById('supId').value || '').trim();
+  const name = (document.getElementById('supName').value || '').trim();
+  if(!name){ hint.style.display = 'none'; hint.innerHTML = ''; return; }
+  const _norm = function(n){ return (n||'').trim().toLowerCase(); };
+  const suppliers = DB.get('suppliers') || [];
+  const dup = suppliers.find(function(x){ return x.id !== id && _norm(x.name) === _norm(name); });
+  if(dup){
+    hint.style.display = 'block';
+    hint.innerHTML = '⚠️ 已存在同名供应商：' + escAttr(dup.name || '') + '（<a href="javascript:void(0)" onclick="closeModal();openSupplierModal(&#39;' + (dup.id||'') + '&#39;)">点此编辑已存在的</a>）';
+  } else {
+    hint.style.display = 'none';
+    hint.innerHTML = '';
+  }
+}
 function saveSupplier(){
   const name = (document.getElementById('supName').value || '').trim();
   if(!name){ showToast('请填写供应商名称', 'error'); return; }
@@ -16205,6 +16223,9 @@ function saveSupplier(){
   const address = (document.getElementById('supAddress').value || '').trim();
   const remark = (document.getElementById('supRemark').value || '').trim();
   const suppliers = DB.get('suppliers') || [];
+  const _norm = function(n){ return (n||'').trim().toLowerCase(); };
+  const dup = suppliers.find(function(x){ return x.id !== id && _norm(x.name) === _norm(name); });
+  if(dup){ showToast('已存在同名供应商：' + (dup.name||''), 'error'); return; }
   const _now = window.nowStr();
   if(id){
     const idx = suppliers.findIndex(function(x){ return x.id === id; });
@@ -16480,6 +16501,7 @@ function addPurchaseItemRow(preset){
     <input type="number" class="form-control pi-qty" placeholder="数量" style="width:90px" min="1" value="${preset ? (Number(preset.qty)||1) : 1}" oninput="recalcPurchaseTotal()">
     <input type="number" class="form-control pi-cost" placeholder="单价" style="width:110px" min="0" step="0.01" value="${preset ? (Number(preset.unitCost)||0) : 0}" oninput="recalcPurchaseTotal()">
     <span class="pi-sub" style="width:90px;text-align:right;color:var(--text-muted)">¥0</span>
+    ${preset && (Number(preset.inboundQty)||0) > 0 ? '<span style="width:56px;text-align:center;font-size:12px;color:#b45309;background:#fef3c7;border-radius:6px;padding:2px 4px" title="该商品已入库数量，编辑数量不能低于此值">已入' + (Number(preset.inboundQty)||0) + '</span>' : ''}
     <button class="btn-link danger" onclick="this.parentNode.remove();recalcPurchaseTotal()">×</button>`;
   document.getElementById('purchaseItems').appendChild(row);
   recalcPurchaseTotal();
@@ -16522,7 +16544,9 @@ function savePurchase(){
   const products = DB.get('products') || [];
   const prodMap = {};
   products.forEach(function(pr){ prodMap[pr.id] = pr.name; });
-  const items = [];
+  // v2026110202 修复：此处必须是 let —— 编辑分支会 items = items.map(...) 重赋值，
+  // 之前写成 const 导致编辑采购单点保存直接抛 TypeError（静默失败，保存无效）
+  let items = [];
   let _badRows = 0;
   document.querySelectorAll('#purchaseItems .purchase-item-row').forEach(function(row){
     const pid = row.querySelector('.pi-product').value;
@@ -16547,8 +16571,20 @@ function savePurchase(){
     if(idx >= 0){
       const _oldMap = {};
       (purchases[idx].items || []).forEach(function(o){ if(o.productId) _oldMap[o.productId] = (Number(o.inboundQty)||0); });
+      // v2026110202 编辑防护：新数量不能小于该商品已入库量（已入的货是实库存，不能靠编辑抹掉）
+      for(let _i=0;_i<items.length;_i++){
+        const _inb = _oldMap[items[_i].productId] || 0;
+        if(_inb > items[_i].qty){
+          showToast('「' + (items[_i].productName || items[_i].productId) + '」已入库 ' + _inb + ' 件，新数量不能小于已入库量，请先做负向调整', 'error', 4500);
+          return;
+        }
+      }
       items = items.map(function(it){ return Object.assign({}, it, { inboundQty: _oldMap[it.productId] || 0 }); });
-      purchases[idx] = Object.assign({}, purchases[idx], { supplierId: supplierId, supplierName: supplier ? supplier.name : '', items: items, totalAmount: totalAmount, expectDate: expectDate, remark: remark, updatedAt: _now });
+      // v2026110202：编辑后按最新明细的入库进度重算状态（全部入完=inbound，有入过=partial，都没入=ordered）
+      const _allDone = items.length > 0 && items.every(function(it){ return (Number(it.inboundQty)||0) >= (Number(it.qty)||0); });
+      const _anyIn = items.some(function(it){ return (Number(it.inboundQty)||0) > 0; });
+      const _newStatus = _allDone ? 'inbound' : (_anyIn ? 'partial' : 'ordered');
+      purchases[idx] = Object.assign({}, purchases[idx], { supplierId: supplierId, supplierName: supplier ? supplier.name : '', items: items, totalAmount: totalAmount, expectDate: expectDate, remark: remark, status: _newStatus, updatedAt: _now });
     }
   } else {
     purchases.unshift({ id: DB.uid('po_'), orderNo: genPurchaseOrderNo(_now), supplierId: supplierId, supplierName: supplier ? supplier.name : '', items: items, totalAmount: totalAmount, status: 'ordered', expectDate: expectDate, remark: remark, createdAt: _now, updatedAt: _now });
@@ -16602,6 +16638,12 @@ function fillAllInbound(){
 }
 function syncInboundTotal(){}
 async function confirmInbound(id){
+  // v2026110102 防重复入库①：重入锁。循环里 await 云端推送期间弹窗仍开着，双击/连点会以旧 inboundQty 再算一遍全量入库（实测 po_mvt8a14ihn9z 同一分多入一遍）。
+  if(window._inboundBusy === id){ showToast('正在入库中，请稍候…', 'error'); return; }
+  window._inboundBusy = id;
+  const _btn = document.querySelector('#modalContainer .modal-footer .btn-primary');
+  if(_btn){ _btn.disabled = true; _btn.textContent = '入库中…'; }
+  try{
   const purchases = DB.get('purchases') || [];
   const idx = purchases.findIndex(function(x){ return x.id === id; });
   if(idx < 0){ showToast('采购单不存在', 'error'); return; }
@@ -16622,13 +16664,26 @@ async function confirmInbound(id){
     return Object.assign({}, it, { inboundQty: newInb });
   });
   if(!anyIn){ showToast('请输入本次入库数量', 'error'); return; }
+  // v2026110102 防重复入库②：数据级幂等（与出库 _outQtyAlreadyDone 同思路）。
+  // 本次目标总量 target = oldInb + add；该采购单+商品在流水里的 purchase 正向累计 already 为权威值。
+  // already >= target → 已被并发执行过（双击/另一标签页），跳过加库存但保留 inboundQty=target（与第一遍写入一致，幂等）；
+  // 否则只补差额 target - already。
+  const _purchasedAlready = function(poId, productId){
+    return (DB.get('stock_logs') || []).reduce(function(s, l){
+      return s + (l.type === 'purchase' && l.relId === poId && l.productId === productId ? (Number(l.delta) || 0) : 0);
+    }, 0);
+  };
   for(let i=0;i<items.length;i++){
     const it = items[i];
     const oldInb = Number(p.items[i] ? p.items[i].inboundQty : 0) || 0;
     const add = (Number(items[i].inboundQty)||0) - oldInb;
     if(add <= 0) continue;
-    const batchNo = oldInb > 0 ? '（部分 第' + (oldInb + add) + '件）' : '';
-    const r = await applyStockChange({ productId: it.productId, delta: add, type: 'purchase', relId: p.id, remark: '采购入库' + batchNo + ' · ' + (p.supplierName||'') });
+    const target = oldInb + add;
+    const already = _purchasedAlready(p.id, it.productId);
+    if(already >= target){ continue; }
+    const realAdd = target - already;
+    const batchNo = oldInb > 0 ? '（部分 第' + (oldInb + realAdd) + '件）' : '';
+    const r = await applyStockChange({ productId: it.productId, delta: realAdd, type: 'purchase', relId: p.id, remark: '采购入库' + batchNo + ' · ' + (p.supplierName||'') });
     if(!r.ok){ showToast('入库失败：' + r.err, 'error', 4500); return; }
     // v20261022：入库时同步回写商品成本——基于 applyStockChange 之后的最新库存，避免覆盖刚写入的库存量
     const productsNow = DB.get('products') || [];
@@ -16641,6 +16696,11 @@ async function confirmInbound(id){
   closeModal();
   showToast(allDone ? '✓ 已全额入库，库存已增加' : '✓ 已部分入库（' + items.reduce(function(s,x){return s+(Number(x.inboundQty)||0);},0) + '/' + items.reduce(function(s,x){return s+(Number(x.qty)||0);},0) + '）', 'success', 3500);
   renderPurchases();
+  } finally {
+    window._inboundBusy = null;
+    const _btn2 = document.querySelector('#modalContainer .modal-footer .btn-primary');
+    if(_btn2){ _btn2.disabled = false; _btn2.textContent = '确认入库'; }
+  }
 }
 function deletePurchase(id){
   if(!confirm('确定删除该采购单？删除后不影响已入库库存。')) return;
