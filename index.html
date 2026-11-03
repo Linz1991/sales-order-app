@@ -1782,7 +1782,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026110105</div>
+          <div class="brand-sub">v2026110106</div>
         </div>
       </div>
     </div>
@@ -6420,6 +6420,15 @@ async function syncOrdersNow(){
   }
 }
 
+// 库存台账按账号禁用名单（忽略大小写，匹配 username 或 name）。用于单独禁止特定账号查看库存台账。
+const STOCK_LEDGER_DENY_USERS = ['xiaomao'];
+function _isStockLedgerBlocked(){
+  if(!currentUser) return false;
+  const u = String(currentUser.username || '').toLowerCase();
+  const n = String(currentUser.name || '').toLowerCase();
+  return STOCK_LEDGER_DENY_USERS.some(function(x){ return x.toLowerCase() === u || x.toLowerCase() === n; });
+}
+
 /* ============ 侧边栏渲染 ============ */
 function renderSidebar(){
   const isAdmin = currentUser.role === 'admin';
@@ -6465,6 +6474,11 @@ function renderSidebar(){
       {route:'aftersales', icon:'🔧', name:'售后工单'},
       {route:'products', icon:'🛒', name:'商品列表'}
     ];
+  }
+
+  // 按账号禁用：xiaomao 等禁止查看库存台账，侧边栏入口隐藏
+  if(_isStockLedgerBlocked()){
+    menus = menus.filter(function(m){ return m.route !== 'stock-ledger'; });
   }
 
   const nav = document.getElementById('sidebarNav');
@@ -16907,6 +16921,7 @@ function computeStockValue(products){
 
 function renderStockLedger(){
   if(currentUser.role !== 'admin' && currentUser.role !== 'operator'){ showToast('仅管理员/操作员可查看库存台账', 'error'); return; }
+  if(_isStockLedgerBlocked()){ showToast('账号 ' + (currentUser.username || currentUser.name) + ' 无权查看库存台账', 'error'); return; }
   const products = DB.get('products') || [];
   const lowStock = products.filter(function(pr){ const sq = Number(pr.stockQty)||0; const wq = Number(pr.warnQty)||0; return wq > 0 && sq <= wq; });
   const negStock = products.filter(function(pr){ return (Number(pr.stockQty)||0) < 0; });
