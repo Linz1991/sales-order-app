@@ -1782,7 +1782,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026110103</div>
+          <div class="brand-sub">v2026110104</div>
         </div>
       </div>
     </div>
@@ -16370,7 +16370,8 @@ function onPurchaseProductChange(sel){
 function piSearchProducts(inp){
   const kw = (inp.value || '').trim().toLowerCase();
   // 采购只针对在售商品：已下架的不再出现在采购检索里（status: on=在售 / off=已下架）
-  const all = DB.get('products') || [];
+  // v2026110302：过滤 null 脏元素（p.status 访问会崩）
+  const all = (DB.get('products') || []).filter(Boolean);
   const products = all.filter(function(p){ return p.status !== 'off'; });
   const box = inp.parentNode;
   const drop = box.querySelector('.pi-drop');
@@ -16418,7 +16419,8 @@ function piHideDrop(inp){
 // v2026110102：采购单供应商选择支持关键字检索（原生 select 无法输入过滤，供应商多时只能滚动找）
 function poSearchSuppliers(inp){
   const kw = (inp.value || '').trim().toLowerCase();
-  const suppliers = DB.get('suppliers') || [];
+  // v2026110302：过滤 null 脏元素（s.name 访问会崩）
+  const suppliers = (DB.get('suppliers') || []).filter(Boolean);
   const box = inp.parentNode;
   const drop = box.querySelector('.po-supplier-drop');
   let list = suppliers;
@@ -16474,14 +16476,19 @@ function openPurchaseModal(id){
     return _openPurchaseModalInner(id);
   }catch(e){
     try{ console.error('[openPurchaseModal]', e); }catch(_e){}
-    showToast('打开采购单弹窗失败：' + (e && e.message ? e.message : e), 'error', 8000);
+    // v2026110302：toast 几秒就消失容易被错过，补一个必弹的 alert 保证错误可见、可截图反馈
+    var _msg = '打开采购单弹窗失败：' + (e && e.message ? e.message : e);
+    try{ showToast(_msg, 'error', 8000); }catch(_e2){}
+    try{ alert(_msg); }catch(_e3){}
   }
 }
 function _openPurchaseModalInner(id){
   if(currentUser.role !== 'admin'){ showToast('仅管理员可创建采购单', 'error'); return; }
-  const suppliers = DB.get('suppliers') || [];
-  const products = DB.get('products') || [];
-  const purchases = DB.get('purchases') || [];
+  // v2026110302：本机库可能混入 null 脏元素（同步异常残留），.find 里读 .id/.name 会抛
+  // "Cannot read properties of null" 导致编辑弹窗打不开——三张表统一 filter(Boolean) 兜底
+  const suppliers = (DB.get('suppliers') || []).filter(Boolean);
+  const products = (DB.get('products') || []).filter(Boolean);
+  const purchases = (DB.get('purchases') || []).filter(Boolean);
   const p = id ? purchases.find(function(x){ return x.id === id; }) : null;
   // v2026110301：仅「新建」要求本机已有供应商；编辑已有单时本机供应商列表可能为空/同步异常
   // （本机 11-01 曾发生 suppliers 表同步失败），不应因此卡死编辑——该单本来就有供应商。
@@ -16521,8 +16528,11 @@ function _openPurchaseModalInner(id){
     </div>`;
   document.getElementById('modalContainer').innerHTML = modalHtml;
   const _preset = (arguments.length > 1) ? arguments[1] : null;
-  if(p && p.items && p.items.length){
-    p.items.forEach(function(it){ addPurchaseItemRow(it); });
+  // v2026110302：items 归一化——同步异常可能把 items 弄成 JSON 字符串（forEach 崩）或混入 null 元素
+  let _items = p ? p.items : null;
+  if(typeof _items === 'string'){ try{ _items = JSON.parse(_items); }catch(_e){ _items = null; } }
+  if(Array.isArray(_items) && _items.length){
+    _items.filter(Boolean).forEach(function(it){ addPurchaseItemRow(it); });
   } else if(_preset){
     addPurchaseItemRow(_preset);
   } else {
@@ -16531,7 +16541,8 @@ function _openPurchaseModalInner(id){
   recalcPurchaseTotal();
 }
 function addPurchaseItemRow(preset){
-  const products = DB.get('products') || [];
+  // v2026110302：过滤 null 脏元素（.find 里读 pr.id 会崩）
+  const products = (DB.get('products') || []).filter(Boolean);
   const _presetName = preset ? (((products.find(function(pr){ return pr.id === preset.productId; })) || {}).name || '') : '';
   const row = document.createElement('div');
   row.className = 'purchase-item-row';
@@ -16589,11 +16600,12 @@ function poItemBullet(i){
 function savePurchase(){
   const supplierId = (document.getElementById('poSupplier').value || '').trim();
   const supplierNameInput = ((document.getElementById('poSupplierName') || {}).value || '').trim();
-  const suppliers = DB.get('suppliers') || [];
+  // v2026110302：过滤 null 脏元素（s.id / pr.id 访问会崩）
+  const suppliers = (DB.get('suppliers') || []).filter(Boolean);
   const supplier = suppliers.find(function(s){ return s.id === supplierId; });
   // v2026110301：先取原单——编辑模式放行「供应商未改动」需要用它比对
   const _editId = (document.getElementById('poId').value || '').trim();
-  const _orig = _editId ? (DB.get('purchases') || []).find(function(x){ return x.id === _editId; }) : null;
+  const _orig = _editId ? (DB.get('purchases') || []).filter(Boolean).find(function(x){ return x.id === _editId; }) : null;
   // 检索式下拉防护：输入框里的名称必须与已选供应商一致（防止改了字没点选、或没选就保存）
   if(!supplierId || !supplier || (supplierNameInput && supplier.name !== supplierNameInput)){
     // v2026110301：编辑模式且供应商未改动时放行——本机供应商列表可能为空/被同步清掉，
@@ -16605,7 +16617,7 @@ function savePurchase(){
   }
   // 供应商名兜底：检索列表查无此人（编辑未改动场景）时，沿用原单上的供应商名
   const _supplierName = supplier ? supplier.name : (_orig ? (_orig.supplierName || '') : '');
-  const products = DB.get('products') || [];
+  const products = (DB.get('products') || []).filter(Boolean);
   const prodMap = {};
   products.forEach(function(pr){ prodMap[pr.id] = pr.name; });
   // v2026110202 修复：此处必须是 let —— 编辑分支会 items = items.map(...) 重赋值，
