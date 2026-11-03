@@ -1782,7 +1782,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026110102</div>
+          <div class="brand-sub">v2026110103</div>
         </div>
       </div>
     </div>
@@ -12023,6 +12023,20 @@ function prodProfitCost(prod){
   return 0;
 }
 
+// v20261103：采购入库「加权平均采购成本」计算（纯函数，便于测试）。
+// 公式：(旧库存×旧成本 + 本次入库量×本次单价) ÷ (旧库存 + 本次入库量)
+// 分母为 0（既无旧库存也无新入库）→ 回落本次单价；结果保留两位小数。
+// 注意：这是「采购成本」口径，与利润成本(profitCost)无关。
+function weightedAvgCost(oldQty, oldCost, addQty, unitCost){
+  const _oldQty = Number(oldQty) || 0;
+  const _oldCost = Number(oldCost) || 0;
+  const _add = Number(addQty) || 0;
+  const _unit = Number(unitCost) || 0;
+  const _newQty = _oldQty + _add;
+  if(_newQty <= 0) return round2(_unit);
+  return round2((_oldQty * _oldCost + _add * _unit) / _newQty);
+}
+
 function effectiveItemCost(order, item, products){
   // v2026101602 性能优化：允许调用方传入已就绪的商品数组或 Map（如渲染/导出前一次性构建），
   //   避免每个订单项都 DB.get('products') 重新解析 localStorage（1040+ 单 × 多商品时构建期百万级读取）。
@@ -15250,25 +15264,40 @@ function batchExportProducts(){
   renderProducts();
 }
 
-// 生成并下载商品 CSV（含名称/分类/售价/成本/利润/状态），仅管理员可用
+// v20261103：商品导出表头（纯函数，便于测试断言列顺序）
+function productExportHeader(){
+  return ['序号','商品名称','分类','售价','采购成本','利润成本','利润','库存数量','库存金额(采购成本)','状态'];
+}
+// v20261103：商品导出数据行（纯函数）。库存金额 = 库存数 × 采购成本（p.cost，非利润成本）。
+function buildProductExportRows(list){
+  return (list || []).map(function(p, idx){
+    const _sq = Number(p.stockQty) || 0;
+    const _cost = (p.cost != null && p.cost !== '') ? Number(p.cost) : 0;
+    return [
+      idx + 1,
+      p.name,
+      p.category || '',
+      p.price,
+      (p.cost != null && p.cost !== '' ? p.cost : ''),
+      prodProfitCost(p), // v2026103001：与页面/利润计算同一口径（0 视为未设置，回落采购成本）
+      (p.price - prodProfitCost(p)),
+      _sq,
+      round2(_sq * _cost), // v20261103：库存金额（采购成本口径），不混用利润成本
+      (p.status === 'on' ? '在售' : '已下架')
+    ];
+  });
+}
+
+// 生成并下载商品 CSV（含名称/分类/售价/成本/利润/库存数量/库存金额），仅管理员可用
 function downloadProductsCSV(list, filename){
   if(currentUser.role !== 'admin'){ showToast('仅管理员可导出','error'); return; }
   if(!list || !list.length){ showToast('没有可导出的商品','error'); return; }
-  const header = ['序号','商品名称','分类','售价','采购成本','利润成本','利润','状态'];
+  const header = productExportHeader();
   const escapeCell = (cell) => {
     const s = String(cell == null ? '' : cell).replace(/"/g,'""');
     return /[",\n\r]/.test(s) ? '"'+s+'"' : s;
   };
-  const rows = list.map((p, idx) => [
-    idx + 1,
-    p.name,
-    p.category || '',
-    p.price,
-    (p.cost != null ? p.cost : ''),
-    prodProfitCost(p), // v2026103001：与页面/利润计算同一口径（0 视为未设置，回落采购成本），避免导出显示 0 而利润却按采购成本算
-    (p.price - prodProfitCost(p)),
-    (p.status === 'on' ? '在售' : '已下架')
-  ]);
+  const rows = buildProductExportRows(list);
   const csv = [header, ...rows].map(r => r.map(escapeCell).join(',')).join('\r\n');
   const blob = new Blob(['\ufeff'+csv], { type:'text/csv;charset=utf-8;' });
   // 兼容中文文件名：保留中文但过滤掉 Windows 不允许的字符
@@ -16438,15 +16467,30 @@ function quickReplenish(productId){
   openPurchaseModal(null, { productId: productId, qty: suggest, unitCost: getLastPurchaseCost(productId) });
 }
 function openPurchaseModal(id){
+  // v2026110301：整段 try/catch——真机反馈「点编辑弹窗打不开」且无任何提示。
+  // 之前任何一处抛错都会在 closeModal() 之后静默失败（详情已关、编辑未开，用户看到的就是"没反应"）。
+  // 出错时明确 toast 报错原因，便于远程定位。
+  try{
+    return _openPurchaseModalInner(id);
+  }catch(e){
+    try{ console.error('[openPurchaseModal]', e); }catch(_e){}
+    showToast('打开采购单弹窗失败：' + (e && e.message ? e.message : e), 'error', 8000);
+  }
+}
+function _openPurchaseModalInner(id){
   if(currentUser.role !== 'admin'){ showToast('仅管理员可创建采购单', 'error'); return; }
   const suppliers = DB.get('suppliers') || [];
   const products = DB.get('products') || [];
   const purchases = DB.get('purchases') || [];
   const p = id ? purchases.find(function(x){ return x.id === id; }) : null;
-  if(!suppliers.length){ showToast('请先到「供应商管理」添加至少一家供应商', 'error', 4000); return; }
+  // v2026110301：仅「新建」要求本机已有供应商；编辑已有单时本机供应商列表可能为空/同步异常
+  // （本机 11-01 曾发生 suppliers 表同步失败），不应因此卡死编辑——该单本来就有供应商。
+  if(!suppliers.length && !p){ showToast('请先到「供应商管理」添加至少一家供应商', 'error', 4000); return; }
   // v2026110102：供应商由原生 select 升级为「输入检索 + 点选」下拉（供应商多时滚动查找太慢）；
   // 隐藏 input 仍叫 poSupplier 存 id，保存逻辑不变
   const _presetSup = p ? (suppliers.find(function(s){ return s.id === p.supplierId; }) || null) : null;
+  // v2026110301：本机列表查无此供应商时，回退展示原单上的供应商名（不显示空白）
+  const _presetSupName = _presetSup ? _presetSup.name : (p ? (p.supplierName || '') : '');
   const modalHtml = `
     <div class="modal-mask" onclick="if(event.target===this)closeModal()">
       <div class="modal" style="max-width:660px">
@@ -16457,7 +16501,7 @@ function openPurchaseModal(id){
             <div class="form-group"><label class="form-label">供应商 *</label>
               <div style="position:relative" class="po-supplier-box">
                 <input type="hidden" id="poSupplier" value="${p && p.supplierId ? escAttr(p.supplierId) : ''}">
-                <input type="text" class="form-control" id="poSupplierName" placeholder="点击或输入关键字检索供应商" value="${_presetSup ? escAttr(_presetSup.name) : ''}" autocomplete="off" oninput="poSearchSuppliers(this)" onfocus="poSearchSuppliers(this)" onblur="poHideSupplierDrop(this)">
+                <input type="text" class="form-control" id="poSupplierName" placeholder="点击或输入关键字检索供应商" value="${escAttr(_presetSupName)}" autocomplete="off" oninput="poSearchSuppliers(this)" onfocus="poSearchSuppliers(this)" onblur="poHideSupplierDrop(this)">
                 <div class="po-supplier-drop" style="display:none;position:absolute;top:100%;left:0;right:0;max-height:240px;overflow-y:auto;background:#fff;border:1px solid var(--border);border-radius:8px;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.12)"></div>
               </div>
             </div>
@@ -16532,15 +16576,35 @@ function genPurchaseOrderNo(createdAt){
   (DB.get('purchases') || []).forEach(function(x){ if((x.orderNo || '').indexOf(prefix) === 0) n++; });
   return prefix + ('0' + (n + 1)).slice(-2);
 }
+// 解析采购单展示/复制用的单号：新单已有 orderNo 直接用；老单（无 orderNo）按 createdAt 回退生成稳定的 CG 单号
+function resolvePurchaseOrderNo(p){
+  if(p && p.orderNo) return p.orderNo;
+  return genPurchaseOrderNo(p && p.createdAt ? p.createdAt : '');
+}
+// 商品明细序号前缀（emoji 数字，超过 10 退化为数字.）
+function poItemBullet(i){
+  var e = ['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟'];
+  return i < e.length ? e[i] : ((i+1) + '. ');
+}
 function savePurchase(){
   const supplierId = (document.getElementById('poSupplier').value || '').trim();
   const supplierNameInput = ((document.getElementById('poSupplierName') || {}).value || '').trim();
   const suppliers = DB.get('suppliers') || [];
   const supplier = suppliers.find(function(s){ return s.id === supplierId; });
+  // v2026110301：先取原单——编辑模式放行「供应商未改动」需要用它比对
+  const _editId = (document.getElementById('poId').value || '').trim();
+  const _orig = _editId ? (DB.get('purchases') || []).find(function(x){ return x.id === _editId; }) : null;
   // 检索式下拉防护：输入框里的名称必须与已选供应商一致（防止改了字没点选、或没选就保存）
   if(!supplierId || !supplier || (supplierNameInput && supplier.name !== supplierNameInput)){
-    showToast('请从供应商检索列表中点选一家供应商', 'error', 4000); return;
+    // v2026110301：编辑模式且供应商未改动时放行——本机供应商列表可能为空/被同步清掉，
+    // 不能因此卡死编辑既有采购单（与 openPurchaseModal 的空列表放行配套）。
+    const _keepOrig = !!(_orig && supplierId === _orig.supplierId && (!supplierNameInput || supplierNameInput === (_orig.supplierName || '')));
+    if(!_keepOrig){
+      showToast('请从供应商检索列表中点选一家供应商', 'error', 4000); return;
+    }
   }
+  // 供应商名兜底：检索列表查无此人（编辑未改动场景）时，沿用原单上的供应商名
+  const _supplierName = supplier ? supplier.name : (_orig ? (_orig.supplierName || '') : '');
   const products = DB.get('products') || [];
   const prodMap = {};
   products.forEach(function(pr){ prodMap[pr.id] = pr.name; });
@@ -16561,7 +16625,7 @@ function savePurchase(){
   if(_badRows){ showToast(_badRows + ' 行商品未从搜索列表选中（名称不匹配），已忽略；请点击输入框重新选择', 'error', 4000); }
   if(!items.length){ showToast('请至少添加一行有效的采购商品', 'error'); return; }
   const totalAmount = items.reduce(function(s,it){ return s + it.qty * it.unitCost; }, 0);
-  const id = (document.getElementById('poId').value || '').trim();
+  const id = _editId;
   const expectDate = (document.getElementById('poExpect').value || '').trim();
   const remark = (document.getElementById('poRemark').value || '').trim();
   const purchases = DB.get('purchases') || [];
@@ -16584,10 +16648,10 @@ function savePurchase(){
       const _allDone = items.length > 0 && items.every(function(it){ return (Number(it.inboundQty)||0) >= (Number(it.qty)||0); });
       const _anyIn = items.some(function(it){ return (Number(it.inboundQty)||0) > 0; });
       const _newStatus = _allDone ? 'inbound' : (_anyIn ? 'partial' : 'ordered');
-      purchases[idx] = Object.assign({}, purchases[idx], { supplierId: supplierId, supplierName: supplier ? supplier.name : '', items: items, totalAmount: totalAmount, expectDate: expectDate, remark: remark, status: _newStatus, updatedAt: _now });
+      purchases[idx] = Object.assign({}, purchases[idx], { supplierId: supplierId, supplierName: _supplierName, items: items, totalAmount: totalAmount, expectDate: expectDate, remark: remark, status: _newStatus, updatedAt: _now });
     }
   } else {
-    purchases.unshift({ id: DB.uid('po_'), orderNo: genPurchaseOrderNo(_now), supplierId: supplierId, supplierName: supplier ? supplier.name : '', items: items, totalAmount: totalAmount, status: 'ordered', expectDate: expectDate, remark: remark, createdAt: _now, updatedAt: _now });
+    purchases.unshift({ id: DB.uid('po_'), orderNo: genPurchaseOrderNo(_now), supplierId: supplierId, supplierName: _supplierName, items: items, totalAmount: totalAmount, status: 'ordered', expectDate: expectDate, remark: remark, createdAt: _now, updatedAt: _now });
   }
   DB.set('purchases', purchases);
   closeModal();
@@ -16683,12 +16747,19 @@ async function confirmInbound(id){
     if(already >= target){ continue; }
     const realAdd = target - already;
     const batchNo = oldInb > 0 ? '（部分 第' + (oldInb + realAdd) + '件）' : '';
+    // v20261103：加权平均成本需基于「入库前」的库存/成本快照（applyStockChange 会把库存写成新值，故先快照）
+    const _pre = (DB.get('products') || []).find(function(x){ return x.id === it.productId; }) || {};
+    const _oldQty = Number(_pre.stockQty) || 0;
+    const _oldCost = Number(_pre.cost) || 0;
     const r = await applyStockChange({ productId: it.productId, delta: realAdd, type: 'purchase', relId: p.id, remark: '采购入库' + batchNo + ' · ' + (p.supplierName||'') });
     if(!r.ok){ showToast('入库失败：' + r.err, 'error', 4500); return; }
-    // v20261022：入库时同步回写商品成本——基于 applyStockChange 之后的最新库存，避免覆盖刚写入的库存量
+    // v20261103：按「加权平均」回写采购成本，而非最后单价直接覆盖（采购成本口径）
     const productsNow = DB.get('products') || [];
     const pr = productsNow.find(function(x){ return x.id === it.productId; });
-    if(pr && pr.cost !== it.unitCost){ pr.cost = Number(it.unitCost) || 0; DB.set('products', productsNow); }
+    if(pr){
+      pr.cost = weightedAvgCost(_oldQty, _oldCost, realAdd, it.unitCost);
+      DB.set('products', productsNow);
+    }
   }
   const newStatus = allDone ? 'inbound' : 'partial';
   purchases[idx] = Object.assign({}, p, { items: items, status: newStatus, inboundAt: allDone ? window.nowStr() : p.inboundAt, updatedAt: window.nowStr() });
@@ -16713,7 +16784,7 @@ function deletePurchase(id){
 function purchaseIdCell(p){
   if(!p) return '';
   var sid = (''+(p.id||'')).replace(/'/g, "\\'");
-  var sno = (p.orderNo || p.id || '').replace(/'/g, "\\'");
+  var sno = (resolvePurchaseOrderNo(p) || '').replace(/'/g, "\\'");
   return '<span class="oid-box" title="查看采购单详情"><span class="oid-text" onclick="event.stopPropagation();openPurchaseDetail(\''+sid+'\')" style="cursor:pointer">'+sno+'</span><button type="button" class="oid-copy" title="复制单号" onclick="event.stopPropagation();copyToClipboard(\''+sno+'\',\'采购单号\')">📋</button></span>';
 }
 // v20261029：点击采购单号 → 查看该单完整信息（商品明细 / 入库进度 / 状态），管理员可在此直接编辑、入库、删除
@@ -16723,7 +16794,7 @@ function openPurchaseDetail(id){
   if(!p){ showToast('采购单不存在', 'error'); return; }
   const isAdmin = !!(currentUser && currentUser.role === 'admin');
   const sid = (''+p.id).replace(/'/g, "\\'");
-  const sno = (p.orderNo || p.id || '').replace(/'/g, "\\'");
+  const sno = (resolvePurchaseOrderNo(p) || '').replace(/'/g, "\\'");
   const statusLabel = p.status === 'inbound' ? '<span class="badge badge-success">已入库</span>' : ((p.items||[]).some(function(it){ return (Number(it.inboundQty)||0) > 0 && (Number(it.inboundQty)||0) < (Number(it.qty)||0); }) ? '<span class="badge badge-info">部分入库</span>' : '<span class="badge badge-warning">已下单</span>');
   const itemRows = (p.items || []).map(function(it){
     const qty = Number(it.qty) || 0;
@@ -16754,7 +16825,7 @@ function openPurchaseDetail(id){
         <div class="modal-header"><h3>📥 采购单详情</h3><button class="modal-close" onclick="closeModal()">×</button></div>
         <div class="modal-body">
           <div style="display:flex;flex-wrap:wrap;gap:10px 24px;margin-bottom:14px;align-items:center">
-            <div><div style="font-size:12px;color:var(--text-muted)">单号</div><div style="font-weight:600;font-size:14px">${escAttr(p.orderNo || p.id || '')} <button type="button" class="oid-copy" title="复制单号" onclick="copyToClipboard('${sno}','采购单号')">📋</button></div></div>
+            <div><div style="font-size:12px;color:var(--text-muted)">单号</div><div style="font-weight:600;font-size:14px">${escAttr(resolvePurchaseOrderNo(p) || '')} <button type="button" class="oid-copy" title="复制单号" onclick="copyToClipboard('${sno}','采购单号')">📋</button></div></div>
             <div><div style="font-size:12px;color:var(--text-muted)">状态</div><div>${statusLabel}</div></div>
             <div><div style="font-size:12px;color:var(--text-muted)">供应商</div><div style="font-weight:600">${escAttr(p.supplierName||'—')}</div></div>
             <div><div style="font-size:12px;color:var(--text-muted)">预计到货</div><div>${escAttr(p.expectDate||'—')}</div></div>
@@ -16787,15 +16858,15 @@ function copyPurchaseInfo(id){
   const p = (DB.get('purchases')||[]).find(function(x){ return x.id === id; });
   if(!p){ showToast('采购单不存在','error'); return; }
   const lines = [];
-  lines.push('采购单号：' + (p.orderNo || p.id || ''));
+  lines.push('📦采购单号：' + resolvePurchaseOrderNo(p));
   lines.push('预计到货：' + (p.expectDate || '—'));
   lines.push('创建时间：' + (p.createdAt || '').slice(0,16).replace('T', ' '));
   if(p.items && p.items.length){
     lines.push('商品明细：');
-    p.items.forEach(function(it){
+    p.items.forEach(function(it, idx){
       const qty = Number(it.qty) || 0;
       const inb = Number(it.inboundQty) || 0;
-      let line = '  ' + (it.productName || it.productId) + ' ×' + qty;
+      let line = poItemBullet(idx) + (it.productName || it.productId) + ' ×' + qty;
       if(inb > 0) line += '  已入' + inb;
       lines.push(line);
     });
@@ -16810,16 +16881,25 @@ function stockTypeBadge(type){
   const m = map[type] || ['badge-secondary', (STOCK_TYPE_LABEL[type] || type || '其他')];
   return '<span class="badge ' + m[0] + '">' + m[1] + '</span>';
 }
+// v20261103：库存总价值（采购成本口径）= Σ(库存数 × 采购成本)。纯函数便于测试与导出复用。
+function computeStockValue(products){
+  return (products || []).reduce(function(s, p){
+    return s + (Number(p.stockQty) || 0) * (Number(p.cost) || 0);
+  }, 0);
+}
+
 function renderStockLedger(){
   if(currentUser.role !== 'admin' && currentUser.role !== 'operator'){ showToast('仅管理员/操作员可查看库存台账', 'error'); return; }
   const products = DB.get('products') || [];
   const lowStock = products.filter(function(pr){ const sq = Number(pr.stockQty)||0; const wq = Number(pr.warnQty)||0; return wq > 0 && sq <= wq; });
   const negStock = products.filter(function(pr){ return (Number(pr.stockQty)||0) < 0; });
+  const stockValue = computeStockValue(products);
   const html = `
     <div class="kpi-row">
       <div class="kpi-card" style="cursor:pointer" title="点击查看全部商品及库存" onclick="openStockKpiDetail('all')"><div class="kpi-value">${products.length}</div><div class="kpi-label">商品总数</div></div>
       <div class="kpi-card ${lowStock.length ? 'kpi-danger' : ''}" style="cursor:pointer" title="点击查看低于预警阈值的商品" onclick="openStockKpiDetail('low')"><div class="kpi-value">${lowStock.length}</div><div class="kpi-label">低于预警阈值</div></div>
       <div class="kpi-card" style="cursor:pointer" title="点击查看全部商品（按库存降序）" onclick="openStockKpiDetail('total')"><div class="kpi-value">${products.reduce(function(s,p){ return s + (Number(p.stockQty)||0); }, 0)}</div><div class="kpi-label">库存总量(件)</div></div>
+      <div class="kpi-card" title="按采购成本估算的库存总价值（库存数 × 采购成本，不含利润成本）"><div class="kpi-value">¥${money(stockValue)}</div><div class="kpi-label">库存总价值(采购成本)</div></div>
       <div class="kpi-card ${negStock.length ? 'kpi-danger' : ''}" style="cursor:pointer" title="点击查看负库存商品" onclick="openStockKpiDetail('neg')"><div class="kpi-value">${negStock.length}</div><div class="kpi-label">负库存商品</div></div>
     </div>
     ${lowStock.length ? `<div class="alert alert-warning">⚠️ 库存预警：${lowStock.map(function(p){ return escAttr(p.name) + '(' + (Number(p.stockQty)||0) + '/' + (Number(p.warnQty)||0) + ')'; }).join('、')}</div>` : ''}
