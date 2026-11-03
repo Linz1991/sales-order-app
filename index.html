@@ -1782,7 +1782,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026110104</div>
+          <div class="brand-sub">v2026110105</div>
         </div>
       </div>
     </div>
@@ -16584,7 +16584,7 @@ function genPurchaseOrderNo(createdAt){
   var day = ('0' + d.getDate()).slice(-2);
   var prefix = 'CG' + y + m + day;
   var n = 0;
-  (DB.get('purchases') || []).forEach(function(x){ if((x.orderNo || '').indexOf(prefix) === 0) n++; });
+  (DB.get('purchases') || []).filter(Boolean).forEach(function(x){ if((x.orderNo || '').indexOf(prefix) === 0) n++; });
   return prefix + ('0' + (n + 1)).slice(-2);
 }
 // 解析采购单展示/复制用的单号：新单已有 orderNo 直接用；老单（无 orderNo）按 createdAt 回退生成稳定的 CG 单号
@@ -16801,9 +16801,14 @@ function purchaseIdCell(p){
 }
 // v20261029：点击采购单号 → 查看该单完整信息（商品明细 / 入库进度 / 状态），管理员可在此直接编辑、入库、删除
 function openPurchaseDetail(id){
-  const purchases = DB.get('purchases') || [];
+  // v20261104：本机库可能混入 null 脏元素（同步异常残留），.find 里读 x.id 会抛
+  // "Cannot read properties of null"——脏数据下连详情弹窗都打不开。统一 filter(Boolean) 兜底
+  const purchases = (DB.get('purchases') || []).filter(Boolean);
   const p = purchases.find(function(x){ return x.id === id; });
   if(!p){ showToast('采购单不存在', 'error'); return; }
+  // v20261104：items 可能被同步异常弄成 JSON 字符串（脏数据对抗），.some/.map/.reduce 会崩
+  if(typeof p.items === 'string'){ try{ p.items = JSON.parse(p.items); }catch(_e){ p.items = []; } }
+  if(!Array.isArray(p.items)) p.items = [];
   const isAdmin = !!(currentUser && currentUser.role === 'admin');
   const sid = (''+p.id).replace(/'/g, "\\'");
   const sno = (resolvePurchaseOrderNo(p) || '').replace(/'/g, "\\'");
@@ -16828,8 +16833,8 @@ function openPurchaseDetail(id){
   const pct = totalQty ? Math.round(inbTotal / totalQty * 100) : 0;
   const ops = isAdmin ? `<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
       ${p.status !== 'inbound' ? '<button class="btn btn-primary btn-sm" onclick="closeModal();openInboundModal(\''+sid+'\')">📥 入库 / 继续入库</button>' : ''}
-      <button class="btn btn-secondary btn-sm" onclick="closeModal();openPurchaseModal(\''+sid+'\')">✏️ 编辑</button>
-      <button class="btn btn-secondary btn-sm" onclick="closeModal();deletePurchase(\''+sid+'\')">🗑️ 删除</button>
+      <button class="btn btn-secondary btn-sm" onclick="closeModal();openPurchaseModal('${sid}')">✏️ 编辑</button>
+      <button class="btn btn-secondary btn-sm" onclick="closeModal();deletePurchase('${sid}')">🗑️ 删除</button>
     </div>` : '';
   const modalHtml = `
     <div class="modal-mask" onclick="if(event.target===this)closeModal()">
