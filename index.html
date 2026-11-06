@@ -1782,7 +1782,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026110411</div>
+          <div class="brand-sub">v2026110503</div>
         </div>
       </div>
     </div>
@@ -1900,9 +1900,17 @@ const DB = {
     _deleted:'_deleted', _deletedAt:'_deleted_at', _deletedBy:'_deleted_by',
     // v2026102102 库存/采购系统：新增字段映射
     stockQty:'stock_qty', warnQty:'warn_qty',
+    // v2026110502：他仓库存（每个供应商一份）。系统默认仓继续用 stockQty；他仓按供应商名各存各的。
+    // 缺这条映射 → 拉取时 warehouse_stock 还原不成 warehouseStock（他仓库存跨端全丢）。
+    warehouseStock:'warehouse_stock',
     shipWarehouse:'ship_warehouse', outboundRemark:'outbound_remark', _stockDeducted:'_stock_deducted',
     supplierId:'supplier_id', supplierName:'supplier_name', totalAmount:'total_amount',
+    // v2026110501：采购单号落库（云端 purchases.order_no）。缺这条映射 → 推送时 orderNo 被列白名单丢弃、
+    // 拉取时 order_no 还原不成 orderNo → 单号只在内存里活一次，同步一次就丢。
+    orderNo:'order_no',
     expectDate:'expect_date', inboundAt:'inbound_at',
+    // v2026110502：采购单目标仓（入库到哪个仓）。本仓='本仓'，否则=供应商名（他仓）。
+    targetWarehouse:'target_warehouse',
     productName:'product_name', beforeQty:'before_qty', afterQty:'after_qty', relId:'rel_id',
     // v2026103005（严重修复）：利润成本 profitCost <-> profit_cost 映射缺失，是「改了成本过一会儿跳回原值」的根因。
     //   _snakeToCamel 由本表反向推导（见 _initMapping），缺这一项会导致：
@@ -2140,7 +2148,7 @@ const DB = {
   _ORDERS_COLS: 'id,status,type,total,items,customer_id,sales_id,sales_name,customer_name,contact,phone,region,address,remark,tracking_no,created_at,updated_at,confirmed_at,shipped_at,completed_at,feedback_at,synced_at,order_date,completion_date,images,payment_method,collected_amount,full_payment,deposit,final_payment,no_tracking,after_sale_loss,province,city,district,express_company,locked_by,locked_at,_deleted,_deleted_at,_deleted_by,outbound_remark,_stock_deducted', // v2026103102：补 _stock_deducted——拉取白名单漏了它，防重复扣减标记拉不回来、云端永远 false，管理员端云端优先覆盖会把本机 true 抹回 false，同一订单二次出库重复扣库存
   // products 增量白名单：v20260912 后云端已有 updated_at（335 行 0 null，line 2646 prodCols 已确认）。
   // auto_added 是本地标记（line 1662-1664 本地合并保留），云端无此列——不需进白名单。
-  _PRODUCTS_COLS: 'id,name,price,cost,status,category,created_at,updated_at',
+  _PRODUCTS_COLS: 'id,name,price,cost,status,category,created_at,updated_at,stock_qty,warn_qty', // stock_qty/warn_qty 已随 PRODUCT_STOCK_SQL 落库；warehouse_stock 不在硬编码里，改由 detectProductStockColumn（8783）在确认列存在后才并入白名单，保证「先部署后跑 SQL」也不报红。
   // v20260910：首拉/游标丢失时（useInc=false）的窗口保护，避免一次性拉全表。
   // 30 天窗口：保证业务可见性（订单查询 90% 在 30 天内），同时把首拉流量从 ~700KB 降到 ~50-100KB。
   _initialSyncWindowDays: 30,
@@ -2451,7 +2459,10 @@ const DB = {
       const isAdmin2 = typeof currentUser !== 'undefined' && currentUser && currentUser.role === 'admin';
       const excludeIds = key === 'orders' ? this.get('_deletedOrderIds', []) :
         key === 'products' ? this.get('_deletedProductIds', []) :
-        key === 'users' ? this.get('_deletedUserIds', []) : null;
+        key === 'users' ? this.get('_deletedUserIds', []) :
+        // v2026110501：采购单/供应商删除的 tombstone——不登记的话，云端副本会在合并时把刚删的行复活
+        key === 'purchases' ? this.get('_deletedPurchaseIds', []) :
+        key === 'suppliers' ? this.get('_deletedSupplierIds', []) : null;
       const merged = (key === 'orders' && isAdmin2)
         ? this._mergeAdminCloudPriority(local, cloud, excludeIds, key)
         : this._mergeById(local, cloud, excludeIds, key);
@@ -2494,7 +2505,8 @@ const DB = {
       let cloud = this._toCamel(data || []);
       // 尊重本地已删除标记：云端权威拉取后，仍要排除 _deletedOrderIds/_deletedProductIds/_deletedUserIds，
       // 否则 purgeOrdersForSales / deleteOrder 刚清理的订单会被同步/实时订阅立即拉回，导致页面闪烁、订单消失又出现。
-      const excludeMap = { orders: '_deletedOrderIds', products: '_deletedProductIds', users: '_deletedUserIds' };
+      const excludeMap = { orders: '_deletedOrderIds', products: '_deletedProductIds', users: '_deletedUserIds',
+        purchases: '_deletedPurchaseIds', suppliers: '_deletedSupplierIds' }; // v2026110501：同上，防删除后复活
       const excludeKey = excludeMap[key];
       const excludeIds = excludeKey ? this.get(excludeKey, []) : null;
       if(excludeIds && excludeIds.length) cloud = cloud.filter(r => r && r.id != null && !excludeIds.includes(r.id));
@@ -2534,7 +2546,12 @@ const DB = {
       //  - products：销售在新建订单里临时新增的商品也是"本地刚建、异步上推未落地"的行，若云端此刻还没它，
       //    会被误判为"他人已删除"而整条抹掉，导致"商品管理档案里没有该商品"。商品以本地新建为准、云端只做补充。
       // 两表的"他人删除"仍由云端物理删除 + 上方 excludeIds 过滤（1511 行）正确传播，不受此处跳过影响。
-      if(['orders','aftersales','payments','commissions'].includes(key)){
+      // v2026110501：库存表建好（_invTablesReady）后一并纳入删除传播——云端已被删的采购单/供应商
+      // 本端也要移除，否则另一台设备删掉的单会永远留在本机列表里。建表前不加（那时本地行根本没上云，
+      // 加进去会把整表当成「云端已删」清空）。
+      const _delPropKeys = ['orders','aftersales','payments','commissions'];
+      if(window._invTablesReady === true){ _delPropKeys.push('purchases','suppliers'); }
+      if(_delPropKeys.includes(key)){
         // 宽限期保护（v2026081607 关键修复，v2026081609 扩展到售后表，v2026081610 扩展到收款/提成）：
         // 刚创建的本地行（30秒内）可能还没推上云，不应被删除传播误删。DB.set → 350ms afterWriteRefresh
         // → pullTableAuthoritative 拉云端时，若 syncTable 推送还没落地，云端没有这行 → 旧逻辑直接删除传播移除 →
@@ -3586,7 +3603,7 @@ const DB = {
       if(table === 'suppliers' || table === 'purchases' || table === 'stock_logs'){
         const _invColDefaults = {
           suppliers:   { id:'', name:'', contact:'', phone:'', address:'', remark:'', created_at:null, updated_at:null, _deleted:false },
-          purchases:   { id:'', supplier_id:'', supplier_name:'', items:'[]', total_amount:0, status:'ordered', order_date:'', expect_date:'', inbound_at:null, remark:'', created_at:null, updated_at:null, _deleted:false },
+          purchases:   { id:'', order_no:'', supplier_id:'', supplier_name:'', items:'[]', total_amount:0, status:'ordered', order_date:'', expect_date:'', inbound_at:null, target_warehouse:'', remark:'', created_at:null, updated_at:null, _deleted:false },
           'stock_logs':{ id:'', product_id:'', product_name:'', type:'adjust', delta:0, before_qty:0, after_qty:0, warehouse:'', rel_id:'', operator:'', remark:'', created_at:null, _deleted:false }
         }[table];
         snakeData = snakeData.map(function(o){
@@ -3614,7 +3631,10 @@ const DB = {
                 orders: new Set([]),
                 aftersales: new Set(['remark','tracking_no','updated_at']),
                 suppliers: new Set(['contact','phone','address','remark','created_at']),
-                purchases: new Set(['supplier_id','supplier_name','total_amount','expect_date','remark','created_at']),
+                // v2026110501：order_no 是可选列——云端还没跑 ADD COLUMN 时自动剔除该列重试，
+                // 保证「先部署、后迁移」也不会同步报红（此时单号只在本地显示，跑完 SQL 后自动补上云）。
+                // v2026110502：target_warehouse 同机制（入库目标仓，先部署后跑 SQL 也不报红）。
+                purchases: new Set(['order_no','target_warehouse','supplier_id','supplier_name','total_amount','expect_date','remark','created_at']),
                 stock_logs: new Set(['product_name','warehouse','rel_id','operator','remark','created_at'])
               };
               const optSet = optionalColsByTable[table] || null;
@@ -3831,7 +3851,7 @@ const DB = {
     if(key === 'suppliers' || key === 'purchases' || key === 'stock_logs'){
       const _invColDefaults = {
         suppliers:   { id:'', name:'', contact:'', phone:'', address:'', remark:'', created_at:null, updated_at:null, _deleted:false },
-        purchases:   { id:'', supplier_id:'', supplier_name:'', items:'[]', total_amount:0, status:'ordered', order_date:'', expect_date:'', inbound_at:null, remark:'', created_at:null, updated_at:null, _deleted:false },
+        purchases:   { id:'', order_no:'', supplier_id:'', supplier_name:'', items:'[]', total_amount:0, status:'ordered', order_date:'', expect_date:'', inbound_at:null, target_warehouse:'', remark:'', created_at:null, updated_at:null, _deleted:false },
         'stock_logs':{ id:'', product_id:'', product_name:'', type:'adjust', delta:0, before_qty:0, after_qty:0, warehouse:'', rel_id:'', operator:'', remark:'', created_at:null, _deleted:false }
       }[key];
       snakeData = snakeData.map(function(o){
@@ -7403,7 +7423,7 @@ async function renderOrders(){
           const itemCols = isAdmin ? 7 : 6;
           html += `<tr>`;
           html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span>${o.salesName?`<br><span style="font-size:11px;color:var(--text-muted)">销售 ${escapeHtml(o.salesName)}</span>`:''}</td>`;
-          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/><col/>':''}${canStock?'<col class="wh-col"/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}${canStock?'<th>发货仓</th>':''}</tr></thead><tbody>`;
+          html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/><col/>':''}${canStock?'<col class="wh-col"/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?(listType==='normal'?'<th>成本</th><th>利润</th><th title="本行发货仓当前库存：系统默认仓=系统库存；选供应商则显示该他仓（缺货直发不扣）。订单变为已下单时扣减">库存</th>':'<th>成本</th><th>损耗</th><th>利润</th>'):''}${canStock?'<th>发货仓</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const cost = effectiveItemCost(o, it, _productMap);
             const waste = it.waste || 0;
@@ -7411,8 +7431,15 @@ async function renderOrders(){
             html += `<tr><td>${escapeHtml(it.name)}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
             if(isAdmin){
               html += `<td>${money(cost)}</td>`;
-              html += `<td style="font-weight:600;color:var(--danger)">${money(waste)}</td>`;
-              html += `<td style="color:${profit>=0?'var(--success)':'var(--danger)'};font-weight:600">${money(profit)}</td>`;
+              if(listType === 'normal'){
+                // v2026110502 普通订单待下单：隐藏损耗列，改为显示当前库存（下单时才扣减）
+                // v2026110503：口径跟随本行发货仓（默认仓=系统库存；选供应商则显示该他仓，缺货标「直发」）
+                html += `<td style="color:${profit>=0?'var(--success)':'var(--danger)'};font-weight:600">${money(profit)}</td>`;
+                html += `<td style="font-weight:600;white-space:nowrap">${_stockCellHtml(o, it, productList)}</td>`;
+              } else {
+                html += `<td style="font-weight:600;color:var(--danger)">${money(waste)}</td>`;
+                html += `<td style="color:${profit>=0?'var(--success)':'var(--danger)'};font-weight:600">${money(profit)}</td>`;
+              }
             }
             if(canStock){
               // v2026102302 发货仓填写入口移至订单详情页；待下单列表仅只读展示（点「查看」进详情修改）
@@ -8725,6 +8752,7 @@ async function detectProductCalibColumn(){
 const PRODUCT_CALIB_SQL = 'ALTER TABLE products ADD COLUMN IF NOT EXISTS need_calibration boolean DEFAULT false;';
 // v2026102102 库存系统：products 库存列探测（与 need_calibration 同机制的"列存在才推送"保护）
 window._prodHasStockCol = null; // null=未探测 / true=有列 / false=无列
+window._prodHasWhStockCol = null; // v2026110502：他仓库存列 warehouse_stock 探测标志
 async function detectProductStockColumn(){
   try{
     if(window._prodHasStockCol !== null) return window._prodHasStockCol;
@@ -8740,6 +8768,14 @@ async function detectProductStockColumn(){
       window._stockProbeStarted = false;
       return null;
     }
+    // v2026110502：探测 warehouse_stock（他仓库存）列是否也已加好（与 stock_qty 同一次迁移，但独立探测更稳）。
+    // 探测到才把该列并入白名单 + 允许推送，避免「只加了 stock_qty 没加 warehouse_stock」时 PGRST204 整条商品推送失败。
+    if(window._prodHasWhStockCol === null){
+      try{
+        const _r = await window._sbpbClient.from('products').select('warehouse_stock').limit(1);
+        window._prodHasWhStockCol = (!_r.error) ? true : false;
+      }catch(_e){ window._prodHasWhStockCol = false; }
+    }
     // v2026102902 修复「采购已入库、商品管理库存却恒为 0」根因：
     //   商品拉取用的是显式白名单 DB._PRODUCTS_COLS，其中并不含 stock_qty / warn_qty。
     //   于是每次拉回的商品行都没有库存字段 → 本机 stockQty 恒为默认 0（云端其实已入库），
@@ -8750,6 +8786,8 @@ async function detectProductStockColumn(){
       if(DB._PRODUCTS_COLS){
         if(DB._PRODUCTS_COLS.indexOf('stock_qty') < 0) DB._PRODUCTS_COLS = DB._PRODUCTS_COLS + ',stock_qty';
         if(DB._PRODUCTS_COLS.indexOf('warn_qty') < 0) DB._PRODUCTS_COLS = DB._PRODUCTS_COLS + ',warn_qty';
+        // v2026110502：他仓库存列（与 stock_qty 同一次迁移）
+        if(window._prodHasWhStockCol === true && DB._PRODUCTS_COLS.indexOf('warehouse_stock') < 0) DB._PRODUCTS_COLS = DB._PRODUCTS_COLS + ',warehouse_stock';
       }
       if(typeof DB.loadProductsFromCloud === 'function' && !window._stockFullRefetchDone){
         window._stockFullRefetchDone = true;
@@ -9815,6 +9853,7 @@ function renderOrderDetail(){
   // 商品明细实际列数（销售仅 名称/数量/售价 3 列；管理员加 成本/损耗/利润）
   const _orderCols = isAdminDoorDetail ? 7
     : 3 + (isAdmin ? 3 : 0) + (isDoor ? 1 : 0) + (editMode ? 1 : 0) + ((isAdmin && order.type==='warehouse') ? 2 : 0)
+      + ((isAdmin && order.type==='warehouse' && order.status==='pending') ? 1 : 0) // v2026110502 留仓待下单：库存列
       + ((isOperator && (order.status === 'pending' || order.items && order.items.some(it => it.ordered === true))) ? 1 : 0)
       + ((isAdmin || isOperator) ? 1 : 0); // v2026102102 发货仓列（管理员/操作员可见，与下方商品行 td 对齐）
   const totalColspan = _orderCols - 1;
@@ -9975,6 +10014,7 @@ function renderOrderDetail(){
               <th>数量</th>
               <th>售价</th>
               ${isAdmin ? '<th>成本</th><th>损耗</th><th>利润</th>' : ''}
+              ${(isAdmin && order.type==='warehouse' && order.status==='pending') ? '<th title="本行发货仓当前库存：系统默认仓=系统库存；选供应商则显示该他仓（缺货直发不扣）。本行下单转已下单时扣减">库存</th>' : ''}
               ${(isAdmin || isOperator) ? '<th>发货仓</th>' : ''}
               ${isDoor ? '<th>货到店</th><th>货到客户</th>' : ''}
               ${(isAdmin || isOperator) && (order.status==='pending' || order.items && order.items.some(it=>it.ordered)) ? '<th>下单</th>' : ''}
@@ -10006,6 +10046,7 @@ function renderOrderDetail(){
                   ${isAdmin ? `<td>${money(cost)}</td>` : ''}
                   ${isAdmin ? `<td><input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:70px;color:var(--danger);font-weight:600" id="wasteItem_${i}" oninput="saveItemWaste('${order.id}',${i},this.value)" onchange="saveItemWaste('${order.id}',${i},this.value)"></td>` : ''}
                   ${isAdmin ? `<td style="font-weight:600;color:${itemProfit>=0?'var(--success)':'var(--danger)'}">${money(itemProfit)}</td>` : ''}
+                  ${(isAdmin && order.type==='warehouse' && order.status==='pending') ? `<td style="font-size:13px;white-space:nowrap">${_stockCellHtml(order, it, products)}</td>` : ''}
                   ${(isAdmin || isOperator) ? `<td style="font-size:12px">${(()=>{ const _w=String(it.shipWarehouse || order.shipWarehouse || '本仓').trim(); 
                     // v2026103010：发货仓可否变更按「是否已真正扣库存 + 本行当前发货方式」判定——
                     //   ① 未出库（待下单）→ 系统默认仓 ⇄ 供应商 自由切换
@@ -10050,6 +10091,8 @@ function renderOrderDetail(){
           const cost = effectiveItemCost(order, it);
           const waste = it.waste || 0;
           const itemProfit = (it.price||0)*(it.qty||0) - cost*(it.qty||0) - waste;
+          // v2026110503：待下单时显示该行发货仓的当前库存（_stockCellHtml 统一口径：
+          // 默认仓=stockQty，不足标红；供应商他仓=该仓数量，不足标「直发」不扣）。
           const isArrived = doorItemIsGreen(it);
           const rowBg = isArrived ? '#e8f5e9' : '#fff1f2';
           const nameHtml = escapeHtml(it.name)
@@ -10094,6 +10137,7 @@ function renderOrderDetail(){
                 <span>成本 <b style="color:#222">${money(cost)}</b></span>
                 <span>损耗 <input type="number" value="${it.waste||''}" min="0" placeholder="0" style="width:64px;color:var(--danger);font-weight:600" id="wasteItem_${i}" oninput="saveItemWaste('${order.id}',${i},this.value)" onchange="saveItemWaste('${order.id}',${i},this.value)"></span>
                 <span>利润 <b style="color:${itemProfit>=0?'var(--success)':'var(--danger)'}">${money(itemProfit)}</b></span>
+                ${order.status==='pending' ? `<span title="本行发货仓当前库存：系统默认仓=系统库存；选供应商则显示该他仓（缺货直发不扣）">库存 ${_stockCellHtml(order, it, products)}</span>` : ''}
               </div>` : (editMode ? `<div style="margin-top:8px;font-size:13px;color:#555">售价 <b style="color:#222">${priceCell}</b></div>` : '')}
               <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px 22px;margin-top:12px">
                 <div style="display:flex;align-items:center;gap:8px">${govCell}</div>
@@ -10123,7 +10167,7 @@ function renderOrderDetail(){
         <div style="margin-top:12px">
           <label class="form-label">出库 / 转仓备注 <span style="font-weight:400;color:var(--text-muted)">（独立于订单备注，记录如「原定A供应商直发，X日改由B仓发」）</span></label>
           <textarea class="form-control" id="outboundRemark" style="min-height:46px" placeholder="记录发货仓变更原因，仅留痕、不影响库存逻辑" onchange="saveOrderOutboundRemark('${order.id}', this.value)">${escapeHtml(order.outboundRemark||'')}</textarea>
-          <div style="font-size:12px;color:var(--text-muted);margin-top:6px">💡 出库 / 完成前可随时修改每行「发货仓」：系统默认仓 = 扣减系统库存，手动填写 = 仅留痕、不扣库存。</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:6px">💡 出库 / 完成前可随时修改每行「发货仓」：系统默认仓 = 扣减系统库存；选择供应商（他仓）= 有货则扣他仓的货、没货则直发不扣任何库存；手动填写 = 仅留痕、不扣库存。</div>
         </div>
       ` : ''}
       ${(editMode && !isPending) ? `
@@ -11573,6 +11617,7 @@ async function saveEditOrder(orderId){
   }
   orders[idx] = order;
   DB.set('orders', orders);
+  recomputeOrderSettled(orderId); // v2026110503：编辑改了建单基数后重算结清标记（旁路修复）。⚠️ 必须在 DB.set 之后（DB.get 返回副本，先算会被覆盖）
   _pinWriteLock(orderId); // 写入窗口锁：保存编辑（客户信息等）后 3 秒内拉回的云端旧副本不覆盖本地，根治「保存后回退 + 管理员收不到更新」
   logAudit({action:'edit_amount', targetType:'order', targetId: orderId, targetLabel: order.customerName||order.contact||'-', before: auditBeforeTotal, after: order.total, detail: '修改订单金额/损耗'});
 
@@ -11792,6 +11837,7 @@ function getNewOrderOwnerId(){
 }
 // 某账号的微信收款总额 = 初始值 + 订单微信收款(collectedAmount) + 收款记录中微信支付的金额
 // （统一口径：任何通过「记录收款」录入的微信支付，都累计进微信总收款）
+// v2026110503：只统计「已到账」，待到账不计入（与待收尾款口径一致）；弹窗另加「含待到账」参考行
 function getWechatCollectedSum(salesId){
   const orders = DB.get('orders') || [];
   const orderSum = orders
@@ -11799,9 +11845,15 @@ function getWechatCollectedSum(salesId){
     .reduce((s, o) => s + getOrderPaidBase(o), 0); // 与待收尾款同一口径：定金未登记时按定金计入
   const pays = DB.get('payments') || [];
   const paySum = pays
-    .filter(p => p.method === '微信支付' && p.salesId === salesId)
+    .filter(p => p.method === '微信支付' && p.salesId === salesId && p.status === 'paid')
     .reduce((s, p) => s + (parseInt(p.amount) || 0), 0);
   return orderSum + paySum;
+}
+// 某账号「待到账」的微信收款合计（仅作弹窗参考行展示，不进微信总额）
+function getWechatPendingSum(salesId){
+  return (DB.get('payments') || [])
+    .filter(p => p.method === '微信支付' && p.salesId === salesId && p.status !== 'paid')
+    .reduce((s, p) => s + (parseInt(p.amount) || 0), 0);
 }
 // 某账号微信收款总额（含初始值）：初始值 + 订单微信收款 + 收款记录微信支付
 // 作为微信总收款的唯一口径，弹窗提示与订单页显示保持一致
@@ -11811,13 +11863,14 @@ function getWechatTotal(salesId){
 }
 // 某个订单已经产生的微信支付总额：订单本身的微信收款 + 该订单 payments 记录里的微信支付
 // 编辑订单时用于从微信总额中扣除本单旧收款，避免重复计算
+// v2026110503：与计入侧同口径——只算「已到账」（getWechatTotal 已改为只算已到账，扣除侧不过滤会扣多）
 function getOrderWechatTotal(order){
   if(!order) return 0;
   let sum = 0;
   if(order.paymentMethod === 'wechat'){
     sum += getOrderPaidBase(order); // 与计入侧同口径，编辑时扣减才不会错位
   }
-  const payments = (DB.get('payments') || []).filter(p => p.orderId === order.id && p.method === '微信支付');
+  const payments = (DB.get('payments') || []).filter(p => p.orderId === order.id && p.method === '微信支付' && p.status === 'paid');
   sum += payments.reduce((s, p) => s + (parseInt(p.amount) || 0), 0);
   return sum;
 }
@@ -11940,6 +11993,7 @@ function saveDoorPayments(orderId){
     // 同上：定金单未填收款金额时，自动把定金记为已收，避免尾款余额被算成订单全额
     orders[idx].collectedAmount = (!collected && deposit > 0) ? deposit : collected;
     DB.set('orders', orders);
+    recomputeOrderSettled(orderId); // v2026110503：改建单基数后重算结清标记（旁路修复：管理员把已收改成全额时，✅已结清此前不会出现）。⚠️ 必须在 DB.set 之后——DB.get 返回副本，先算会被这里的旧副本覆盖
     showToast('收款信息已保存','success');
   }
 }
@@ -13203,6 +13257,7 @@ function saveDoorDetail(orderId){
   });
   const flowed = autoDoorConfirmIfAllStocked(o);
   DB.set('orders', orders);
+  recomputeOrderSettled(orderId); // v2026110503：保存修改改了建单基数后重算结清标记（旁路修复）。⚠️ 必须在 DB.set 之后（DB.get 返回副本）
   // 立即同步订单表到云端（关键状态变更），避免防抖/切页期间改动丢失
   syncOrdersNow().catch(function(){});
   let msg;
@@ -15963,6 +16018,11 @@ function _productRowToSnake(p){
     row.stock_qty = Number(p.stockQty) || 0;
     row.warn_qty = Number(p.warnQty) || 0;
   }
+  // v2026110502：他仓库存（warehouse_stock JSONB）。仅当云端已加该列才推送；
+  // 本地无该字段时不传（保留云端原值）；有则原样上传对象（Supabase jsonb 接收对象）。
+  if(window._prodHasWhStockCol === true && p.warehouseStock !== undefined && p.warehouseStock !== null){
+    row.warehouse_stock = (typeof p.warehouseStock === 'object') ? p.warehouseStock : {};
+  }
   // v20261029：利润成本独立字段——仅当云端已加该列才推送，否则 PGRST204 导致整条商品推送失败。
   // 留空（undefined/null/''）时不传该列，避免把云端已算好的利润成本覆盖成 0。
   // v2026103001 修复（严重）：原判定 `p.profitCost !== undefined/null/''` 挡不住 **0** ——
@@ -16001,24 +16061,75 @@ async function pushSingleProductToCloud(product){
 }
 
 // ============ v2026102102 库存系统：核心出入库辅助 ============
-// 统一的库存变动入口：改 products.stockQty、写 stock_logs 流水、推云端。
+// 统一的库存变动入口：改 products.stockQty（本仓）或 products.warehouseStock[仓名]（他仓）、写 stock_logs 流水、推云端。
 // type 取值：'purchase'(采购入库) / 'outbound'(订单出库) / 'adjust'(手动调整) / 'correction'(纠错回滚)
-// delta 可为负（出库/扣减）。返回 {ok, before, after}。本地 localStorage 永远更新，云端列存在才上推。
+// delta 可为负（出库/扣减）。返回 {ok, before, after, warehouse}。本地 localStorage 永远更新，云端列存在才上推。
+// v2026110502：仓库分两类——'本仓'(系统默认仓，对应 stockQty) 与 他仓(各供应商一份，对应 warehouseStock[供应商名])。
+
+// 读取某商品在某仓库的库存量（本仓走 stockQty；他仓走 warehouseStock[wh]，缺省 0）
+function getWhStock(product, wh){
+  if(!product) return 0;
+  const _w = (wh && String(wh).trim()) || '本仓';
+  if(_w === '本仓' || _w === 'default' || _w === '系统默认仓' || _w === '默认仓') return Number(product.stockQty) || 0;
+  const ws = (typeof product.warehouseStock === 'object' && product.warehouseStock) ? product.warehouseStock : {};
+  return Number(ws[_w] || 0) || 0;
+}
+
+// v2026110503：「库存」列内容（列表页 + 留仓/普通详情 + 上门详情共用）。
+// 口径跟随本行发货仓：默认仓 → stockQty（不足标红「不足」）；供应商他仓 → warehouseStock[供应商]
+// （不足标琥珀色「直发」，因为按用户规则缺的部分直发不扣库存，不阻单）。
+// 本行无发货仓记录时按默认仓处理，故绝大多数行显示与「系统默认库存」一致。
+function _stockCellHtml(order, it, products){
+  const list = products || (DB.get('products') || []);
+  const pr = list.find(function(p){ return p.id === (it && it.productId); });
+  const wh = String((it && it.shipWarehouse) || (order && order.shipWarehouse) || '本仓').trim() || '本仓';
+  const isDefault = (wh === '本仓' || wh === 'default' || wh === '系统默认仓' || wh === '默认仓');
+  if(!pr) return '<span style="color:#999">-</span>';
+  const qty = getWhStock(pr, wh);
+  const need = Number(it && it.qty) || 0;
+  const short = qty < need;
+  if(isDefault){
+    return '<b style="color:' + (short ? 'var(--danger)' : '#222') + '">' + qty + '</b>'
+      + (short ? '<span style="color:var(--danger);font-size:11px;margin-left:3px">不足</span>' : '');
+  }
+  return '<b style="color:' + (short ? '#b45309' : '#222') + '">' + qty + '</b>'
+    + (short ? '<span style="color:#b45309;font-size:11px;margin-left:3px">直发</span>' : '');
+}
+// 设置某商品在某仓库的库存量（就地修改 warehouseStock，保持为对象）
+function setWhStock(product, wh, qty){
+  const _w = (wh && String(wh).trim()) || '本仓';
+  if(_w === '本仓' || _w === 'default' || _w === '系统默认仓' || _w === '默认仓'){ product.stockQty = qty; return; }
+  // v2026110502：云端尚未创建 warehouse_stock 列时，他仓库存推不上去（_productRowToSnake 会跳过该字段），
+  // 换设备/清缓存即丢。这里提示一次，避免用户误以为已同步到云端。
+  if(window._prodHasWhStockCol !== true){
+    if(!window._whStockWarned){
+      window._whStockWarned = true;
+      try{ showToast('⚠️ 他仓库存目前只保存在本机：云端还没有 warehouse_stock 列，请在 Supabase 执行 sql/warehouse_stock.sql','warning',7000); }catch(e){}
+    }
+  }
+  const ws = (typeof product.warehouseStock === 'object' && product.warehouseStock) ? product.warehouseStock : {};
+  ws[_w] = qty;
+  product.warehouseStock = ws;
+}
+
 async function applyStockChange(opts){
   const { productId, delta, type, warehouse, relId, remark } = opts;
   const products = DB.get('products') || [];
   const idx = products.findIndex(p => p.id === productId);
   if(idx < 0) return { ok:false, err:'商品不存在' };
-  const before = Number(products[idx].stockQty) || 0;
-  const after = before + Number(delta) || 0;
+  const wh = (warehouse && String(warehouse).trim()) || '本仓';
+  const isDefault = (wh === '本仓' || wh === 'default' || wh === '系统默认仓' || wh === '默认仓');
+  const before = getWhStock(products[idx], wh);
+  const after = before + (Number(delta) || 0);
   // v2026102102：库存模式（宽松 loose / 严格 strict），存于本地设置 DB('stockMode')，默认宽松。
   // 仅「本仓出库(outbound)」受负库存限制：严格模式下库存不足则拒绝；宽松模式允许扣成负库存（先出货后盘点）。
+  // 他仓出库不受严格模式阻拦——缺的按用户规则直发不扣（见 deductStockForOrder），无需拦截。
   // 入库(purchase)/调整(adjust)/盘点(count) 均不受负库存限制。
   const _stockMode = (DB.get('stockMode') === 'strict' ? 'strict' : 'loose');
-  if(after < 0 && type === 'outbound' && _stockMode !== 'loose'){
+  if(after < 0 && type === 'outbound' && _stockMode !== 'loose' && isDefault){
     return { ok:false, err:'库存不足，无法出库（当前 '+before+'）' };
   }
-  products[idx].stockQty = after;
+  setWhStock(products[idx], wh, after);
   products[idx].updatedAt = window.nowStr();
   DB.set('products', products);
   // 写流水
@@ -16026,7 +16137,7 @@ async function applyStockChange(opts){
     writeStockLog({
       productId: productId, productName: products[idx].name || '',
       type: type, delta: delta, beforeQty: before, afterQty: after,
-      warehouse: warehouse || '本仓', relId: relId || '', operator: (currentUser && currentUser.name) || '',
+      warehouse: wh, relId: relId || '', operator: (currentUser && currentUser.name) || '',
       remark: remark || ''
     });
   }catch(e){ console.warn('写库存流水失败', e); }
@@ -16241,13 +16352,29 @@ async function deductStockForOrder(order){
       if(!r.ok){ anyFail = true; failMsg = r.err; }
       else if(r.after < 0){ negStock = true; }
     } else {
-      // 其他仓发货：不扣减默认仓系统库存，仅写一笔留痕（便于追溯从哪个仓出、出了多少）
+      // v2026110502：他仓发货（wh = 供应商名，即「他仓」）。规则（已与用户确认）：
+      //   ① 他仓有货 → 扣他仓的货（够扣多少扣多少）；
+      //   ② 他仓不足/无货 → 缺的部分直接直发、不扣减任何库存（仅写一笔「他仓出库」留痕）。
       try{
         const products = DB.get('products')||[];
         const p = products.find(x => x.id === it.productId);
-        const cur = p ? (Number(p.stockQty)||0) : 0;
-        writeStockLog({ productId: it.productId, productName: p ? p.name : '', type:'outbound_other', delta: -remain, beforeQty: cur, afterQty: cur, warehouse: wh, relId: order.id, operator:(currentUser&&currentUser.name)||'', remark: '从「'+wh+'」发出（非系统仓，未扣减默认仓库存）· '+(order.customerName||order.id) + _obRmk });
-      }catch(e){}
+        const hisQty = p ? getWhStock(p, wh) : 0;
+        const _pName = p ? (p.name || '') : '';
+        if(hisQty > 0){
+          const deduct = Math.min(remain, hisQty);
+          const r = await applyStockChange({ productId: it.productId, delta: -deduct, type:'outbound', warehouse: wh, relId: order.id, remark: '他仓出库 · '+(order.customerName||order.id) + _obRmk });
+          if(!r.ok){ anyFail = true; failMsg = r.err; }
+          else if(r.after < 0){ negStock = true; }
+          const left = remain - deduct;
+          if(left > 0){
+            // 他仓不足的部分：直发不扣任何库存（仅留痕，便于追溯）
+            writeStockLog({ productId: it.productId, productName: _pName, type:'outbound_other', delta:-left, beforeQty:hisQty, afterQty:hisQty, warehouse: wh, relId: order.id, operator:(currentUser&&currentUser.name)||'', remark:'他仓不足('+hisQty+')，余 '+left+' 件直发不扣库存 · '+(order.customerName||order.id)+_obRmk });
+          }
+        } else {
+          // 他仓无此货 → 整行直发不扣任何库存（仅留痕）
+          writeStockLog({ productId: it.productId, productName: _pName, type:'outbound_other', delta:-remain, beforeQty:0, afterQty:0, warehouse: wh, relId: order.id, operator:(currentUser&&currentUser.name)||'', remark:'他仓无此货('+wh+')，直发不扣库存 · '+(order.customerName||order.id)+_obRmk });
+        }
+      }catch(e){ console.warn('他仓出库异常', e); }
     }
   }
   if(anyFail) showToast('部分商品出库失败（默认仓库存不足）：'+failMsg, 'error', 4500);
@@ -16300,6 +16427,10 @@ function _strictOutboundAllowed(order){
       const pr = products.find(p => p.id === it.productId);
       const have = pr ? (Number(pr.stockQty)||0) : 0;
       if(have < qty) return { ok:false, name: pr ? pr.name : it.productId, have: have, need: qty };
+    } else {
+      // v2026110502 修正：他仓「不参与」严格预检——严格模式只约束「默认仓库存不足能否出库」（系统设置文案口径），
+      // 他仓按用户规则「有就扣他仓、缺的直发不扣」，永不阻单。
+      // 若在此拦截，供应商仓没货的订单将永远推不到「已下单」，直接违背需求（与 applyStockChange 注释一致）。
     }
   }
   return { ok:true };
@@ -16309,6 +16440,8 @@ function _strictOutboundAllowed(order){
 
 // ---------- 供应商管理（仅管理员可增删改）----------
 function renderSuppliers(){
+  // v2026110501：同上，重试未完成的云端删除
+  try{ _flushInvDeletes('suppliers', '_deletedSupplierIds'); }catch(e){}
   const isAdmin = !!(currentUser && currentUser.role === 'admin');
   const html = `
     <div class="page-actions">
@@ -16420,8 +16553,8 @@ function saveSupplier(){
 }
 function deleteSupplier(id){
   if(!confirm('确定删除该供应商？该操作不可撤销。')) return;
-  const suppliers = (DB.get('suppliers') || []).filter(function(x){ return x.id !== id; });
-  DB.set('suppliers', suppliers);
+  // v2026110501：同采购单——本地删 + tombstone + 云端 DELETE，否则下次拉取会复活
+  _invDeleteSync('suppliers', '_deletedSupplierIds', id);
   showToast('已删除', 'success');
   renderSuppliers();
 }
@@ -16429,6 +16562,10 @@ function deleteSupplier(id){
 // ---------- 采购管理（仅管理员）----------
 function renderPurchases(){
   const isAdmin = !!(currentUser && currentUser.role === 'admin');
+  // v2026110501：进页面顺手重试上次没删成功的云端删除（离线/网络抖动时 tombstone 里会留 id）
+  try{ _flushInvDeletes('purchases', '_deletedPurchaseIds'); }catch(e){}
+  // v2026110501：给 order_no 列上线前的历史单补号（否则同一天的老单会全显示 CG+日期+01）
+  try{ _backfillPurchaseOrderNos(); }catch(e){}
   // v2026110401：保留操作前的筛选条件——入库/删除/保存采购单/同步等动作会整页重渲染，
   // 若不还原，状态下拉会被重置回「全部状态」，用户筛选「已下单」后操作就跳回全部列表。
   const _prevFilterEl = document.getElementById('purchaseFilter');
@@ -16458,7 +16595,15 @@ function renderPurchases(){
 }
 function filterPurchases(){
   const isAdmin = !!(currentUser && currentUser.role === 'admin');
-  const purchases = DB.get('purchases') || [];
+  // v2026110501 对抗修复：列表主路径此前是裸读——null 脏行在排序比较器里读 .createdAt 直接抛
+  // 「Cannot read properties of null」→ 整页白屏（v2026110302 只修了弹窗，漏了这里）。
+  // 且回填只在「存在无号行」时才写库，全部有号 + 1 个 null 行的场景回填不会顺手清掉 null，
+  // 所以这里必须自己做两层防御：剔 null + items 字符串归一化（同步异常会把 items 写成 JSON 串）。
+  const purchases = (DB.get('purchases') || []).filter(Boolean);
+  purchases.forEach(function(p){
+    if(typeof p.items === 'string'){ try{ p.items = JSON.parse(p.items); }catch(e){ p.items = []; } }
+    if(!Array.isArray(p.items)) p.items = [];
+  });
   const f = document.getElementById('purchaseFilter') ? document.getElementById('purchaseFilter').value : '';
   // v2026102303：关键字检索（单号/供应商/商品名/备注），支持空格分隔多关键字（需全部命中）
   const searchEl = document.getElementById('purchaseSearch');
@@ -16471,7 +16616,8 @@ function filterPurchases(){
     const pnameMap = {};
     products.forEach(function(pr){ pnameMap[pr.id] = (pr.name || '').toLowerCase(); });
     list = list.filter(function(p){
-      const hay = [p.id || '', p.supplierName || '', p.remark || '']
+      // v2026110501：单号也要能搜（旧实现只放内部 id，输入 CG2026110201 搜不到任何结果）
+      const hay = [p.id || '', resolvePurchaseOrderNo(p), p.supplierName || '', p.remark || '']
         .concat((p.items || []).map(function(it){ return pnameMap[it.productId] || ''; }))
         .join(' ').toLowerCase();
       return tokens.every(function(t){ return hay.indexOf(t) !== -1; });
@@ -16671,6 +16817,15 @@ function _openPurchaseModalInner(id){
             </div>
             <div class="form-group"><label class="form-label">预计到货</label><input type="date" class="form-control" id="poExpect" value="${p && p.expectDate ? p.expectDate : ''}"></div>
           </div>
+          <div class="form-row">
+            <div class="form-group"><label class="form-label">入库目标仓</label>
+              <select class="form-control" id="poTargetWh">
+                <option value="本仓">系统默认仓（本仓）</option>
+                ${(suppliers||[]).filter(Boolean).map(function(s){ return '<option value="'+escAttr(s.name||'')+'">他仓 · '+(escAttr(s.name||''))+'</option>'; }).join('')}
+              </select>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:4px">采购入库时货入到哪个仓库：选「他仓·供应商名」即入到该供应商的仓库（如 范岳仓），不计入系统默认仓。</div>
+            </div>
+          </div>
           <label class="form-label">采购商品</label>
           <div id="purchaseItems"></div>
           <button class="btn btn-secondary" style="margin:6px 0" onclick="addPurchaseItemRow()">+ 添加商品</button>
@@ -16684,6 +16839,11 @@ function _openPurchaseModalInner(id){
       </div>
     </div>`;
   document.getElementById('modalContainer').innerHTML = modalHtml;
+  // v2026110502：默认目标仓——新建单默认入「供应商自身他仓」（买范岳的货默认入范岳仓）；编辑单用已存值。
+  try{
+    const _whSel = document.getElementById('poTargetWh');
+    if(_whSel){ _whSel.value = (p && p.targetWarehouse && p.targetWarehouse.trim()) ? p.targetWarehouse : ((_presetSup && _presetSup.name) || '本仓'); }
+  }catch(e){}
   const _preset = (arguments.length > 1) ? arguments[1] : null;
   // v2026110302：items 归一化——同步异常可能把 items 弄成 JSON 字符串（forEach 崩）或混入 null 元素
   let _items = p ? p.items : null;
@@ -16732,22 +16892,82 @@ function recalcPurchaseTotal(){
   const el = document.getElementById('purchaseTotal');
   if(el) el.textContent = '¥' + total.toFixed(2);
 }
-// v2026110102：采购单号按创建时间生成，格式 CG + YYYYMMDD + 当日两位序号（如 CG2026110101）
-function genPurchaseOrderNo(createdAt){
-  var d = new Date(('' + (createdAt || '')).replace(/-/g, '/').replace('T', ' '));
-  if(isNaN(d.getTime())) d = new Date();
-  var y = d.getFullYear();
-  var m = ('0' + (d.getMonth() + 1)).slice(-2);
-  var day = ('0' + d.getDate()).slice(-2);
-  var prefix = 'CG' + y + m + day;
-  var n = 0;
-  (DB.get('purchases') || []).filter(Boolean).forEach(function(x){ if((x.orderNo || '').indexOf(prefix) === 0) n++; });
-  return prefix + ('0' + (n + 1)).slice(-2);
+// v2026110102：采购单号按创建时间生成，格式 CG + YYYYMMDD + 当日序号（如 CG2026110101）
+// v2026110501 修复两处：
+//   ① 序号改「当日已用最大号 +1」，旧实现按「当日行数 +1」——当天有 01、02 时删掉 01，行数只剩 1，
+//      再新建就生成 02，和已有的 02 撞号（两张单同号，删除/入库时极易看错、删错）。
+//   ② 序号不再用 slice(-2) 截断——旧实现到 100 会输出 CG…00。
+function _poDayPrefix(d){
+  return 'CG' + d.getFullYear() + ('0' + (d.getMonth() + 1)).slice(-2) + ('0' + d.getDate()).slice(-2);
 }
-// 解析采购单展示/复制用的单号：新单已有 orderNo 直接用；老单（无 orderNo）按 createdAt 回退生成稳定的 CG 单号
+function _poDateOf(v){
+  var d = new Date(('' + (v || '')).replace(/-/g, '/').replace('T', ' '));
+  return isNaN(d.getTime()) ? null : d;
+}
+function _poSeqOf(no, prefix){
+  if(!no || String(no).indexOf(prefix) !== 0) return 0;
+  var n = parseInt(String(no).slice(prefix.length), 10);
+  return isNaN(n) ? 0 : n;
+}
+function genPurchaseOrderNo(createdAt, excludeId){
+  var d = _poDateOf(createdAt) || new Date();
+  var prefix = _poDayPrefix(d);
+  var mx = 0;
+  (DB.get('purchases') || []).filter(Boolean).forEach(function(x){
+    if(!x || (excludeId && x.id === excludeId)) return;
+    var n = _poSeqOf(x.orderNo, prefix);
+    if(n > mx) mx = n;
+  });
+  var next = mx + 1;
+  return prefix + (next < 10 ? '0' + next : '' + next);
+}
+// 解析采购单展示/复制用的单号：有 orderNo 直接用；老单（云端 order_no 列上线前的历史行）按
+// 「创建时间 + id」在同日单里的稳定次序生成，并跳过当日已被占用的序号——
+// 否则同一天的多张老单会全显示同一个 01（正是用户「删了 CG2026110201 还在」的迷惑来源）。
 function resolvePurchaseOrderNo(p){
-  if(p && p.orderNo) return p.orderNo;
-  return genPurchaseOrderNo(p && p.createdAt ? p.createdAt : '');
+  if(!p) return '';
+  if(p.orderNo) return p.orderNo;
+  var d = _poDateOf(p.createdAt) || new Date();
+  var prefix = _poDayPrefix(d);
+  var dayKey = '' + d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+  var used = {};
+  var olds = [];
+  (DB.get('purchases') || []).filter(Boolean).forEach(function(x){
+    var xd = _poDateOf(x.createdAt);
+    if(!xd) return;
+    if(('' + xd.getFullYear() + '-' + (xd.getMonth() + 1) + '-' + xd.getDate()) !== dayKey) return;
+    if(x.orderNo){ var n = _poSeqOf(x.orderNo, prefix); if(n) used[n] = 1; }
+    else olds.push(x);
+  });
+  olds.sort(function(a, b){
+    var ta = (_poDateOf(a.createdAt) || new Date(0)).getTime();
+    var tb = (_poDateOf(b.createdAt) || new Date(0)).getTime();
+    if(ta !== tb) return ta - tb;
+    return String(a.id || '') < String(b.id || '') ? -1 : 1;
+  });
+  var next = 1, mine = 0;
+  for(var i = 0; i < olds.length; i++){
+    while(used[next]) next++;
+    if(olds[i].id === p.id) mine = next;
+    used[next] = 1; next++;
+  }
+  if(!mine) mine = next;   // 不在本地列表里（临时对象）→ 取下一个空号，至少不撞已有号
+  return prefix + (mine < 10 ? '0' + mine : '' + mine);
+}
+// v2026110501：把老单缺失的单号一次性补齐并写回（云端有了 order_no 列就会随脏行推上去）。
+// 只在真的存在无号行时才 DB.set，避免每次进页面都刷 updatedAt + 触发上推。
+function _backfillPurchaseOrderNos(){
+  var list = (DB.get('purchases') || []).filter(Boolean);
+  if(!list.length) return;
+  var dirty = false;
+  var out = list.map(function(p){
+    if(p.orderNo) return p;
+    var no = resolvePurchaseOrderNo(p);
+    if(!no) return p;
+    dirty = true;
+    return Object.assign({}, p, { orderNo: no });
+  });
+  if(dirty) DB.set('purchases', out);
 }
 // 商品明细序号前缀（emoji 数字，超过 10 退化为数字.）
 function poItemBullet(i){
@@ -16797,6 +17017,13 @@ function savePurchase(){
   const id = _editId;
   const expectDate = (document.getElementById('poExpect').value || '').trim();
   const remark = (document.getElementById('poRemark').value || '').trim();
+  // v2026110502：入库目标仓（本仓 / 供应商他仓）。编辑场景下若供应商不在本机列表、控件不可见，回退已存值或本仓。
+  let _targetWh = '本仓';
+  try{
+    const _tw = document.getElementById('poTargetWh');
+    if(_tw && _tw.value && _tw.value.trim()) _targetWh = _tw.value.trim();
+  }catch(e){}
+  if(_orig && _orig.targetWarehouse && _targetWh === '本仓') _targetWh = _orig.targetWarehouse;
   const purchases = DB.get('purchases') || [];
   const _now = window.nowStr();
   if(id){
@@ -16817,10 +17044,10 @@ function savePurchase(){
       const _allDone = items.length > 0 && items.every(function(it){ return (Number(it.inboundQty)||0) >= (Number(it.qty)||0); });
       const _anyIn = items.some(function(it){ return (Number(it.inboundQty)||0) > 0; });
       const _newStatus = _allDone ? 'inbound' : (_anyIn ? 'partial' : 'ordered');
-      purchases[idx] = Object.assign({}, purchases[idx], { supplierId: supplierId, supplierName: _supplierName, items: items, totalAmount: totalAmount, expectDate: expectDate, remark: remark, status: _newStatus, updatedAt: _now });
+      purchases[idx] = Object.assign({}, purchases[idx], { orderNo: purchases[idx].orderNo || resolvePurchaseOrderNo(purchases[idx]), supplierId: supplierId, supplierName: _supplierName, items: items, totalAmount: totalAmount, expectDate: expectDate, remark: remark, targetWarehouse: _targetWh, status: _newStatus, updatedAt: _now });
     }
   } else {
-    purchases.unshift({ id: DB.uid('po_'), orderNo: genPurchaseOrderNo(_now), supplierId: supplierId, supplierName: _supplierName, items: items, totalAmount: totalAmount, status: 'ordered', expectDate: expectDate, remark: remark, createdAt: _now, updatedAt: _now });
+    purchases.unshift({ id: DB.uid('po_'), orderNo: genPurchaseOrderNo(_now), supplierId: supplierId, supplierName: _supplierName, items: items, totalAmount: totalAmount, status: 'ordered', expectDate: expectDate, remark: remark, targetWarehouse: _targetWh, createdAt: _now, updatedAt: _now });
   }
   DB.set('purchases', purchases);
   closeModal();
@@ -16853,7 +17080,14 @@ async function openInboundModal(id){
       <div class="modal" style="max-width:680px">
         <div class="modal-header"><h3>📥 入库 · ${escAttr(p.supplierName||'')} · ${escAttr(p.id||'')}</h3><button class="modal-close" onclick="closeModal()">×</button></div>
         <div class="modal-body">
-          <div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">按行填写「本次入库数量」，可部分入库（留待下次继续）；全部入完才标记完成。</div>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+            <label class="form-label" style="margin:0">入库到仓库</label>
+            <select class="form-control" id="inboundWh" style="max-width:240px">
+              <option value="本仓">系统默认仓（本仓）</option>
+              ${(DB.get('suppliers')||[]).filter(Boolean).map(function(s){ return '<option value="'+escAttr(s.name||'')+'">他仓 · '+(escAttr(s.name||''))+'</option>'; }).join('')}
+            </select>
+          </div>
+          <div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">按行填写「本次入库数量」，可部分入库（留待下次继续）；全部入完才标记完成。选择「他仓」会把货入到对应供应商的仓库（<b>范岳仓</b> 等），不计入系统默认仓。</div>
           <div id="inboundRows">${rows || '<div style="color:var(--text-muted)">该单无商品</div>'}</div>
           <div style="text-align:right;margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="fillAllInbound()">全部填满</button></div>
         </div>
@@ -16864,6 +17098,11 @@ async function openInboundModal(id){
       </div>
     </div>`;
   document.getElementById('modalContainer').innerHTML = modalHtml;
+  // v2026110502：默认选中该采购单的目标仓（已有记录用记录值；无记录的老单回退「本仓」，不擅自改入他仓）
+  try{
+    const _sel = document.getElementById('inboundWh');
+    if(_sel){ _sel.value = (p.targetWarehouse && p.targetWarehouse.trim()) || '本仓'; }
+  }catch(e){}
 }
 function fillAllInbound(){
   document.querySelectorAll('#inboundRows .ib-qty').forEach(function(el){ el.value = el.max || 0; });
@@ -16881,6 +17120,14 @@ async function confirmInbound(id){
   const idx = purchases.findIndex(function(x){ return x.id === id; });
   if(idx < 0){ showToast('采购单不存在', 'error'); return; }
   const p = purchases[idx];
+  // v2026110502：入库目标仓——优先取弹窗选择，否则取采购单上记录的目标仓（无记录的老单回退「本仓」）。
+  let _inboundWh = (p.targetWarehouse && String(p.targetWarehouse).trim()) || '本仓';
+  try{
+    const _sel = document.getElementById('inboundWh');
+    if(_sel && _sel.value && _sel.value.trim()) _inboundWh = _sel.value.trim();
+  }catch(e){}
+  // 把本次选择写回采购单，便于台账/统计按目标仓口径归集
+  if(p.targetWarehouse !== _inboundWh){ p.targetWarehouse = _inboundWh; }
   let allDone = true, anyIn = false;
   const inputs = document.querySelectorAll('#inboundRows .ib-qty');
   const items = (p.items || []).map(function(it, i){
@@ -16917,10 +17164,11 @@ async function confirmInbound(id){
     const realAdd = target - already;
     const batchNo = oldInb > 0 ? '（部分 第' + (oldInb + realAdd) + '件）' : '';
     // v20261103：加权平均成本需基于「入库前」的库存/成本快照（applyStockChange 会把库存写成新值，故先快照）
+    // v2026110502：快照取「目标仓」对应库存桶（本仓=stockQty，他仓=warehouseStock[wh]），保证加权成本按入库仓口径计算。
     const _pre = (DB.get('products') || []).find(function(x){ return x.id === it.productId; }) || {};
-    const _oldQty = Number(_pre.stockQty) || 0;
+    const _oldQty = getWhStock(_pre, _inboundWh);
     const _oldCost = Number(_pre.cost) || 0;
-    const r = await applyStockChange({ productId: it.productId, delta: realAdd, type: 'purchase', relId: p.id, remark: '采购入库' + batchNo + ' · ' + (p.supplierName||'') });
+    const r = await applyStockChange({ productId: it.productId, delta: realAdd, type: 'purchase', warehouse: _inboundWh, relId: p.id, remark: '采购入库' + batchNo + ' · ' + (p.supplierName||'') + ( _inboundWh !== '本仓' ? ' → '+ _inboundWh + '仓' : '') });
     if(!r.ok){ showToast('入库失败：' + r.err, 'error', 4500); return; }
     // v20261103：按「加权平均」回写采购成本，而非最后单价直接覆盖（采购成本口径）
     const productsNow = DB.get('products') || [];
@@ -16942,10 +17190,50 @@ async function confirmInbound(id){
     if(_btn2){ _btn2.disabled = false; _btn2.textContent = '确认入库'; }
   }
 }
+// v2026110501：库存表（采购单/供应商）删除必须同步云端，否则「删了又回来」。
+// 旧实现只从本地数组里 filter 掉，云端一行没动 → 下次进页面/定时同步 pull 一次就整条合并回来；
+// 且 _pushDirtyRows 只推「还在数组里的脏行」，删除动作根本不会上云。三步一套：
+//   ① 本地移除（列表立刻消失）② 写 tombstone（_deletedPurchaseIds，挡住拉取合并复活）
+//   ③ 发云端 DELETE（失败保留 tombstone，进页面时自动重试）
+function _invDeleteSync(table, tombKey, id){
+  if(!id) return;
+  const list = (DB.get(table, []) || []).filter(function(x){ return x && x.id !== id; });
+  DB.set(table, list);
+  const tomb = (DB.get(tombKey, []) || []).filter(Boolean);
+  if(tomb.indexOf(id) < 0) tomb.push(id);
+  DB.set(tombKey, tomb);
+  _flushInvDeletes(table, tombKey).catch(function(){});
+}
+// 把 tombstone 里还没在云端删掉的 id 逐条 DELETE（幂等：已删的返回 204，可反复重试）
+function _flushInvDeletes(table, tombKey){
+  const ids = (DB.get(tombKey, []) || []).filter(Boolean);
+  if(!ids.length) return Promise.resolve();
+  if(typeof window._invDeleting === 'undefined') window._invDeleting = {};
+  let chain = Promise.resolve();
+  ids.forEach(function(id){
+    chain = chain.then(function(){
+      const lockKey = table + '|' + id;
+      if(window._invDeleting[lockKey]) return;      // 同一行不并发重试
+      window._invDeleting[lockKey] = true;
+      return fetch(SUPABASE_URL + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(id), {
+        method: 'DELETE',
+        headers: { 'Content-Type':'application/json', 'apikey': SUPABASE_KEY, 'Authorization':'Bearer '+SUPABASE_KEY, 'x-app-secret': APP_SECRET, 'Prefer':'return=minimal' }
+      }).then(function(res){
+        if(!res.ok) throw new Error('HTTP ' + res.status);
+        // 云端已删：从 tombstone 摘掉（此后云端拉不到这行，不存在复活风险）
+        const left = (DB.get(tombKey, []) || []).filter(function(x){ return x !== id; });
+        DB.set(tombKey, left);
+      }).catch(function(e){
+        console.warn('[删除] 云端删除失败 ' + table + ' ' + id + '：' + ((e && e.message) || e) + '（tombstone 保留，下次重试）');
+      }).then(function(){ window._invDeleting[lockKey] = false; });
+    });
+  });
+  return chain;
+}
+
 function deletePurchase(id){
   if(!confirm('确定删除该采购单？删除后不影响已入库库存。')) return;
-  const purchases = (DB.get('purchases') || []).filter(function(x){ return x.id !== id; });
-  DB.set('purchases', purchases);
+  _invDeleteSync('purchases', '_deletedPurchaseIds', id);
   showToast('已删除', 'success');
   renderPurchases();
 }
@@ -17061,6 +17349,32 @@ function computeStockValue(products){
     return s + (Number(p.stockQty) || 0) * (Number(p.cost) || 0);
   }, 0);
 }
+// v2026110502：他仓库存价值（采购成本口径）。
+// 某仓库金额 = Σ(该商品在他仓的库存数 × 采购成本)；传具体仓名则算单个他仓，否则合计全部他仓。
+function computeWarehouseStockValue(products, whName){
+  return (products || []).reduce(function(s, p){
+    const ws = (typeof p.warehouseStock === 'object' && p.warehouseStock) ? p.warehouseStock : {};
+    if(whName){
+      return s + (Number(ws[whName] || 0) || 0) * (Number(p.cost) || 0);
+    }
+    let sub = 0;
+    Object.keys(ws).forEach(function(k){ sub += (Number(ws[k] || 0) || 0) * (Number(p.cost) || 0); });
+    return s + sub;
+  }, 0);
+}
+// v2026110502：各他仓金额明细 = { 仓名: 金额 }（仅返回金额 > 0 的仓）
+function computeHisWarehouseBreakdown(products){
+  const out = {};
+  (products || []).forEach(function(p){
+    const ws = (typeof p.warehouseStock === 'object' && p.warehouseStock) ? p.warehouseStock : {};
+    Object.keys(ws).forEach(function(k){
+      const qty = Number(ws[k] || 0) || 0;
+      if(qty === 0) return;
+      out[k] = (Number(out[k]) || 0) + qty * (Number(p.cost) || 0);
+    });
+  });
+  return out;
+}
 
 function renderStockLedger(){
   if(currentUser.role !== 'admin' && currentUser.role !== 'operator'){ showToast('仅管理员/操作员可查看库存台账', 'error'); return; }
@@ -17069,14 +17383,22 @@ function renderStockLedger(){
   const lowStock = products.filter(function(pr){ const sq = Number(pr.stockQty)||0; const wq = Number(pr.warnQty)||0; return wq > 0 && sq <= wq; });
   const negStock = products.filter(function(pr){ return (Number(pr.stockQty)||0) < 0; });
   const stockValue = computeStockValue(products);
+  // v2026110502：他仓金额统计（各供应商他仓，采购成本口径）
+  const hisValue = computeWarehouseStockValue(products);
+  const hisBreakdown = computeHisWarehouseBreakdown(products);
+  const hisKeys = Object.keys(hisBreakdown).filter(function(k){ return hisBreakdown[k] > 0; }).sort(function(a,b){ return hisBreakdown[b] - hisBreakdown[a]; });
   const html = `
     <div class="kpi-row">
       <div class="kpi-card" style="cursor:pointer" title="点击查看全部商品及库存" onclick="openStockKpiDetail('all')"><div class="kpi-value">${products.length}</div><div class="kpi-label">商品总数</div></div>
       <div class="kpi-card ${lowStock.length ? 'kpi-danger' : ''}" style="cursor:pointer" title="点击查看低于预警阈值的商品" onclick="openStockKpiDetail('low')"><div class="kpi-value">${lowStock.length}</div><div class="kpi-label">低于预警阈值</div></div>
       <div class="kpi-card" style="cursor:pointer" title="点击查看全部商品（按库存降序）" onclick="openStockKpiDetail('total')"><div class="kpi-value">${products.reduce(function(s,p){ return s + (Number(p.stockQty)||0); }, 0)}</div><div class="kpi-label">库存总量(件)</div></div>
-      <div class="kpi-card" title="按采购成本估算的库存总价值（库存数 × 采购成本，不含利润成本）"><div class="kpi-value">${money(stockValue)}</div><div class="kpi-label">库存总价值(采购成本)</div></div>
+      <div class="kpi-card" title="按采购成本估算的库存总价值（库存数 × 采购成本，不含利润成本）"><div class="kpi-value">${money(stockValue)}</div><div class="kpi-label">系统默认仓金额(采购成本)</div></div>
+      <div class="kpi-card" title="各供应商他仓库存总价值合计（采购成本口径）"><div class="kpi-value">${money(hisValue)}</div><div class="kpi-label">他仓金额合计(采购成本)</div></div>
       <div class="kpi-card ${negStock.length ? 'kpi-danger' : ''}" style="cursor:pointer" title="点击查看负库存商品" onclick="openStockKpiDetail('neg')"><div class="kpi-value">${negStock.length}</div><div class="kpi-label">负库存商品</div></div>
     </div>
+    ${hisKeys.length ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+      ${hisKeys.map(function(k){ return '<span style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:#fff7ed;border:1px solid #fed7aa;border-radius:999px;font-size:12px;color:#9a3412">🏷️ 他仓 · '+escAttr(k)+'：'+money(hisBreakdown[k])+'</span>'; }).join('')}
+    </div>` : ''}
     ${lowStock.length ? `<div class="alert alert-warning">⚠️ 库存预警：${lowStock.map(function(p){ return escAttr(p.name) + '(' + (Number(p.stockQty)||0) + '/' + (Number(p.warnQty)||0) + ')'; }).join('、')}</div>` : ''}
     <div class="page-actions">
       <input type="text" class="form-control" id="ledgerProduct" placeholder="🔍 商品名" oninput="filterStockLedger()" style="max-width:200px">
@@ -17538,8 +17860,10 @@ function confirmPayment(paymentId){
   const payments = DB.get('payments');
   const idx = payments.findIndex(p => p.id === paymentId);
   if(idx >= 0){
+    if(!confirm('确认该笔收款 ' + money(payments[idx].amount) + ' 已到账？')) return; // v2026110503：防误点——直接影响尾款余额与结清标记
     payments[idx].status = 'paid';
     DB.set('payments', payments);
+    recomputeOrderSettled(payments[idx].orderId); // v2026110503：确认到账后重算订单结清标记（原缺陷：只改收款状态，收满的单不显示✅已结清）
     showToast('已确认到账','success');
     renderPayments();
   }
@@ -17755,10 +18079,46 @@ function updatePayModalWechat(orderId){
     const thisAmount = parseInt(amountEl.value) || 0;
     const beforeTotal = getWechatTotal(salesId);
     const afterTotal = beforeTotal + thisAmount;
-    wrap.innerHTML = '此次微信收款 <b>' + money(thisAmount) + '</b>，之前微信总额是 <b>' + money(beforeTotal) + '</b>，那么现在微信总额是 <b>' + money(afterTotal) + '</b>';
+    const pendingSum = getWechatPendingSum(salesId);
+    wrap.innerHTML = '此次微信收款 <b>' + money(thisAmount) + '</b>，之前微信总额是 <b>' + money(beforeTotal) + '</b>，那么现在微信总额是 <b>' + money(afterTotal) + '</b>'
+      + (pendingSum > 0 ? '<br><span style="color:#8a6d3b">另有待到账 ' + money(pendingSum) + '（未计入上述总额，确认到账后计入）</span>' : '');
   }else{
     wrap.style.display = 'none';
   }
+}
+
+// v2026110503：重算订单「已结清」标记——记录收款(savePayment)、确认到账(confirmPayment)、
+// saveDoorPayments/saveEditOrder/saveDoorDetail（编辑改建单基数的旁路）共用同一口径。
+// 判定与 getOrderRemaining 完全一致：basePaid + Σ已到账且非超额的收款 ≥ 总额。
+// （原实现用未过滤 Σpaid：一笔超额误登记会同时出现「✅已结清 + 尾款余额>0」的矛盾。）
+// 返回重算后的结清状态（供审计日志使用）。
+function recomputeOrderSettled(orderId){
+  const allOrders = DB.get('orders');
+  const target = allOrders.find(o => o.id === orderId);
+  if(!target) return false;
+  // v2026100109：不再把收款累加回写 collectedAmount。
+  // collectedAmount 的语义是「建单时登记的实际已收（初始值）」，后续收款一律记在 payments 里；
+  // 待收尾款 = 总额 - 初始值 - Σ已到账收款，微信总额 = 初始值 + Σ收款记录。
+  // 原写法把 payments 累加进 collectedAmount，而上面两处又会再算一遍 payments → 双重计算，
+  // 已收金额越滚越大直至超过订单总额（蔡小姐单被算成 54460 > 总额 27230）。
+  const basePaid = getOrderPaidBase(target);
+  const finalPay = parseInt(target.finalPayment) || Math.max(0, (parseInt(target.total) || 0) - basePaid);
+  // 与 getOrderRemaining 同一过滤：单笔超过尾款的记录视为误登记，不计入结清判定
+  const paidSum = (DB.get('payments') || []).filter(p =>
+    p && p.orderId === orderId &&
+    p.status === 'paid' &&
+    (parseInt(p.amount) || 0) > 0 &&
+    (parseInt(p.amount) || 0) <= finalPay
+  ).reduce((s, p) => s + (parseInt(p.amount) || 0), 0);
+  const totalCollected = basePaid + paidSum; // 仅用于判定是否结清，不回写
+  const orderTotal = parseInt(target.total) || 0;
+  const settled = (orderTotal > 0 && totalCollected >= orderTotal);
+  if(settled !== !!target.paymentSettled){
+    target.paymentSettled = settled;
+    target.updatedAt = nowStr();
+    DB.set('orders', allOrders);
+  }
+  return settled;
 }
 
 function savePayment(orderId){
@@ -17772,30 +18132,27 @@ function savePayment(orderId){
 
   const order = DB.get('orders').find(o => o.id === orderId);
   const payments = DB.get('payments');
+  if(!order){ showToast('订单不存在','error'); return; }
+  // v2026110503：超额收款确认——待收尾款口径会把「单笔 > 尾款余额」的记录视为误登记直接过滤，
+  // 钱记了、微信总额加了、尾款却不减，三处口径分裂且无提示。改为保存前明确确认。
+  if(status === 'paid'){
+    const _initPaid = getOrderPaidBase(order); // 与待收尾款/结清判定同口径（老单定金未登记时按定金计入）
+    const _paidSum = payments.filter(p => p.orderId === orderId && p.status === 'paid').reduce((s, p) => s + (parseInt(p.amount) || 0), 0);
+    const _orderTotal = parseInt(order.total) || 0;
+    if(_orderTotal > 0 && _initPaid + _paidSum + amount > _orderTotal){
+      if(!confirm('本次收款 ' + money(amount) + ' 将使已收合计（' + money(_initPaid + _paidSum) + ' + ' + money(amount) + '）超过订单总额 ' + money(_orderTotal) + '。\n\n超额部分不会冲抵尾款余额（系统按误登记保护处理）。确定要登记吗？')) return;
+    }
+  }
   payments.push({
     id: DB.uid('pay_'), orderId, customerName: order.customerName,
     salesId: order.salesId, salesName: order.salesName,
     amount, method, payDate, status, stage, createdAt: nowStr()
   });
   DB.set('payments', payments);
-  // ===== 收款闭环：回写订单实收金额与"已结清"标记 =====
-  const allOrders = DB.get('orders');
-  const target = allOrders.find(o => o.id === orderId);
-  if(target){
-    // v2026100109：不再把收款累加回写 collectedAmount。
-    // collectedAmount 的语义是「建单时登记的实际已收（初始值）」，后续收款一律记在 payments 里；
-    // 待收尾款 = 总额 - 初始值 - Σ已到账收款，微信总额 = 初始值 + Σ收款记录。
-    // 原写法把 payments 累加进 collectedAmount，而上面两处又会再算一遍 payments → 双重计算，
-    // 已收金额越滚越大直至超过订单总额（蔡小姐单被算成 54460 > 总额 27230）。
-    const initPaid = parseInt(target.collectedAmount) || 0;
-    const paidSum = (DB.get('payments') || []).filter(p => p.orderId === orderId && p.status === 'paid').reduce((s, p) => s + (parseInt(p.amount) || 0), 0);
-    const totalCollected = initPaid + paidSum; // 仅用于判定是否结清，不回写
-    const orderTotal = parseInt(target.total) || 0;
-    target.paymentSettled = (orderTotal > 0 && totalCollected >= orderTotal);
-    target.updatedAt = nowStr();
-    DB.set('orders', allOrders);
-  }
-  logAudit({action:'collect_payment', targetType:'order', targetId: orderId, targetLabel: order.customerName, before: '', after: amount, detail: '收款 '+money(amount)+' / 阶段 '+(stage||'-')+' / 方式 '+method+(target && target.paymentSettled ? ' / 订单已结清' : '')});
+  // ===== 收款闭环：回写订单"已结清"标记（v2026110503 抽为共用函数，与确认到账同口径） =====
+  const target = DB.get('orders').find(o => o.id === orderId);
+  const paymentSettled = recomputeOrderSettled(orderId);
+  logAudit({action:'collect_payment', targetType:'order', targetId: orderId, targetLabel: order.customerName, before: '', after: amount, detail: '收款 '+money(amount)+' / 阶段 '+(stage||'-')+' / 方式 '+method+(paymentSettled ? ' / 订单已结清' : '')});
   closeModal();
   if(method === '微信支付'){
     const wt = money(getWechatTotal(order.salesId));
