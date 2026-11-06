@@ -1792,7 +1792,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026110616</div>
+          <div class="brand-sub">v2026110617</div>
         </div>
       </div>
     </div>
@@ -17003,6 +17003,17 @@ function poPickSupplier(optEl){
   if(hidden) hidden.value = sid;
   box.querySelector('#poSupplierName').value = s ? s.name : '';
   box.querySelector('.po-supplier-drop').style.display = 'none';
+  // v2026110617：候选收敛后换供应商，目标仓若停留在旧供应商的仓（已不在新候选内），自动切到新供应商自身他仓；
+  // 「本仓」选择保持不动（本仓永远合法）。
+  try{
+    const _tw = document.getElementById('poTargetWh');
+    const _twName = document.getElementById('poTargetWhName');
+    const _sname = s ? String(s.name || '').trim() : '';
+    if(_tw && _twName && _sname && _tw.value && _tw.value !== '本仓' && _tw.value !== _sname){
+      _tw.value = _sname;
+      _twName.value = '他仓 · ' + _sname;
+    }
+  }catch(_e){}
   _savePurchaseDraft(); // v2026110616：点选供应商即存草稿
 }
 function poHideSupplierDrop(inp){
@@ -17024,6 +17035,21 @@ function _whOptions(){
   });
   return out;
 }
+// v2026110617：目标仓候选收敛——采购/入库只该入「系统默认仓」或「当前供应商自己的仓」，
+// 不该列出其它供应商的他仓（用户实测：编辑谷腾的采购单却出现 元尊/邱丹 等一串无关仓）。
+// 返回当前应限定的供应商名：入库弹窗取单据供应商（data-scope-sup）；
+// 采购弹窗实时读当前选中供应商（换供应商立即生效）；没选到供应商 → ''（仅列本仓）。
+function _poWhScopeSupName(box){
+  const hidden = box ? box.querySelector('.po-wh-value') : null;
+  if(hidden && hidden.id === 'inboundWh') return String(box.getAttribute('data-scope-sup') || '').trim();
+  const idEl = document.getElementById('poSupplier');
+  if(idEl && idEl.value){
+    const s = (DB.get('suppliers')||[]).filter(Boolean).find(function(x){ return x && x.id === idEl.value; });
+    if(s && String(s.name||'').trim()) return String(s.name).trim();
+  }
+  const nmEl = document.getElementById('poSupplierName');
+  return nmEl ? String(nmEl.value||'').trim() : '';
+}
 function poSearchWh(inp, showAll){
   // v2026110616：聚焦时 showAll=true 显示全量候选。此前聚焦会把输入框里已有的
   // 当前选中名（如「系统默认仓（本仓）」）当关键字过滤，导致下拉永远只剩当前仓，
@@ -17035,10 +17061,14 @@ function poSearchWh(inp, showAll){
   const hidden = box.querySelector('.po-wh-value');
   if(!drop || !hidden) return;
   const cur = hidden.value;
-  // 展示名也参与匹配：用户看到「系统默认仓（本仓）」，输入「默认」「本仓」都能命中；
-  // 输入「他仓」列出全部供应商他仓。
+  // 展示名也参与匹配：用户看到「系统默认仓（本仓）」，输入「默认」「本仓」都能命中
+  // v2026110617：先按当前供应商收敛候选池（本仓 + 该供应商他仓），再按关键字过滤
   const opts = _whOptions();
-  let list = kw ? opts.filter(function(o){ return (o.label + ' ' + o.kw).toLowerCase().indexOf(kw) !== -1; }) : opts;
+  const _scopeSup = _poWhScopeSupName(box);
+  const pool = _scopeSup
+    ? opts.filter(function(o){ return o.val === '本仓' || o.val === _scopeSup; })
+    : opts.filter(function(o){ return o.val === '本仓'; });
+  let list = kw ? pool.filter(function(o){ return (o.label + ' ' + o.kw).toLowerCase().indexOf(kw) !== -1; }) : pool;
   const MAX = 50;
   let html = list.slice(0, MAX).map(function(o){
     const selStyle = o.val === cur ? 'background:#eef6f6;font-weight:600;' : '';
@@ -17222,7 +17252,7 @@ function _openPurchaseModalInner(id){
                 <input type="text" class="form-control po-wh-input" id="poTargetWhName" placeholder="点击或输入关键字检索仓库" value="系统默认仓（本仓）" autocomplete="off" oninput="poSearchWh(this)" onfocus="poSearchWh(this,true)" onblur="poHideWhDrop(this)">
                 <div class="po-wh-drop" style="display:none;position:absolute;top:100%;left:0;right:0;max-height:240px;overflow-y:auto;background:#fff;border:1px solid var(--border);border-radius:8px;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.12)"></div>
               </div>
-              <div style="font-size:12px;color:var(--text-muted);margin-top:4px">采购入库时货入到哪个仓库：选「他仓·供应商名」即入到该供应商的仓库（如 范岳仓），不计入系统默认仓。可直接输入关键字检索。</div>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:4px">货入到哪个仓库：默认入当前供应商自己的仓，也可选「系统默认仓（本仓）」；不支持入其它供应商的仓。选好供应商后此处候选会自动跟随。</div>
             </div>
           </div>
           <label class="form-label">采购商品</label>
@@ -17500,7 +17530,7 @@ async function openInboundModal(id){
         <div class="modal-body">
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
             <label class="form-label" style="margin:0">入库到仓库</label>
-            <div style="position:relative;max-width:240px" class="po-wh-box">
+            <div style="position:relative;max-width:240px" class="po-wh-box" data-scope-sup="${escAttr(p.supplierName||'')}">
               <input type="hidden" class="po-wh-value" id="inboundWh" value="本仓">
               <input type="text" class="form-control po-wh-input" id="inboundWhName" placeholder="输入关键字检索仓库" value="系统默认仓（本仓）" autocomplete="off" oninput="poSearchWh(this)" onfocus="poSearchWh(this,true)" onblur="poHideWhDrop(this)">
               <div class="po-wh-drop" style="display:none;position:absolute;top:100%;left:0;right:0;max-height:240px;overflow-y:auto;background:#fff;border:1px solid var(--border);border-radius:8px;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.12)"></div>
