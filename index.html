@@ -1616,11 +1616,11 @@ tbody tr:hover{background:#f0f5f4}
 .order-items-sub-table input[type="number"]{
   width:70px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:12px;
 }
-/* v2026101111：销售端订单列表「两行分组表头」（客户 | 商品明细[商品名称/数量/售价] | 操作/订单备注）。
-   子表列宽由 colgroup + 上面的 col:nth-child 规则决定，表头子列必须写成完全相同的宽度
-   （数量56 / 售价92），否则「数量」表头会跑到右边、数字却在中间（此前错位的根因）。
-   vertical-align:top 让跨两行的「客户/操作」与首行「商品明细」落在同一条水平线上（不再一高一低）；
-   仅给「商品明细」分组格（带 colspan）加深底色与 1px 分隔线，避免同一行底线 1px/2px 混用。 */
+/* v2026101111：销售端订单列表表头样式。v2026110614 起两行分组表头已废除——
+   旧结构外层表头（自动布局）与嵌套子表（table-layout:fixed）列宽各算各的，
+   加库存列后表头标签与数据错位。现外层只留单行表头（客户|商品明细|备注/操作），
+   子列头内嵌每行子表 thead，与 admin/留仓/上门一致，天然对齐。
+   仅给「商品明细」分组格（带 colspan）加深底色与 1px 分隔线。 */
 .sales-order-list thead th{vertical-align:top}
 .sales-order-list thead th[colspan]{background:#eef2f1;border-bottom:1px solid var(--border)}
 /* 物流时间线样式 */
@@ -1788,7 +1788,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026110611</div>
+          <div class="brand-sub">v2026110615</div>
         </div>
       </div>
     </div>
@@ -5258,9 +5258,14 @@ function parseOrderText(text){
 
   if(region || address){
     // 带标签格式：直接使用
-    result.region = region;
-    result.address = address;
-    fullAddress = (region + ' ' + address).trim();
+    // v2026110615：标签值同一行可能继续跟「收件人：…，电话：…」等后续字段，截掉后续标签段，
+    // 避免把「收件人： 电话：」残留进地址（此前只靠手机号剔除，标签文字会漏网）
+    function tagValueUntilNextLabel(v){
+      return String(v || '').split(/[\s,，、]*(?:收货人|收件人|联系人|客户|姓\s*名|电话|手机号?|备注|所在地区|收货地址|地\s*址)\s*[:：]/)[0].trim();
+    }
+    result.region = tagValueUntilNextLabel(region);
+    result.address = tagValueUntilNextLabel(address);
+    fullAddress = (tagValueUntilNextLabel(region) + ' ' + tagValueUntilNextLabel(address)).trim();
   } else {
     // 无标签：从原文智能提取地址
     // 策略：匹配包含 省/市/区/县 + 小区/路/街道 + 楼栋房号 的连续文本片段
@@ -5391,6 +5396,9 @@ function parseOrderText(text){
       }
     }
   }
+  // v2026110615：一行内「手机号，姓名，地址」以逗号分隔时，剔除手机号/姓名后会在地址里残留悬挂逗号
+  // （如「，，江苏省…」「…8号，，」）。统一把逗号串折叠为单个空格，与 parseAddressText 对 detail 的清洗口径一致。
+  fullAddress = fullAddress.replace(/[，,、]+/g, ' ').replace(/\s+/g, ' ').trim();
   result.fullAddress = fullAddress;
 
   // 用行政区划数据做省市区结构化拆分 + 自动补全缺失层级（京东式）
@@ -5508,7 +5516,9 @@ function parseOrderText(text){
   // 在确认姓名后将其从地址中剥离，并重新解析省市区。
   if(contact && fullAddress){
     const escaped = contact.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // v2026110615：剥姓名后残留的悬挂逗号一并折叠（如「…8号，张三，」→「…8号」）
     const cleaned = fullAddress.replace(new RegExp(escaped, 'g'), '')
+      .replace(/[，,、]+/g, ' ')
       .replace(/\s+/g, ' ').replace(/\s(?=\d)/g, '').trim();
     if(cleaned !== fullAddress){
       fullAddress = cleaned;
@@ -5598,7 +5608,9 @@ function parseOrderText(text){
           productId: matched.id,
           name: matched.name,
           price: matched.price,
-          cost: matched.price,
+          // v2026110615：成本取商品库真实采购成本（曾写 cost=price 导致「成本=售价污染」事故 85 单）；
+          // 商品无成本（待校准）时回退售价占位，交由管理员校准
+          cost: Number(matched.cost) > 0 ? Number(matched.cost) : matched.price,
           qty: 1,
           subtotal: matched.price,
           inputName: nline,
@@ -5624,7 +5636,8 @@ function parseOrderText(text){
           productId: matched2.id,
           name: matched2.name,
           price: matched2.price,
-          cost: matched2.price,
+          // v2026110615：同上——真实采购成本优先，待校准商品回退售价占位
+          cost: Number(matched2.cost) > 0 ? Number(matched2.cost) : matched2.price,
           qty: 1,
           subtotal: matched2.price,
           inputName: nline,
@@ -7105,8 +7118,8 @@ async function renderDashboard(){
     // 修正前这里是本人「全部」售后数（含已处理），与管理员卡片口径不一致，用户要求统一（v2026101104 同批）。
     const myAftersales = aftersales.filter(a => a && !a._deleted && a.salesId === currentUser.id);
     const myAftersalesCount = _openAftersaleCount(myAftersales);
-    // 待收尾款：本人（管理员为全部）名下有未结清尾款的订单数（仅定金订单，全款订单无尾款）
-    const balanceOrders = myOrders.filter(o => getOrderRemaining(o) > 0 && (parseInt(o.deposit) || 0) > 0);
+    // 待收尾款：本人（管理员为全部）名下有未结清尾款的订单数（定金单或定金0但填了尾款的挂账单）
+    const balanceOrders = myOrders.filter(orderHasBalanceDue);
     const myBalanceCount = balanceOrders.length;
 
     html += `
@@ -7310,7 +7323,7 @@ function _debouncedSearchRender(fnName, inputId, delay){
       var inp = document.getElementById(inputId);
       if(inp){ inp.focus(); try{ inp.setSelectionRange(inp.value.length, inp.value.length); }catch(e){} }
     }
-  }, delay || 250);
+  }, delay == null ? 250 : delay);   // 注意不能写 delay||250：传 0（组合输入结束立即渲染）会被当成 250ms
 }
 // 重渲染后恢复订单搜索框焦点（仅当本次渲染由搜索输入触发时）
 function restoreOrderSearchFocus(){
@@ -7484,7 +7497,7 @@ async function renderOrders(){
       </select>
     </div>`;
     // Search bar
-    html += `<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="orderSearchInput" placeholder="搜索订单号/客户/电话" value="${keyword}" oninput="onOrderSearchInput(this)" oncompositionstart="window._orderSearchComposing=true" oncompositionend="onOrderSearchComposed(this)"></div></div>`;
+    html += `<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="orderSearchInput" placeholder="搜索订单号/客户/电话" value="${escAttr(keyword)}" oninput="onOrderSearchInput(this)" oncompositionstart="window._orderSearchComposing=true" oncompositionend="onOrderSearchComposed(this)"></div></div>`;
 
     // ===== 订单Tab内容 =====
     if(isMobile){
@@ -7526,7 +7539,7 @@ async function renderOrders(){
           (o.items||[]).forEach((it, idx) => {
             const cost = effectiveItemCost(o, it, _productMap);
             const waste = it.waste || 0;
-            const profit = it.price * it.qty - cost * it.qty - waste;
+            const profit = (it.price||0) * (it.qty||0) - cost * (it.qty||0) - (waste||0);
             html += `<tr><td>${escapeHtml(it.name)}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
             if(isAdmin){
               html += `<td>${money(cost)}</td>`;
@@ -7567,7 +7580,7 @@ async function renderOrders(){
           (o.items||[]).forEach((it, idx) => {
             const cost = effectiveItemCost(o, it, _productMap);
             const waste = it.waste || 0;
-            const profit = it.price * it.qty - cost * it.qty - waste;
+            const profit = (it.price||0) * (it.qty||0) - cost * (it.qty||0) - (waste||0);
             const missingTracking = ['confirmed','shipped'].includes(o.status) && o.type !== 'door' && !o.noTracking && !it.trackingNo;
             html += `<tr style="${missingTracking?'background:#f5f3ff;':''}"><td style="${missingTracking?'border-left:3px solid #8b5cf6;padding-left:7px;color:#6d28d9;font-weight:600;':''}">${escapeHtml(it.name)}</td><td>${it.qty}</td><td>${money(it.price)}</td>`;
             if(isAdmin){
@@ -7763,7 +7776,7 @@ async function renderOrders(){
         <input type="date" class="df-input" value="${window._salesDateEnd||''}" onchange="window._salesDateEnd=this.value;renderOrders()">
         <button class="df-clear" onclick="window._salesDateStart='';window._salesDateEnd='';renderOrders()">清除</button>
       </div>
-      <div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="orderSearchInput" placeholder="搜索姓名/电话/商品" value="${keyword}" onkeydown="if(event.key==='Enter')doOrderSearch()" oninput="onOrderSearchInput(this)" oncompositionstart="window._orderSearchComposing=true" oncompositionend="onOrderSearchComposed(this)"></div><button class="btn btn-primary btn-sm" onclick="doOrderSearch()">搜索</button></div>`;
+      <div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="orderSearchInput" placeholder="搜索姓名/电话/商品" value="${escAttr(keyword)}" onkeydown="if(event.key==='Enter')doOrderSearch()" oninput="onOrderSearchInput(this)" oncompositionstart="window._orderSearchComposing=true" oncompositionend="onOrderSearchComposed(this)"></div><button class="btn btn-primary btn-sm" onclick="doOrderSearch()">搜索</button></div>`;
 
   if(isMobile){
     // 移动端：卡片布局（字段：客户/电话/状态/备注/创建时间/操作）
@@ -7808,15 +7821,13 @@ async function renderOrders(){
     } else {
     if(status === 'confirmed' || status === 'feedback'){
       // 销售端「已下单/待反馈」：展开商品明细（客户 | 商品名称 | 数量 | 售价 | 操作），普通/留仓/上门统一
-      html += '<div class="table-wrap"><table class="sales-order-list"><thead>';
-      html += '<tr><th rowspan="2">客户</th><th colspan="3" style="text-align:center">商品明细</th><th rowspan="2" style="width:210px;text-align:center">操作</th></tr>';
-      html += '<tr><th>商品名称</th><th style="width:56px;text-align:center">数量</th><th style="width:92px;text-align:right">售价</th></tr>';
-      html += '</thead><tbody>';
+      // v2026110614：同「待下单」——两行分组表头改单行，子列头内嵌子表 thead（对齐根修）
+      html += '<div class="table-wrap"><table class="sales-order-list"><thead><tr><th>客户</th><th colspan="3">商品明细</th><th style="width:210px;text-align:center">操作</th></tr></thead><tbody>';
       if(filtered.length){
         filtered.forEach(function(o){
           html += '<tr>';
-          html += '<td style="vertical-align:top">'+orderIdCell(o.id, {clickView:true})+'<br>'+escapeHtml(displayNameOf(o))||'-'+'</td>';
-          html += '<td colspan="3" style="padding:0;vertical-align:top"><table class="order-items-sub-table"><colgroup><col/><col/><col/></colgroup><tbody>';
+          html += '<td style="vertical-align:top">'+orderIdCell(o.id, {clickView:true})+'<br>'+(escapeHtml(displayNameOf(o))||'-')+'</td>';
+          html += '<td colspan="3" style="padding:0;vertical-align:top"><table class="order-items-sub-table"><colgroup><col/><col/><col/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th></tr></thead><tbody>';
           (o.items||[]).forEach(function(it){
             var missingTracking = ['confirmed','shipped'].indexOf(o.status) >= 0 && o.type !== 'door' && !o.noTracking && !it.trackingNo;
             html += '<tr><td style="'+(missingTracking?'border-left:3px solid #8b5cf6;padding-left:7px;color:#6d28d9;font-weight:600;':'')+'">'+escapeHtml(it.name||'-')+'</td><td style="text-align:center">'+it.qty+'</td><td style="text-align:right">'+money(it.price)+'</td></tr>';
@@ -7845,10 +7856,10 @@ async function renderOrders(){
       // v2026110604: 库存列全员可见（口径与 admin 一致：跟随本行发货仓），仍不展示成本/利润/损耗。
       const salesProducts = DB.get('products') || [];
       const salesProductMap = new Map((salesProducts || []).map(function(p){ return [p.id, p]; }));
-      html += '<div class="table-wrap"><table class="sales-order-list"><thead>';
-      html += '<tr><th rowspan="2">客户</th><th colspan="4" style="text-align:center">商品明细</th><th rowspan="2" style="width:200px;text-align:center">订单备注</th><th rowspan="2" style="width:120px;text-align:center">操作</th></tr>';
-      html += '<tr><th>商品名称</th><th style="width:56px;text-align:center">数量</th><th style="width:92px;text-align:right">售价</th><th title="本行发货仓当前库存：系统默认仓=系统库存；选供应商则显示该他仓（缺货直发不扣）。订单变为已下单时扣减">库存</th></tr>';
-      html += '</thead><tbody>';
+      // v2026110614：两行分组表头（外层自动布局）与嵌套子表（table-layout:fixed）列宽各算各的，
+      // 库存列加入后错位（表头标签与数据对不上）。改为与 admin/留仓/上门同款：外层单行表头，
+      // 子列头（商品名称/数量/售价/库存）内嵌进每行子表的 thead——同一张 fixed 表，必然对齐。
+      html += '<div class="table-wrap"><table class="sales-order-list"><thead><tr><th>客户</th><th colspan="4">商品明细</th><th style="width:200px;text-align:center">订单备注</th><th style="width:120px;text-align:center">操作</th></tr></thead><tbody>';
       if(filtered.length){
         filtered.forEach(function(o){
           const canEdit = (isAdmin || o.salesId === currentUser.id) && !isOrderLockedByOther(o);
@@ -7857,14 +7868,14 @@ async function renderOrders(){
             ? '<button class="btn btn-primary btn-sm" onclick="editOrder(\''+o.id+'\')">编辑</button>'
             : '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>';
           html += '<tr>';
-          html += '<td style="vertical-align:top">'+orderIdCell(o.id, {clickView:true})+'<br>'+escapeHtml(displayNameOf(o))||'-'+'</td>';
-          html += '<td colspan="4" style="padding:0;vertical-align:top"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col class="stock-col"/></colgroup><tbody>';
+          html += '<td style="vertical-align:top">'+orderIdCell(o.id, {clickView:true})+'<br>'+(escapeHtml(displayNameOf(o))||'-')+'</td>';
+          html += '<td colspan="4" style="padding:0;vertical-align:top"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col class="stock-col"/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th><th title="本行发货仓当前库存：系统默认仓=系统库存；选供应商则显示该他仓（缺货直发不扣）。订单变为已下单时扣减">库存</th></tr></thead><tbody>';
           (o.items||[]).forEach(function(it){
             // 销售端：商品子表只读 name / qty / price；严禁渲染 cost / waste / profit
             html += '<tr><td>'+escapeHtml(it.name||'-')+'</td><td style="text-align:center">'+it.qty+'</td><td style="text-align:right">'+money(it.price)+'</td><td style="font-weight:600;white-space:nowrap">'+_stockCellHtml(o, it, salesProducts, salesProductMap)+'</td></tr>';
           });
           html += '</tbody></table></td>';
-          const remark = o.remark ? '<span title="'+(o.remark||'').replace(/"/g,"'")+'" style="display:inline-block;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">'+escapeHtml(o.remark)+'</span>' : '<span style="color:var(--text-muted)">-</span>';
+          const remark = o.remark ? '<span title="'+escAttr(o.remark)+'" style="display:inline-block;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">'+escapeHtml(o.remark)+'</span>' : '<span style="color:var(--text-muted)">-</span>';
           html += '<td style="vertical-align:top;font-size:12px;text-align:center">'+remark+'</td>';
           html += '<td style="text-align:center;vertical-align:top">'+opBtn+'</td></tr>';
         });
@@ -7894,7 +7905,7 @@ async function renderOrders(){
               const opBtn = (o.status === 'pending' && canEdit && !hasOrderedItem)
                 ? `<button class="btn btn-primary btn-sm" onclick="editOrder('${o.id}')">编辑</button>`
                 : `<button class="btn btn-primary btn-sm" onclick="viewOrder('${o.id}')">查看</button>`;
-              const remark = o.remark ? `<span title="${(o.remark||'').replace(/"/g,"'")}" style="display:inline-block;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${escapeHtml(o.remark)}</span>` : '<span style="color:var(--text-muted)">-</span>';
+              const remark = o.remark ? `<span title="${escAttr(o.remark)}" style="display:inline-block;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${escapeHtml(o.remark)}</span>` : '<span style="color:var(--text-muted)">-</span>';
               const missingTracking = ['confirmed','shipped'].includes(o.status) && o.type !== 'door' && !o.noTracking && (o.items||[]).some(it => !it.trackingNo);
               return `
               <tr style="${missingTracking?'background:#f5f3ff;':''}">
@@ -8484,7 +8495,8 @@ function doRecognize(){
   let previewHTML = '<div class="rec-preview-grid">';
 
   // 块1：客户信息
-  const customerParts = [parsed.fullAddress, parsed.contact, parsed.phone].filter(Boolean);
+  // v2026110615：识别预览来自用户粘贴文本，必须转义（含 < & 会破版甚至注入）
+  const customerParts = [parsed.fullAddress, parsed.contact, parsed.phone].filter(Boolean).map(escapeHtml);
   previewHTML += '<div class="rec-preview-card" style="border-top:3px solid #1565c0">';
   previewHTML += '<div class="rpc-title" style="color:#1565c0">👤 客户信息</div>';
   if(customerParts.length){
@@ -8501,13 +8513,13 @@ function doRecognize(){
   if(parsed.items.length){
     hasAny = true;
     previewHTML += parsed.items.map(i =>
-      '<div class="rpc-item" style="color:#2e7d32">' + i.name + ' ¥' + i.price + ' <span style="font-size:11px;color:#888">(已匹配)</span></div>'
+      '<div class="rpc-item" style="color:#2e7d32">' + escapeHtml(i.name) + ' ¥' + i.price + ' <span style="font-size:11px;color:#888">(已匹配)</span></div>'
     ).join('');
   }
   if(parsed.rawItems.length){
     hasAny = true;
     previewHTML += parsed.rawItems.map(item =>
-      '<div class="rpc-item" style="color:#e65100">' + item + ' <span style="font-size:11px;color:#888">(未匹配商品库)</span></div>'
+      '<div class="rpc-item" style="color:#e65100">' + escapeHtml(item) + ' <span style="font-size:11px;color:#888">(未匹配商品库)</span></div>'
     ).join('');
   }
   if(!hasAny){
@@ -8546,10 +8558,12 @@ function doRecognize(){
   }
   // 填充商品
   if(parsed.items.length){
+    // v2026110615：必须保留 cost——此前识别填购物车把成本丢掉，订单 items 无成本快照 → 利润口径崩
     cart = parsed.items.map(it => ({
       productId: it.productId,
       name: it.name,
       price: it.price,
+      cost: it.cost,
       qty: it.qty,
       subtotal: it.subtotal
     }));
@@ -9235,7 +9249,7 @@ function showManualAddProduct(){
       <div id="manualDupHint">${manualAddDupHint(searchKeyword)}</div>
       <div class="form-group" style="margin-bottom:8px">
         <label class="form-label" style="font-size:12px">商品名称 <span class="required">*</span></label>
-        <input type="text" class="form-control" id="manualProdName" value="${searchKeyword}" placeholder="输入商品名称" style="padding:6px 10px;font-size:13px" oninput="var h=document.getElementById('manualDupHint');if(h)h.innerHTML=manualAddDupHint(this.value)">
+        <input type="text" class="form-control" id="manualProdName" value="${escAttr(searchKeyword)}" placeholder="输入商品名称" style="padding:6px 10px;font-size:13px" oninput="var h=document.getElementById('manualDupHint');if(h)h.innerHTML=manualAddDupHint(this.value)">
       </div>
       <div class="form-group" style="margin-bottom:10px">
         <label class="form-label" style="font-size:12px">销售价（元） <span class="required">*</span></label>
@@ -10552,7 +10566,7 @@ function renderOrderDetail(){
     // 收款入口 v2026101604：「记录收款」任何状态都可补录（含提交时被自动登记为全款已收的单）；
     // 有定金且未结清时另给「收尾款」快捷入口（默认带出尾款余额）
     html += `<button class="btn btn-warning" onclick="openAddPayment('${order.id}')">💵 记录收款</button>`;
-    if((parseInt(order.deposit) || 0) > 0 && getOrderRemaining(order) > 0){
+    if(orderHasBalanceDue(order)){ // v2026110614b：定金0但尾款>0 也给「收尾款」快捷入口
       html += `<button class="btn btn-warning" onclick="openAddPayment('${order.id}', true)">💵 收尾款</button>`;
     }
     if(order.status === 'confirmed'){
@@ -13833,7 +13847,7 @@ function renderCustomers(){
       <div class="filter-bar">
         <div class="search-box">
           <span class="search-icon">🔍</span>
-          <input type="text" placeholder="搜索客户名称/联系人/电话" value="${keyword}" oninput="filterCustomers(this.value)">
+          <input type="text" id="customerSearchInput" placeholder="搜索客户名称/联系人/电话" value="${escAttr(keyword)}" oninput="filterCustomers(this.value)" oncompositionstart="window._orderSearchComposing=true" oncompositionend="window._orderSearchComposing=false;filterCustomers(this.value,0)">
         </div>
       </div>
       <div class="table-wrap">
@@ -13998,9 +14012,12 @@ function renderCustomerCharts(){
 }
 
 
-function filterCustomers(value){
+function filterCustomers(value, delay){
   window._customerFilter = value;
-  renderCustomers();
+  // 客户列表是整页重渲染（还重建地区分布图表），必须防抖 + 组字保护 + 焦点还原：
+  // 否则每敲一个字符就重建整页，中文输入法被打断、输入框失焦（v2026110613 二轮）。
+  if(window._orderSearchComposing) return;          // 组字中：只记关键词不渲染
+  _debouncedSearchRender('renderCustomers', 'customerSearchInput', delay);
 }
 
 function openCustomerModal(customerId){
@@ -14453,7 +14470,6 @@ function exportScheduleOrders(){
     filtered = filtered.filter(function(o){ return doorStatusMap[statusKey].indexOf(o.status) >= 0; });
   }
   if(schKeyword){
-    var skw = schKeyword.toLowerCase();
     filtered = filtered.filter(function(o){
       return (o.customerName||'').indexOf(schKeyword) >= 0 ||
         (o.phone||'').indexOf(schKeyword) >= 0 ||
@@ -14796,7 +14812,7 @@ async function renderProducts(){
       <div class="filter-bar">
         <div class="search-box">
           <span class="search-icon">🔍</span>
-          <input type="text" placeholder="搜索商品名称或分类" value="${keyword}" oninput="filterProducts(this.value)">
+          <input type="text" placeholder="搜索商品名称或分类" value="${escAttr(keyword)}" oninput="filterProducts(this.value)">
         </div>
       </div>
       <div class="table-wrap">
@@ -17754,6 +17770,14 @@ function stockWhProducts(products, wh){
     return { id:p.id, name:p.name || '', category:p.category || '—', qty:q, cost:cost, amount:q*cost };
   }).sort(function(a,b){ return b.qty - a.qty; });
 }
+// v2026110612：胶囊行只显示「有金额」的仓——本仓恒显示；他仓金额为 0 不显示
+// （历史流水/空仓会产生几十个 ¥0 胶囊，淹没真正有货的仓）。下拉候选不受此限，仍全量可检索。
+function stockWhCapsuleWhs(products, whOptions){
+  return (whOptions || []).filter(function(k){
+    if(k === '本仓') return true;
+    return (Number(computeWarehouseStockValue(products, k)) || 0) !== 0;
+  });
+}
 // 某仓流水（归一化 warehouse 后精确匹配）；filter(Boolean) 兜同步异常混入的 null 脏元素
 function stockWhLogs(logs, wh){
   const key = _stockWhKey(wh);
@@ -17775,6 +17799,9 @@ function renderStockLedger(){
   // v2026110610：胶囊改用 whOptions 渲染，hisBreakdown / hisKeys 不再需要（函数本身保留供测试与统计复用）
   // v2026110609：仓库下拉候选 = 本仓 + 所有出现过的他仓（含只在流水里出现、当前库存为 0 的仓）
   const whOptions = stockWhOptions(products, allLogs);
+  // v2026110612：胶囊只渲染有金额的仓；检索式下拉仍用全量 whOptions（含 ¥0 仓，可打字搜）
+  const capsuleWhs = stockWhCapsuleWhs(products, whOptions);
+  window._ledgerWhOpts = whOptions.map(function(k){ return { val:k, label: k === '本仓' ? '系统默认仓（本仓）' : '他仓 · ' + k }; });
   const html = `
     <div class="kpi-row">
       <div class="kpi-card" style="cursor:pointer" title="点击查看全部商品及库存" onclick="openStockKpiDetail('all')"><div class="kpi-value">${products.length}</div><div class="kpi-label">商品总数</div></div>
@@ -17784,17 +17811,18 @@ function renderStockLedger(){
       <div class="kpi-card" title="各供应商他仓库存总价值合计（采购成本口径）"><div class="kpi-value">${money(hisValue)}</div><div class="kpi-label">他仓金额合计(采购成本)</div></div>
       <div class="kpi-card ${negStock.length ? 'kpi-danger' : ''}" style="cursor:pointer" title="点击查看负库存商品" onclick="openStockKpiDetail('neg')"><div class="kpi-value">${negStock.length}</div><div class="kpi-label">负库存商品</div></div>
     </div>
-    ${whOptions.length ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center">
+    ${capsuleWhs.length ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center">
       <span style="font-size:12px;color:var(--text-muted);margin-right:2px">仓库明细（点击查该仓出入库）：</span>
-      ${whOptions.map(function(k){ const isDef = k === '本仓'; const amt = isDef ? stockValue : computeWarehouseStockValue(products, k); const jsK = escapeJsStr(k); return '<span role="button" tabindex="0" onclick="openStockWhDetail(\''+jsK+'\')" onkeydown="if(event.key===\'Enter\'){openStockWhDetail(\''+jsK+'\')}" style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:'+(isDef?'#eef6f6':'#fff7ed')+';border:1px solid '+(isDef?'#a7d8d3':'#fed7aa')+';border-radius:999px;font-size:12px;color:'+(isDef?'#0f6e56':'#9a3412')+';cursor:pointer">'+(isDef?'🏠 系统默认仓（本仓）':'🏷️ 他仓 · '+escapeHtml(k))+'：'+money(amt)+' ▾</span>'; }).join('')}
+      ${capsuleWhs.map(function(k){ const isDef = k === '本仓'; const amt = isDef ? stockValue : computeWarehouseStockValue(products, k); const jsK = escapeJsStr(k); return '<span role="button" tabindex="0" onclick="openStockWhDetail(\''+jsK+'\')" onkeydown="if(event.key===\'Enter\'){openStockWhDetail(\''+jsK+'\')}" style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:'+(isDef?'#eef6f6':'#fff7ed')+';border:1px solid '+(isDef?'#a7d8d3':'#fed7aa')+';border-radius:999px;font-size:12px;color:'+(isDef?'#0f6e56':'#9a3412')+';cursor:pointer">'+(isDef?'🏠 系统默认仓（本仓）':'🏷️ 他仓 · '+escapeHtml(k))+'：'+money(amt)+' ▾</span>'; }).join('')}
     </div>` : ''}
     ${lowStock.length ? `<div class="alert alert-warning">⚠️ 库存预警：${lowStock.map(function(p){ return escAttr(p.name) + '(' + (Number(p.stockQty)||0) + '/' + (Number(p.warnQty)||0) + ')'; }).join('、')}</div>` : ''}
     <div class="page-actions">
       <input type="text" class="form-control" id="ledgerProduct" placeholder="🔍 商品名" oninput="filterStockLedger()" style="max-width:200px">
-      <select class="form-control" id="ledgerWarehouse" onchange="filterStockLedger()" style="max-width:170px" title="按仓库筛选流水">
-        <option value="">全部仓库</option>
-        ${whOptions.map(function(k){ return '<option value="'+escAttr(k)+'">'+(k === '本仓' ? '系统默认仓（本仓）' : '他仓 · '+escAttr(k))+'</option>'; }).join('')}
-      </select>
+      <div style="position:relative;max-width:200px" class="po-wh-box" title="按仓库筛选流水（支持打字检索）">
+        <input type="hidden" class="po-wh-value" id="ledgerWarehouse" value="">
+        <input type="text" class="form-control po-wh-input" id="ledgerWarehouseName" placeholder="全部仓库（输入检索）" value="" autocomplete="off" oninput="ledgerSearchWh(this)" onfocus="ledgerSearchWh(this)" onblur="ledgerHideWhDrop(this)">
+        <div class="po-wh-drop" style="display:none;position:absolute;top:100%;left:0;right:0;max-height:240px;overflow-y:auto;background:#fff;border:1px solid var(--border);border-radius:8px;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.12)"></div>
+      </div>
       <select class="form-control" id="ledgerType" onchange="filterStockLedger()" style="max-width:160px">
         <option value="">全部类型</option>
         <option value="outbound">出库(本仓)</option>
@@ -17816,8 +17844,7 @@ function renderStockLedger(){
   // v2026110609：从「仓库明细」弹窗跳转过来时，预置仓库筛选
   const _preset = window._ledgerPresetWh;
   if(_preset){
-    const _sel = document.getElementById('ledgerWarehouse');
-    if(_sel) _sel.value = _preset;
+    setLedgerWhValue(_preset);
     window._ledgerPresetWh = null;
   }
   filterStockLedger();
@@ -17953,6 +17980,63 @@ function openStockWhDetail(wh){
     </div>`;
   document.getElementById('modalContainer').innerHTML = modalHtml;
 }
+// v2026110612：台账「仓库」检索式下拉（复用采购弹窗 po-wh-box 结构，但候选来自台账
+// stockWhOptions——含只在流水里出现过的仓，故不能用采购弹窗的 _whOptions）。
+// 隐藏 input 沿用原 id「ledgerWarehouse」，filterStockLedger / exportStockLedgerCSV /
+// jumpLedgerByWh 的读取契约不变；空值 = 全部仓库。
+function ledgerSearchWh(inp){
+  const kw = (inp.value || '').trim().toLowerCase();
+  const box = inp.closest('.po-wh-box');
+  if(!box) return;
+  const drop = box.querySelector('.po-wh-drop');
+  const hidden = box.querySelector('.po-wh-value');
+  if(!drop || !hidden) return;
+  const opts = window._ledgerWhOpts || [];
+  // 展示名与仓库名都参与匹配；输入「他仓」列出全部他仓，输入「默认/本仓」命中系统默认仓
+  let list = kw ? opts.filter(function(o){ return (o.label + ' ' + o.val).toLowerCase().indexOf(kw) !== -1; }) : opts;
+  const MAX = 50;
+  let html = '<div class="po-wh-opt" data-wh="" style="padding:8px 10px;cursor:pointer;border-bottom:1px solid var(--border);font-size:13px;' + (hidden.value ? '' : 'background:#eef6f6;font-weight:600;') + '">全部仓库</div>';
+  html += list.slice(0, MAX).map(function(o){
+    const selStyle = o.val === hidden.value ? 'background:#eef6f6;font-weight:600;' : '';
+    return '<div class="po-wh-opt" data-wh="' + escAttr(o.val) + '" style="padding:8px 10px;cursor:pointer;border-bottom:1px solid var(--border);font-size:13px;' + selStyle + '">' + escAttr(o.label) + '</div>';
+  }).join('');
+  if(!list.length){ html = '<div style="padding:10px;color:var(--text-muted);font-size:13px">无匹配仓库</div>'; }
+  else if(list.length > MAX){ html += '<div style="padding:8px 10px;color:var(--text-muted);font-size:12px">共 ' + list.length + ' 个匹配，仅显示前 ' + MAX + ' 个，请继续输入关键字缩小范围</div>'; }
+  drop.innerHTML = html;
+  drop.style.display = 'block';
+  Array.prototype.forEach.call(drop.querySelectorAll('.po-wh-opt'), function(el){
+    el.addEventListener('mousedown', function(ev){ ev.preventDefault(); ledgerPickWh(el); });
+  });
+}
+function ledgerPickWh(optEl){
+  const box = optEl.closest('.po-wh-box');
+  const val = optEl.getAttribute('data-wh') || '';
+  setLedgerWhValue(val);
+  if(box) box.querySelector('.po-wh-drop').style.display = 'none';
+  filterStockLedger();
+}
+// 失焦还原：选中值对应的展示名；没选中（空=全部仓库）则清掉随手输入的文字
+function ledgerHideWhDrop(inp){
+  setTimeout(function(){
+    const box = inp.closest('.po-wh-box');
+    if(box && box.querySelector('.po-wh-drop')) box.querySelector('.po-wh-drop').style.display = 'none';
+    const hidden = document.getElementById('ledgerWarehouse');
+    const val = hidden ? hidden.value : '';
+    const opt = (window._ledgerWhOpts || []).find(function(o){ return o.val === val; });
+    if(inp) inp.value = opt ? opt.label : '';
+  }, 180);
+}
+// 统一写入口：同时更新隐藏值与展示名（jumpLedgerByWh / 预置 / 点选三处共用）
+function setLedgerWhValue(val){
+  const hidden = document.getElementById('ledgerWarehouse');
+  if(!hidden) return;
+  hidden.value = val || '';
+  const inp = document.getElementById('ledgerWarehouseName');
+  if(inp){
+    const opt = (window._ledgerWhOpts || []).find(function(o){ return o.val === val; });
+    inp.value = opt ? opt.label : '';
+  }
+}
 // 从仓库明细弹窗跳回台账：设置仓库下拉并刷新。
 // 找不到下拉（页面被重建/尚未渲染台账）时，直接同步重渲染台账消费预置值，
 // 不走 navigate()——它含本地缓存判断与异步拉取，不保证立即调用 renderStockLedger，
@@ -17960,7 +18044,7 @@ function openStockWhDetail(wh){
 function jumpLedgerByWh(wh){
   closeModal();
   const sel = document.getElementById('ledgerWarehouse');
-  if(sel){ sel.value = wh; filterStockLedger(); return; }
+  if(sel){ setLedgerWhValue(wh); filterStockLedger(); return; }
   window._ledgerPresetWh = _stockWhKey(wh);
   try{ renderStockLedger(); }catch(e){ window._ledgerPresetWh = null; }
 }
@@ -18392,12 +18476,21 @@ function getOrderRemaining(order){
   return Math.max(0, (parseInt(order.total) || 0) - basePaid - paidSum);
 }
 
+// 是否存在待收尾款（v2026110614b 口径，业务拍板）：
+// ① 有剩余尾款；② 满足任一：有定金 / 提交时填了尾款金额 / 订单未完成（未完成且未收清即挂账，
+//    fp=0 时按剩余总额收）。
+// 已完成且定金0、尾款0 的老单不纳入（历史线下收款未登记的存量不涌入清单）。
+function orderHasBalanceDue(order){
+  if(!order) return false;
+  if(getOrderRemaining(order) <= 0) return false;
+  return (parseInt(order.deposit) || 0) > 0 || (parseInt(order.finalPayment) || 0) > 0 || order.status !== 'completed';
+}
+
 // 计算所有销售待收尾款总额（有定金且未结清的订单）
 function calcAllPendingFinalPayments(orders){
   return (orders || []).reduce(function(s, o){
     
-    const deposit = parseInt(o.deposit) || 0;
-    if(deposit <= 0) return s; // 无尾款
+    if(!orderHasBalanceDue(o)) return s; // v2026110614b：定金0但尾款>0 也计入
     return s + getOrderRemaining(o);
   }, 0);
 }
@@ -18406,10 +18499,7 @@ function calcAllPendingFinalPayments(orders){
 function showPendingFinalPayments(){
   var orders = (DB.get('orders') || []).filter(o => !isOrderDeleted(o));
   var balanceOrders = orders.filter(function(o){
-    
-    var deposit = parseInt(o.deposit) || 0;
-    if(deposit <= 0) return false;
-    return getOrderRemaining(o) > 0;
+    return orderHasBalanceDue(o); // v2026110614b：定金0但尾款>0 也纳入
   }).sort(function(a,b){ return _createdAtDesc(a,b); });
 
   var total = calcAllPendingFinalPayments(orders);
@@ -18431,8 +18521,8 @@ function showPendingFinalPayments(){
       var rem = getOrderRemaining(o);
       var salesName = o.salesName || '-';
       html += '<tr>';
-      html += '<td>' + orderIdCell(o.id) + '<br>' + (o.customerName || '-') + '</td>';
-      html += '<td>' + salesName + '</td>';
+      html += '<td>' + orderIdCell(o.id) + '<br>' + (escapeHtml(o.customerName) || '-') + '</td>';
+      html += '<td>' + escapeHtml(salesName) + '</td>';
       html += '<td>' + money(o.total || 0) + '</td>';
       html += '<td style="color:var(--success)">' + money(Math.max(0,(o.total||0)-rem)) + '</td>';
       html += '<td style="color:var(--danger);font-weight:600">' + money(rem) + '</td>';
@@ -18483,7 +18573,7 @@ function openAddPayment(orderId, forceBalance){
   // 已收（已到账）合计，用于推算尾款余额
   const remaining = getOrderRemaining(order);
   const total = parseInt(order.total) || 0;
-  const hasBalance = (parseInt(order.deposit) || 0) > 0 || !!forceBalance; // 定金单或待收尾款=有尾款
+  const hasBalance = (parseInt(order.deposit) || 0) > 0 || (parseInt(order.finalPayment) || 0) > 0 || !!forceBalance; // v2026110614b：定金单、填了尾款的挂账单或强制尾款模式=有尾款
   const defaultStage = hasBalance ? '尾款' : '定金';
   const defaultAmount = hasBalance ? remaining : (parseInt(order.deposit) || total);
   const defaultMethod = order.paymentMethod === 'scan' ? '扫码支付' : '微信支付';
@@ -19335,7 +19425,7 @@ function renderAftersales(){
         <button class="df-clear" onclick="clearAsDateFilter()">清除</button>
       </div>
       <div class="admin-tab-bar" style="margin-bottom:14px">
-        <div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="搜索售后单号/客户姓名/原订单号/商品名称" value="${keyword}" oninput="window._aftersaleKeyword=this.value;renderAftersales()"></div>
+        <div class="search-box"><span class="search-icon">🔍</span><input type="text" id="aftersaleSearchInput" placeholder="搜索售后单号/客户姓名/原订单号/商品名称" value="${escAttr(keyword)}" oninput="window._aftersaleKeyword=this.value;if(!window._orderSearchComposing)_debouncedSearchRender('renderAftersales','aftersaleSearchInput')" oncompositionstart="window._orderSearchComposing=true" oncompositionend="window._orderSearchComposing=false;window._aftersaleKeyword=this.value;_debouncedSearchRender('renderAftersales','aftersaleSearchInput',0)"></div>
       </div>
       <div class="table-wrap">
         <table>
@@ -20366,7 +20456,6 @@ async function renderSchedule(){
 
   // 关键词检索（客户姓名/电话/商品）
   if(schKeyword){
-    var skw = schKeyword.toLowerCase();
     orders = orders.filter(function(o){
       return (o.customerName||'').indexOf(schKeyword) >= 0 ||
         (o.phone||'').indexOf(schKeyword) >= 0 ||
@@ -20381,8 +20470,7 @@ async function renderSchedule(){
     orders = orders.filter(function(o){ var d = doorDateOf(o); return d <= schDateEnd; });
   }
 
-  var html = '<div class="card"><div class="card-title"><span class="title-text">📅 上门订单</span><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="gotoNewOrder(\'door\')">+ 新建上门订单</button><button class="btn btn-sm '+(viewMode==='calendar'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'calendar\';renderSchedule()">日历视图</button><button class="btn btn-sm '+(viewMode==='list'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'list\';renderSchedule()">列表视图</button>'+(isAdmin?'<button class="btn btn-sm btn-success" onclick="openBatchStockModal()">批量标记已备货</button>':'')+
-    +(isAdmin?'<button class="btn btn-primary btn-sm" onclick="exportScheduleOrders()" style="display:inline-flex;align-items:center;gap:4px">📥 导出</button>':'')+'</div></div>';
+  var html = '<div class="card"><div class="card-title"><span class="title-text">📅 上门订单</span><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary btn-sm" onclick="gotoNewOrder(\'door\')">+ 新建上门订单</button><button class="btn btn-sm '+(viewMode==='calendar'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'calendar\';renderSchedule()">日历视图</button><button class="btn btn-sm '+(viewMode==='list'?'btn-primary':'btn-secondary')+'" onclick="window._scheduleView=\'list\';renderSchedule()">列表视图</button>'    +(isAdmin?'<button class="btn btn-sm btn-success" onclick="openBatchStockModal()">批量标记已备货</button>':'')+(isAdmin?'<button class="btn btn-primary btn-sm" onclick="exportScheduleOrders()" style="display:inline-flex;align-items:center;gap:4px">📥 导出</button>':'')+'</div></div>';
   html += '<div class="admin-tab-bar" style="margin-bottom:14px">';
   schTabs.forEach(function(t){
     // 状态角标统一基于全部非删除上门订单，不受关键词/日期筛选影响
@@ -20401,7 +20489,7 @@ async function renderSchedule(){
   html += '<span style="flex:0 0 100%;font-size:11px;color:var(--text-muted);line-height:1.5" title="列表按「上门日期」筛选；导出按「完成时间」归属月份（现场上门日与系统标记完成日可能不同，跨月时会算到下个月），未完成的单按上门日期兜底。">ⓘ 列表按上门日期；导出按完成时间归属（未完成的单按上门日期兜底）</span>';
   html += '</div>';
   // 检索栏
-  html += '<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" placeholder="搜索客户/电话/商品" value="'+schKeyword+'" oninput="window._scheduleFilter=this.value;renderSchedule()"></div></div>';
+  html += '<div class="admin-tab-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="scheduleSearchInput" placeholder="搜索客户/电话/商品" value="'+escAttr(schKeyword)+'" oninput="window._scheduleFilter=this.value;if(!window._orderSearchComposing)_debouncedSearchRender(\'renderSchedule\',\'scheduleSearchInput\')" oncompositionstart="window._orderSearchComposing=true" oncompositionend="window._orderSearchComposing=false;window._scheduleFilter=this.value;_debouncedSearchRender(\'renderSchedule\',\'scheduleSearchInput\',0)"></div></div>';
 
   if(viewMode === 'calendar'){
     var parts = currentMonth.split('-');
@@ -20446,7 +20534,7 @@ async function renderSchedule(){
         if(dayOrders.length <= 3){
           dayOrders.forEach(function(o){
             html += '<div style="font-size:10px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.45">';
-            html += escapeHtml(displayNameOf(o))||'';
+            html += (escapeHtml(displayNameOf(o))||'');
             var _city = orderCityOf(o);
             if(_city) html += '<br>'+escapeHtml(_city);
             // v2026100109：原写法直接读静态字段 finalPayment（建单时算出的尾款额），
@@ -20475,6 +20563,47 @@ async function renderSchedule(){
 
   } else {
     var sorted = orders.slice().sort(function(a,b){ return doorDateOf(b).localeCompare(doorDateOf(a)); });
+    if(statusKey === 'pending' || statusKey === 'confirmed'){
+      // v2026110612：上门订单列表展开商品明细（参考普通订单待下单列表），字段按角色严格区分：
+      // admin=成本/损耗/利润；库存全员可见但仅「待下单」（已下单不显示库存）；发货仓=admin/操作员只读；
+      // 销售端严禁出现成本/利润/损耗。
+      var _doorProducts = DB.get('products') || [];
+      var _doorProductMap = new Map(_doorProducts.map(function(p){ return [p.id, p]; }));
+      var doorCanStock = isAdmin || currentUser.role === 'operator';
+      var showStock = statusKey === 'pending';
+      html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>商品明细</th><th style="width:200px;text-align:center">订单备注</th><th>上门日期</th><th style="width:110px;text-align:center">操作</th></tr></thead><tbody>';
+      sorted.forEach(function(o){
+        var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>';
+        html += '<tr>';
+        html += '<td style="vertical-align:top">'+orderIdCell(o.id)+'<br>'+escapeHtml(displayNameOf(o))+'<br><span style="font-size:11px;color:var(--text-muted)">'+escapeHtml(o.phone||'')+'</span></td>';
+        html += '<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>'+(isAdmin?'<col/><col/><col/>':'')+(showStock?'<col class="stock-col"/>':'')+(doorCanStock?'<col class="wh-col"/>':'')+'</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>'+(isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':'')+(showStock?'<th title="本行发货仓当前库存：系统默认仓=系统库存；选供应商则显示该他仓（缺货直发不扣）。订单变为已下单时扣减">库存</th>':'')+(doorCanStock?'<th>发货仓</th>':'')+'</tr></thead><tbody>';
+        (o.items||[]).forEach(function(it){
+          var cost = effectiveItemCost(o, it, _doorProductMap);
+          var waste = it.waste || 0;
+          var profit = (it.price||0)*(it.qty||0) - cost*(it.qty||0) - waste;
+          html += '<tr><td>'+escapeHtml(it.name||'-')+'</td><td>'+(it.qty||0)+'</td><td>'+money(it.price||0)+'</td>';
+          if(isAdmin){
+            html += '<td>'+money(cost)+'</td>';
+            html += '<td style="font-weight:600;color:var(--danger)">'+money(waste)+'</td>';
+            html += '<td style="color:'+(profit>=0?'var(--success)':'var(--danger)')+';font-weight:600">'+money(profit)+'</td>';
+          }
+          if(showStock){
+            html += '<td style="font-weight:600;white-space:nowrap">'+_stockCellHtml(o, it, _doorProducts, _doorProductMap)+'</td>';
+          }
+          if(doorCanStock){
+            var _whRaw = String((it.shipWarehouse && String(it.shipWarehouse).trim()) || (o.shipWarehouse && String(o.shipWarehouse).trim()) || '本仓').trim();
+            html += '<td style="font-size:12px">'+_shipWhReadonlyHtml(_whRaw)+'</td>';
+          }
+          html += '</tr>';
+        });
+        html += '</tbody></table></td>';
+        var _dRemark = o.remark ? '<span title="'+escAttr(o.remark)+'" style="display:inline-block;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">'+escapeHtml(o.remark)+'</span>' : '<span style="color:var(--text-muted)">-</span>';
+        html += '<td style="vertical-align:top;font-size:12px;text-align:center">'+_dRemark+'</td>';
+        html += '<td style="vertical-align:top;font-size:12px;text-align:center">'+formatOrderDate(doorDateOf(o))+'</td>';
+        html += '<td style="text-align:center;vertical-align:top">'+opHtml+'</td></tr>';
+      });
+      html += '</tbody></table></div>';
+    } else {
     html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>上门日期</th><th>操作</th></tr></thead><tbody>';
       if(sorted.length){
       sorted.forEach(function(o){
@@ -20482,6 +20611,7 @@ async function renderSchedule(){
       });
     }
     html += '</tbody></table></div>';
+    }
   }
 
   html += '</div>';
@@ -20584,12 +20714,12 @@ async function renderWarehouse(){
       html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>商品明细</th><th>操作</th></tr></thead><tbody>';
       filtered.forEach(function(o){
         html += '<tr>';
-        html += '<td style="vertical-align:top">'+orderIdCell(o.id)+'<br>'+escapeHtml(displayNameOf(o))||'-'+'<br><span style="font-size:11px;color:var(--text-muted)">'+escapeHtml(o.phone||'')+'</span></td>';
+        html += '<td style="vertical-align:top">'+orderIdCell(o.id)+'<br>'+(escapeHtml(displayNameOf(o))||'-')+'<br><span style="font-size:11px;color:var(--text-muted)">'+escapeHtml(o.phone||'')+'</span></td>';
         html += '<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>'+(isAdmin?'<col/><col/><col/>':'')+'</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>'+(isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':'')+'</tr></thead><tbody>';
         (o.items||[]).forEach(function(it){
           var cost = effectiveItemCost(o, it);
           var waste = it.waste || 0;
-          var profit = it.price * it.qty - cost * it.qty - waste;
+          var profit = (it.price||0) * (it.qty||0) - cost * (it.qty||0) - (waste||0);
           var missingTracking = ['confirmed','shipped'].indexOf(o.status) >= 0 && o.type !== 'door' && !o.noTracking && !it.trackingNo;
           html += '<tr style="'+(missingTracking?'background:#f5f3ff;':'')+'"><td style="'+(missingTracking?'border-left:3px solid #8b5cf6;padding-left:7px;color:#6d28d9;font-weight:600;':'')+'">'+escapeHtml(it.name||'-')+'</td><td>'+it.qty+'</td><td>'+money(it.price)+'</td>';
           if(isAdmin){
@@ -20601,6 +20731,43 @@ async function renderWarehouse(){
         });
         html += '</tbody></table></td>';
         html += '<td style="text-align:center"><button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button></td></tr>';
+      });
+      html += '</tbody></table></div>';
+    } else if(statusKey === 'pending'){
+      // v2026110612：待下单展开商品明细（参考普通订单待下单列表）。字段按角色严格区分：
+      // admin=成本/损耗/利润；库存全员可见（口径 _stockCellHtml 跟随本行发货仓）；
+      // 发货仓=admin/操作员只读；销售端严禁出现成本/利润/损耗，只读 名称/数量/售价/库存。
+      const whProducts = products || [];
+      const _whProductMap = new Map(whProducts.map(function(p){ return [p.id, p]; }));
+      const whCanStock = isAdmin || currentUser.role === 'operator';
+      html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>商品明细</th><th style="width:200px;text-align:center">订单备注</th><th>发货日期</th><th style="width:110px;text-align:center">操作</th></tr></thead><tbody>';
+      filtered.forEach(function(o){
+        var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>';
+        html += '<tr>';
+        html += '<td style="vertical-align:top">'+orderIdCell(o.id)+'<br>'+escapeHtml(o.customerName||'-')+'<br><span style="font-size:11px;color:var(--text-muted)">'+escapeHtml(o.phone||'')+'</span></td>';
+        html += '<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>'+(isAdmin?'<col/><col/><col/>':'')+'<col class="stock-col"/>'+(whCanStock?'<col class="wh-col"/>':'')+'</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>'+(isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':'')+'<th title="本行发货仓当前库存：系统默认仓=系统库存；选供应商则显示该他仓（缺货直发不扣）。订单变为已下单时扣减">库存</th>'+(whCanStock?'<th>发货仓</th>':'')+'</tr></thead><tbody>';
+        (o.items||[]).forEach(function(it){
+          const cost = effectiveItemCost(o, it, _whProductMap);
+          const waste = it.waste || 0;
+          const profit = (it.price||0) * (it.qty||0) - cost * (it.qty||0) - (waste||0);
+          html += '<tr><td>'+escapeHtml(it.name||'-')+'</td><td>'+(it.qty||0)+'</td><td>'+money(it.price||0)+'</td>';
+          if(isAdmin){
+            html += '<td>'+money(cost)+'</td>';
+            html += '<td style="font-weight:600;color:var(--danger)">'+money(waste)+'</td>';
+            html += '<td style="color:'+(profit>=0?'var(--success)':'var(--danger)')+';font-weight:600">'+money(profit)+'</td>';
+          }
+          html += '<td style="font-weight:600;white-space:nowrap">'+_stockCellHtml(o, it, whProducts, _whProductMap)+'</td>';
+          if(whCanStock){
+            const _whRaw = String((it.shipWarehouse && String(it.shipWarehouse).trim()) || (o.shipWarehouse && String(o.shipWarehouse).trim()) || '本仓').trim();
+            html += '<td style="font-size:12px">'+_shipWhReadonlyHtml(_whRaw)+'</td>';
+          }
+          html += '</tr>';
+        });
+        html += '</tbody></table></td>';
+        const _whRemark = o.remark ? '<span title="'+escAttr(o.remark)+'" style="display:inline-block;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">'+escapeHtml(o.remark)+'</span>' : '<span style="color:var(--text-muted)">-</span>';
+        html += '<td style="vertical-align:top;font-size:12px;text-align:center">'+_whRemark+'</td>';
+        html += '<td style="vertical-align:top;font-size:12px;text-align:center">'+(o.orderDate ? formatOrderDate(o.orderDate) : '<span style="color:var(--text-muted)">未设置</span>')+'</td>';
+        html += '<td style="text-align:center;vertical-align:top">'+opHtml+'</td></tr>';
       });
       html += '</tbody></table></div>';
     } else {
@@ -20629,8 +20796,8 @@ function renderCollectBalance(){
     var orders = (DB.get('orders') || []).filter(o => !isOrderDeleted(o));
     if(!isAdmin) orders = orders.filter(function(o){ return o.salesId === currentUser.id; });
   var list = orders.filter(function(o){
-    // 仅定金订单有尾款，全款订单不纳入待收尾款
-    return getOrderRemaining(o) > 0 && (parseInt(o.deposit) || 0) > 0;
+    // v2026110614b：统一口径 orderHasBalanceDue（定金单/填了尾款的挂账单/未完成未收清单）
+    return orderHasBalanceDue(o);
   });
   if(keyword){
     var kw = keyword.toLowerCase();
@@ -20645,7 +20812,7 @@ function renderCollectBalance(){
 
   var html = '<div class="card"><div class="card-title"><span class="title-text">💵 待收尾款</span>';
   html += '<span style="margin-left:auto;font-size:13px;color:var(--text-muted)">待收尾款合计 <b style="color:var(--warning);font-size:15px">'+money(totalBalance)+'</b></span></div>';
-  html += '<div class="filter-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="balanceSearchInput" placeholder="搜索订单号/客户/电话" value="'+keyword+'" oninput="window._balanceKeyword=this.value;if(!window._orderSearchComposing)_debouncedSearchRender(\'renderCollectBalance\',\'balanceSearchInput\')" oncompositionstart="window._orderSearchComposing=true" oncompositionend="window._orderSearchComposing=false;window._balanceKeyword=this.value;_debouncedSearchRender(\'renderCollectBalance\',\'balanceSearchInput\',0)"></div></div>';
+  html += '<div class="filter-bar"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="balanceSearchInput" placeholder="搜索订单号/客户/电话" value="'+escAttr(keyword)+'" oninput="window._balanceKeyword=this.value;if(!window._orderSearchComposing)_debouncedSearchRender(\'renderCollectBalance\',\'balanceSearchInput\')" oncompositionstart="window._orderSearchComposing=true" oncompositionend="window._orderSearchComposing=false;window._balanceKeyword=this.value;_debouncedSearchRender(\'renderCollectBalance\',\'balanceSearchInput\',0)"></div></div>';
 
   if(list.length){
     html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>订单金额</th><th>已收</th><th>尾款余额</th><th>操作</th></tr></thead><tbody>';
@@ -20654,7 +20821,7 @@ function renderCollectBalance(){
       var remaining = getOrderRemaining(o);
       var paid = total - remaining;
       html += '<tr>' +
-        '<td>'+ (o.customerName||'-') +'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td>' +
+        '<td>'+ (escapeHtml(o.customerName) || '-') +'<br><span style="font-size:11px;color:var(--text-muted)">'+(escapeHtml(o.phone)||'')+'</span></td>' +
         '<td style="font-weight:600">'+money(total)+'</td>' +
         '<td>'+money(paid)+'</td>' +
         '<td style="font-weight:600;color:var(--warning)">'+money(remaining)+'</td>' +
