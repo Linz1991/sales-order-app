@@ -1792,7 +1792,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026110617</div>
+          <div class="brand-sub">v2026110702</div>
         </div>
       </div>
     </div>
@@ -3642,7 +3642,7 @@ const DB = {
       if(table === 'suppliers' || table === 'purchases' || table === 'stock_logs'){
         const _invColDefaults = {
           suppliers:   { id:'', name:'', contact:'', phone:'', address:'', remark:'', created_at:null, updated_at:null, _deleted:false },
-          purchases:   { id:'', order_no:'', supplier_id:'', supplier_name:'', items:'[]', total_amount:0, status:'ordered', order_date:'', expect_date:'', inbound_at:null, target_warehouse:'', remark:'', created_at:null, updated_at:null, _deleted:false },
+          purchases:   { id:'', order_no:'', supplier_id:'', supplier_name:'', items:'[]', total_amount:0, status:'ordered', order_date:'', expect_date:'', inbound_at:null, target_warehouse:'', tracking_no:'', remark:'', created_at:null, updated_at:null, _deleted:false },
           'stock_logs':{ id:'', product_id:'', product_name:'', type:'adjust', delta:0, before_qty:0, after_qty:0, warehouse:'', rel_id:'', operator:'', remark:'', created_at:null, _deleted:false }
         }[table];
         snakeData = snakeData.map(function(o){
@@ -3673,7 +3673,8 @@ const DB = {
                 // v2026110501：order_no 是可选列——云端还没跑 ADD COLUMN 时自动剔除该列重试，
                 // 保证「先部署、后迁移」也不会同步报红（此时单号只在本地显示，跑完 SQL 后自动补上云）。
                 // v2026110502：target_warehouse 同机制（入库目标仓，先部署后跑 SQL 也不报红）。
-                purchases: new Set(['order_no','target_warehouse','supplier_id','supplier_name','total_amount','expect_date','remark','created_at']),
+                // v2026110701：tracking_no 同机制（采购单物流单号，先部署后跑 SQL 也不报红）。
+                purchases: new Set(['order_no','target_warehouse','tracking_no','supplier_id','supplier_name','total_amount','expect_date','remark','created_at']),
                 stock_logs: new Set(['product_name','warehouse','rel_id','operator','remark','created_at'])
               };
               const optSet = optionalColsByTable[table] || null;
@@ -3890,7 +3891,7 @@ const DB = {
     if(key === 'suppliers' || key === 'purchases' || key === 'stock_logs'){
       const _invColDefaults = {
         suppliers:   { id:'', name:'', contact:'', phone:'', address:'', remark:'', created_at:null, updated_at:null, _deleted:false },
-        purchases:   { id:'', order_no:'', supplier_id:'', supplier_name:'', items:'[]', total_amount:0, status:'ordered', order_date:'', expect_date:'', inbound_at:null, target_warehouse:'', remark:'', created_at:null, updated_at:null, _deleted:false },
+        purchases:   { id:'', order_no:'', supplier_id:'', supplier_name:'', items:'[]', total_amount:0, status:'ordered', order_date:'', expect_date:'', inbound_at:null, target_warehouse:'', tracking_no:'', remark:'', created_at:null, updated_at:null, _deleted:false },
         'stock_logs':{ id:'', product_id:'', product_name:'', type:'adjust', delta:0, before_qty:0, after_qty:0, warehouse:'', rel_id:'', operator:'', remark:'', created_at:null, _deleted:false }
       }[key];
       snakeData = snakeData.map(function(o){
@@ -16833,6 +16834,7 @@ function renderPurchases(){
       </select>
       ${isAdmin ? `<button class="btn btn-primary" onclick="openPurchaseModal()">+ 新建采购单</button>` : ''}
     </div>
+    <div id="purchaseKpiBar" style="display:flex;gap:10px;flex-wrap:wrap;margin:0 0 12px"></div>
     <div class="table-wrap">
       <table class="data-table">
         <thead><tr><th>单号</th><th>供应商</th><th>商品数</th><th>金额</th><th>预计到货</th><th>状态</th><th>创建时间</th>${isAdmin ? '<th>操作</th>' : ''}</tr></thead>
@@ -16873,6 +16875,25 @@ function filterPurchases(){
     });
   }
   list = list.slice().sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
+  // v2026110702：在途（未入库完）金额统计——跟随当前筛选/检索结果实时联动。
+  // 口径：status !== 'inbound' 的采购单都算在途（已下单未入 + 部分入库未入完）；
+  // 部分入库 = 任一行 0 < inboundQty < qty（与列表状态徽标同判定）。
+  const kpiBar = document.getElementById('purchaseKpiBar');
+  if(kpiBar){
+    let tCnt = 0, tTotal = 0, pCnt = 0, pTotal = 0;
+    list.forEach(function(p){
+      if(p.status === 'inbound') return;
+      const amt = _round2(Number(p.totalAmount) || 0);
+      tCnt++; tTotal += amt;
+      const isPartial = (p.items||[]).some(function(it){ return it && (Number(it.inboundQty)||0) > 0 && (Number(it.inboundQty)||0) < (Number(it.qty)||0); });
+      if(isPartial){ pCnt++; pTotal += amt; }
+    });
+    tTotal = _round2(tTotal); pTotal = _round2(pTotal);
+    kpiBar.innerHTML =
+      '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:var(--bg);border:1px solid var(--border);border-radius:999px;font-size:13px">🚚 在途（未入库完）<b>' + tCnt + '</b> 笔</span>' +
+      '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:var(--bg);border:1px solid var(--border);border-radius:999px;font-size:13px">在途金额 <b style="color:var(--danger,#e74c3c)">¥' + tTotal.toFixed(2) + '</b></span>' +
+      (pCnt ? '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:var(--bg);border:1px solid var(--border);border-radius:999px;font-size:13px;color:var(--text-muted)">其中部分入库 <b style="color:var(--text)">' + pCnt + '</b> 笔 · ¥' + pTotal.toFixed(2) + '</span>' : '');
+  }
   const tbody = document.getElementById('purchaseTbody');
   if(!tbody) return;
   if(!list.length){
@@ -17788,7 +17809,22 @@ function openPurchaseDetail(id){
             <div><div style="font-size:12px;color:var(--text-muted)">预计到货</div><div>${escAttr(p.expectDate||'—')}</div></div>
             <div><div style="font-size:12px;color:var(--text-muted)">创建时间</div><div>${escAttr((p.createdAt||'').slice(0,16).replace('T',' '))}</div></div>
           </div>
-          ${p.remark ? '<div style="margin-bottom:12px;padding:8px 10px;background:var(--bg);border-radius:8px;font-size:13px"><b>备注：</b>'+escAttr(p.remark)+'</div>' : ''}
+          <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:12px;color:var(--text-muted)">备注</span>
+            ${isAdmin
+              ? `<input type="text" class="form-control" style="max-width:320px" value="${escAttr(p.remark||'')}" placeholder="填写备注信息，失焦自动保存" onchange="savePurchaseRemark('${sid}',this.value)"`
+              + ` onkeydown="if(event.key==='Enter'){this.blur()}">`
+              : `<span style="font-size:13px">${escAttr(p.remark||'—')}</span>`}
+            <button type="button" class="oid-copy" title="复制备注（未填会提示）" onclick="copyPurchaseRemark(\''+sid+'\')">📋</button>
+          </div>
+          <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:12px;color:var(--text-muted)">物流单号</span>
+            ${isAdmin
+              ? `<input type="text" class="form-control" style="max-width:280px" value="${escAttr(p.trackingNo||'')}" placeholder="录入快递/物流单号，失焦自动保存" onchange="savePurchaseTrackingNo('${sid}',this.value)"`
+              + ` onkeydown="if(event.key==='Enter'){this.blur()}">`
+              : `<span style="font-size:13px">${p.trackingNo ? '#'+escAttr(p.trackingNo) : '—'}</span>`}
+            <button type="button" class="oid-copy" title="复制物流单号（自动加#前缀，未填会提示）" onclick="copyPurchaseTrackingNo(\''+sid+'\')">📋</button>
+          </div>
           <div class="table-wrap">
             <table class="data-table">
               <thead><tr><th>商品</th><th style="text-align:right">数量</th><th style="text-align:right">单价</th><th style="text-align:right">小计</th><th style="text-align:right">已入库</th><th style="text-align:right">待入库</th></tr></thead>
@@ -17809,6 +17845,38 @@ function openPurchaseDetail(id){
     </div>`;
   document.getElementById('modalContainer').innerHTML = modalHtml;
 }
+// v2026110701：采购单物流单号——详情弹窗录入，失焦/回车保存（管理员可编辑，其余角色只读）。
+// 存 purchases.trackingNo，随同步层 tracking_no 列上云（云端未跑 ADD COLUMN 时自动剔列重试不报红）。
+function savePurchaseTrackingNo(id, val){
+  const list = (DB.get('purchases') || []).filter(Boolean);
+  const p = list.find(function(x){ return x.id === id; });
+  if(!p){ showToast('采购单不存在', 'error'); return; }
+  p.trackingNo = String(val || '').trim();
+  DB.set('purchases', list);
+  showToast('✓ 物流单号已保存', 'success');
+}
+// v2026110702：采购单备注——详情弹窗可编辑（管理员），失焦/回车保存。remark 为既有列，同步层无需改动。
+function savePurchaseRemark(id, val){
+  const list = (DB.get('purchases') || []).filter(Boolean);
+  const p = list.find(function(x){ return x.id === id; });
+  if(!p){ showToast('采购单不存在', 'error'); return; }
+  p.remark = String(val || '').trim();
+  DB.set('purchases', list);
+  showToast('✓ 备注已保存', 'success');
+}
+// v2026110702：一键复制物流单号（自动加 # 前缀）与备注——走 helper 从库里取值，避免 onclick 内联转义长文本。
+function copyPurchaseTrackingNo(id){
+  const p = (DB.get('purchases') || []).filter(Boolean).find(function(x){ return x.id === id; });
+  const tn = p && p.trackingNo ? String(p.trackingNo).trim() : '';
+  if(!tn){ showToast('暂无物流单号', 'info'); return; }
+  copyToClipboard('#' + tn, '物流单号');
+}
+function copyPurchaseRemark(id){
+  const p = (DB.get('purchases') || []).filter(Boolean).find(function(x){ return x.id === id; });
+  const rk = p && p.remark ? String(p.remark).trim() : '';
+  if(!rk){ showToast('暂无备注', 'info'); return; }
+  copyToClipboard(rk, '备注');
+}
 // v2026110102：一键复制采购单信息 —— 精简为「单号/预计到货/创建时间/商品明细(含已入)」
 // （去除供应商、状态、单价、小计、合计，便于直接发给供应商；创建时间具体到时分）
 function copyPurchaseInfo(id){
@@ -17816,6 +17884,7 @@ function copyPurchaseInfo(id){
   if(!p){ showToast('采购单不存在','error'); return; }
   const lines = [];
   lines.push('📦采购单号：' + resolvePurchaseOrderNo(p));
+  if(p.trackingNo) lines.push('🚚物流单号：' + p.trackingNo); // v2026110701：有物流单号一并带上
   lines.push('预计到货：' + (p.expectDate || '—'));
   lines.push('创建时间：' + (p.createdAt || '').slice(0,16).replace('T', ' '));
   if(p.items && p.items.length){
