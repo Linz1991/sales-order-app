@@ -1792,7 +1792,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026110703</div>
+          <div class="brand-sub">v2026110704</div>
         </div>
       </div>
     </div>
@@ -17877,8 +17877,9 @@ function copyPurchaseRemark(id){
   if(!rk){ showToast('暂无备注', 'info'); return; }
   copyToClipboard(rk, '备注');
 }
-// v2026110703：复制格式按用户样稿重排 —— 预计到货 → 📦商品明细 → 🚚物流单号(#前缀) 备注（同行）。
-// 去掉采购单号/创建时间行；物流单号带 # 前缀；备注缺失时不带备注段、物流单号缺失时不带物流段。
+// v2026110704：物流单号与备注各占一行（v2026110703 曾同行拼接，用户要求备注换行显示）。
+// 格式：预计到货 → 📦商品明细 → 🚚物流单号：#xxx → 备注：xxx。
+// 去掉采购单号/创建时间行；物流单号带 # 前缀；备注缺失时不带备注行、物流单号缺失时不带物流行。
 function copyPurchaseInfo(id){
   const p = (DB.get('purchases')||[]).find(function(x){ return x.id === id; });
   if(!p){ showToast('采购单不存在','error'); return; }
@@ -17894,11 +17895,9 @@ function copyPurchaseInfo(id){
       lines.push(line);
     });
   }
-  const tail = [];
-  if(p.trackingNo) tail.push('🚚物流单号：#' + p.trackingNo); // v2026110703：# 前缀，与单号复制按钮口径一致
+  if(p.trackingNo) lines.push('🚚物流单号：#' + p.trackingNo); // v2026110703：# 前缀，与单号复制按钮口径一致
   const _rk = (p.remark || '').trim();
-  if(_rk) tail.push('备注：' + _rk); // v2026110703：备注原先没复制到，补上
-  if(tail.length) lines.push(tail.join(' '));
+  if(_rk) lines.push('备注：' + _rk); // v2026110704：备注独立一行
   copyToClipboardWithMsg(lines.join('\n'));
 }
 
