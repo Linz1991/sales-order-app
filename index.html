@@ -1792,7 +1792,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026110702</div>
+          <div class="brand-sub">v2026110703</div>
         </div>
       </div>
     </div>
@@ -17877,18 +17877,15 @@ function copyPurchaseRemark(id){
   if(!rk){ showToast('暂无备注', 'info'); return; }
   copyToClipboard(rk, '备注');
 }
-// v2026110102：一键复制采购单信息 —— 精简为「单号/预计到货/创建时间/商品明细(含已入)」
-// （去除供应商、状态、单价、小计、合计，便于直接发给供应商；创建时间具体到时分）
+// v2026110703：复制格式按用户样稿重排 —— 预计到货 → 📦商品明细 → 🚚物流单号(#前缀) 备注（同行）。
+// 去掉采购单号/创建时间行；物流单号带 # 前缀；备注缺失时不带备注段、物流单号缺失时不带物流段。
 function copyPurchaseInfo(id){
   const p = (DB.get('purchases')||[]).find(function(x){ return x.id === id; });
   if(!p){ showToast('采购单不存在','error'); return; }
   const lines = [];
-  lines.push('📦采购单号：' + resolvePurchaseOrderNo(p));
-  if(p.trackingNo) lines.push('🚚物流单号：' + p.trackingNo); // v2026110701：有物流单号一并带上
   lines.push('预计到货：' + (p.expectDate || '—'));
-  lines.push('创建时间：' + (p.createdAt || '').slice(0,16).replace('T', ' '));
   if(p.items && p.items.length){
-    lines.push('商品明细：');
+    lines.push('📦商品明细：');
     p.items.forEach(function(it, idx){
       const qty = Number(it.qty) || 0;
       const inb = Number(it.inboundQty) || 0;
@@ -17897,6 +17894,11 @@ function copyPurchaseInfo(id){
       lines.push(line);
     });
   }
+  const tail = [];
+  if(p.trackingNo) tail.push('🚚物流单号：#' + p.trackingNo); // v2026110703：# 前缀，与单号复制按钮口径一致
+  const _rk = (p.remark || '').trim();
+  if(_rk) tail.push('备注：' + _rk); // v2026110703：备注原先没复制到，补上
+  if(tail.length) lines.push(tail.join(' '));
   copyToClipboardWithMsg(lines.join('\n'));
 }
 
