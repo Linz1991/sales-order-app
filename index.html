@@ -1792,7 +1792,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026110704</div>
+          <div class="brand-sub">v2026110801</div>
         </div>
       </div>
     </div>
@@ -18040,7 +18040,7 @@ function renderStockLedger(){
     </div>
     <div class="table-wrap">
       <table class="data-table">
-        <thead><tr><th>时间</th><th>商品</th><th>类型</th><th>变动</th><th>变动前</th><th>变动后</th><th>仓库</th><th>关联单号</th><th>操作人</th><th>备注</th></tr></thead>
+        <thead><tr><th>时间</th><th>商品</th><th>类型</th><th>变动</th><th>变动前</th><th>变动后</th><th>仓库</th><th>操作人</th><th>备注</th><th title="该商品在系统默认仓+各他仓的库存合计 × 采购成本（全仓总额）">库存总值</th></tr></thead>
         <tbody id="ledgerTbody"></tbody>
       </table>
     </div>`;
@@ -18252,8 +18252,22 @@ function jumpLedgerByWh(wh){
   window._ledgerPresetWh = _stockWhKey(wh);
   try{ renderStockLedger(); }catch(e){ window._ledgerPresetWh = null; }
 }
+// v2026110801：单商品全仓库存总值 = (系统默认仓库存 + 各他仓库存) × 采购成本。
+// 供库存台账每行显示「库存总值」列（该品在本仓+他仓的总金额）；商品不存在返回 null。
+function computeProductTotalValueMap(products){
+  const map = {};
+  (products || []).filter(Boolean).forEach(function(p){
+    let q = Number(p.stockQty) || 0;
+    const ws = (typeof p.warehouseStock === 'object' && p.warehouseStock) ? p.warehouseStock : {};
+    Object.keys(ws).forEach(function(k){ q += Number(ws[k]) || 0; });
+    map[p.id] = q * (Number(p.cost) || 0);
+  });
+  return map;
+}
+
 function filterStockLedger(){
   const logs = (DB.get('stock_logs') || []).filter(Boolean).slice().sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); }); // v2026110610 兜 null 脏流水
+  const _pTotalMap = computeProductTotalValueMap(DB.get('products')); // v2026110801：库存总值列
   const kw = (document.getElementById('ledgerProduct') ? document.getElementById('ledgerProduct').value : '').trim().toLowerCase();
   const type = document.getElementById('ledgerType') ? document.getElementById('ledgerType').value : '';
   const date = document.getElementById('ledgerDate') ? document.getElementById('ledgerDate').value : '';
@@ -18286,9 +18300,9 @@ function filterStockLedger(){
       <td>${Number(l.beforeQty)||0}</td>
       <td>${Number(l.afterQty)||0}</td>
       <td>${escapeHtml(l.warehouse || '')}</td>
-      <td>${escapeHtml(l.relId || '')}</td>
       <td>${escapeHtml(l.operator || '')}</td>
       <td>${escapeHtml(l.remark || '')}</td>
+      <td style="text-align:right" title="该商品在系统默认仓+各他仓的库存合计 × 采购成本">${_pTotalMap[l.productId] != null ? money(_pTotalMap[l.productId]) : '—'}</td>
     </tr>`;
   }).join('');
 }
@@ -18313,10 +18327,11 @@ function exportStockLedgerCSV(){
   if(!list.length){ showToast('当前筛选无数据可导出','error'); return; }
   const _prodCostMap = {};
   (DB.get('products')||[]).filter(Boolean).forEach(function(p){ _prodCostMap[p.id] = (p.cost != null ? p.cost : ''); });
-  const headers = ['时间','商品','采购成本','类型','变动','变动前','变动后','仓库','关联单号','操作人','备注'];
+  const _pTotalMap = computeProductTotalValueMap(DB.get('products')); // v2026110801：库存总值列与页面一致
+  const headers = ['时间','商品','采购成本','类型','变动','变动前','变动后','仓库','操作人','备注','库存总值'];
   const typeLabel = { outbound:'出库', outbound_other:'他仓出库', purchase:'采购入库', adjust:'手动调整', count:'盘点', correction:'纠错', initial:'初始化' };
   const rows = list.map(function(l){
-    return [ fmtDateTime(l.createdAt), l.productName||'', (_prodCostMap[l.productId] != null ? _prodCostMap[l.productId] : ''), typeLabel[l.type]||l.type||'', (Number(l.delta)>0?'+':'')+(Number(l.delta)||0), Number(l.beforeQty)||0, Number(l.afterQty)||0, l.warehouse||'', l.relId||'', l.operator||'', l.remark||'' ];
+    return [ fmtDateTime(l.createdAt), l.productName||'', (_prodCostMap[l.productId] != null ? _prodCostMap[l.productId] : ''), typeLabel[l.type]||l.type||'', (Number(l.delta)>0?'+':'')+(Number(l.delta)||0), Number(l.beforeQty)||0, Number(l.afterQty)||0, l.warehouse||'', l.operator||'', l.remark||'', (_pTotalMap[l.productId] != null ? _pTotalMap[l.productId] : '') ];
   });
   const csv = [headers].concat(rows).map(function(r){
     return r.map(function(c){ c = String(c); if(c.indexOf(',')>=0 || c.indexOf('"')>=0 || c.indexOf('\n')>=0){ c = '"' + c.replace(/"/g,'""') + '"'; } return c; }).join(',');
