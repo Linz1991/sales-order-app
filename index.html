@@ -1792,7 +1792,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026110801</div>
+          <div class="brand-sub">v2026110901</div>
         </div>
       </div>
     </div>
@@ -1938,13 +1938,29 @@ const DB = {
   _syncStatus: 'idle', // idle | syncing | synced | error
   _syncError: null,
 
-  get(key, def){
+  // v2026110901（性能）：DB 读缓存。
+  // 一次整页渲染会反复 DB.get 同一张大表（renderOrders 2 次、renderSidebar 再要 orders/aftersales…），
+  // 每次都 localStorage 全量 JSON.parse 是固定开销，订单表上 MB 级时单次渲染白烧几十毫秒。
+  // 缓存以「原始字符串」校验命中：任何旁路 localStorage.setItem 写入都会让字符串不等 → 自动失效重解析，绝不读到旧值。
+  // 缓存只活到一个宏任务结束（_memSweep），不跨渲染长期持有共享引用，避免「改了 get 返回的数组却没 set」留下内存幽灵数据。
+  _mem: {},
+  _memSweepTimer: null,
+  _memSweep(){
+    const self = this;
+    if(self._memSweepTimer) return;
+    self._memSweepTimer = setTimeout(function(){
+      self._mem = {}; self._memSweepTimer = null;
+    }, 0);
+  },
+  _memClear(key){
+    try{ if(key != null){ delete this._mem[key]; } else { this._mem = {}; } }catch(e){}
+  },
+  // 归一化：orders/aftersales 的 JSONB 数组字段统一转真数组 + 售后墓碑标记回落（缓存与基线共用，保证两者形态一致）
+  _memDecorate(key, out){
+    // v2026101001：orders/aftersales 的 JSONB 数组字段（items/images）统一归一化为数组。
+    // 云端个别历史行把 jsonb 列存成了 JSON 字符串（如 images:'[]' 而非 []），
+    // 详情页执行 order.images.map(...) 会抛「map is not a function」导致整页渲染失败。
     try{
-      const v = localStorage.getItem('soms_'+key);
-      const out = v ? JSON.parse(v) : (def !== undefined ? def : []);
-      // v2026101001：orders/aftersales 的 JSONB 数组字段（items/images）统一归一化为数组。
-      // 云端个别历史行把 jsonb 列存成了 JSON 字符串（如 images:'[]' 而非 []），
-      // 详情页执行 order.images.map(...) 会抛「map is not a function」导致整页渲染失败。
       if((key === 'orders' || key === 'aftersales') && Array.isArray(out)){
         out.forEach(function(r){
           if(!r) return;
@@ -1957,8 +1973,30 @@ const DB = {
         // （历史数据 / 合并前中间态），在此补回，保证列表、统计、导出一律按「已删除」处理。
         if(key === 'aftersales') _asRestoreDelFlags(out);
       }
+    }catch(e){}
+    return out;
+  },
+  get(key, def){
+    try{
+      const raw = localStorage.getItem('soms_'+key);
+      const c = this._mem[key];
+      if(c && c.raw === raw) return c.arr;          // 命中：同串且未被旁路改写
+      if(!raw) return def !== undefined ? def : [];
+      const out = this._memDecorate(key, JSON.parse(raw));
+      this._mem[key] = { raw: raw, arr: out };
+      this._memSweep();
       return out;
     }catch(e){ return def !== undefined ? def : []; }
+  },
+  // 旧值基线：始终从 localStorage 现解析一份独立对象图。
+  // DB.set 里的脏行比对必须基于它而不是 get 的返回值——否则「拿 get 的数组改完再 set」会让新旧两边是同一批对象，
+  // 差异恒为 0 → 脏行标记丢失 → 改动只留在本机不上云（这是加缓存最容易踩的坑）。
+  _baseline(key){
+    try{
+      const raw = localStorage.getItem('soms_'+key);
+      if(!raw) return [];
+      return this._memDecorate(key, JSON.parse(raw)) || [];
+    }catch(e){ return []; }
   },
   set(key, val, opts){
     // v2026110410：售后表任何写入（含云端拉取落库）都使售后损耗索引失效，保证 orderAfterSaleLoss 实时
@@ -1972,7 +2010,7 @@ const DB = {
       // 对账拉云写入：云端已是真相源，直接落本机，不标记脏、不反推、不刷新时间戳（避免把刚拉来的云端值又 upsert 回去）
     } else if(key === 'orders' || key === 'products' || key === 'customers' || key === 'aftersales' || key === 'payments' || key === 'commissions' || key === 'suppliers' || key === 'purchases' || key === 'stock_logs'){
       try{
-        const oldArr = this.get(key, []) || [];
+        const oldArr = this._baseline(key) || [];
         const newArr = val || [];
         // #2 (v2026101005) 写入时 jsonb 数组守卫：orders/aftersales 的 items/images 若被写成字符串（如 "[]"），
         // 则解析成真数组；解析失败或非数组则置 []。缺失字段不臆造，避免对无该列的历史行大量误标脏、引发重推风暴。
@@ -2024,7 +2062,7 @@ const DB = {
     // 仅当「本地有有效 createdAt 且云端该字段为空/非法」时才回写本地值；绝不臆造，不影响正常有值的云端行。
     if(opts && opts.fromCloud){
       try{
-        const _localAll = this.get(key, []) || [];
+        const _localAll = this._baseline(key) || [];
         const _byId = {};
         _localAll.forEach(function(x){ if(x && x.id != null) _byId[x.id] = x; });
         const _validTs = function(v){ return !!(v && (''+v).trim() && (''+v).indexOf('0001-01-01') === -1); };
@@ -2041,15 +2079,22 @@ const DB = {
     // v2026100205：本地写入加保护。localStorage 配额满会抛 QuotaExceededError，
     // 异常若向上冒泡会中断调用方 -> 缓存永远写不进 -> 下次导航仍判定“无缓存”而全量重拉 -> egress 暴涨。
     // 这里捕获后先清掉最不重要的本地审计日志再重试一次；仍失败也只记日志，绝不中断业务。
+    let _json = null;
     try{
-      localStorage.setItem('soms_'+key, JSON.stringify(val));
+      _json = JSON.stringify(val);
+      localStorage.setItem('soms_'+key, _json);
+      this._mem[key] = { raw: _json, arr: val };   // 缓存与存储保持一致，同一渲染周期后续 get 直接命中
     }catch(e){
       console.warn('[DB.set] 本地写入失败：' + (((e && e.name) || 'Error') + ' ' + ((e && e.message) || e)));
+      this._memClear(key);
       try{
         localStorage.removeItem('soms_audit_log');
-        localStorage.setItem('soms_'+key, JSON.stringify(val));
+        _json = JSON.stringify(val);
+        localStorage.setItem('soms_'+key, _json);
+        this._mem[key] = { raw: _json, arr: val };
         console.warn('[DB.set] 已清理本地审计日志后写入成功');
       }catch(e2){
+        this._memClear(key);
         console.error('[DB.set] 清理后仍写入失败，本次改动仅存在于内存：' + ((e2 && e2.message) || e2));
       }
     }
@@ -6660,6 +6705,10 @@ function renderSidebar(){
   // 待校准商品：仅管理员后台展示数量提示（auto_added 自动导入 或 成本=售价 视为待校准）
   const calibCount = isAdmin ? _productVisibleFilter(DB.get('products')).filter(isUncalibrated).length : 0;
 
+  // v2026110901：采购管理徽标——未入库完（在途）采购单数，仅 admin 可见采购模块
+  // 口径与采购页在途 KPI 一致：status !== 'inbound'（已下单未入 + 部分入库未入完），软删单不计
+  const poInTransitCount = isAdmin ? (DB.get('purchases') || []).filter(function(p){ return p && !p._deleted && p.status !== 'inbound'; }).length : 0;
+
   function badge(count){ return count > 0 ? `<span style="background:var(--danger);color:#fff;font-size:11px;padding:1px 6px;border-radius:10px;margin-left:auto;font-weight:500">${count}</span>` : ''; }
   function calibBadge(count){ return count > 0 ? `<span style="background:#f59e0b;color:#fff;font-size:11px;padding:1px 6px;border-radius:10px;margin-left:auto;font-weight:500">${count}</span>` : ''; }
 
@@ -6671,6 +6720,7 @@ function renderSidebar(){
       if(m.route === 'products' && isAdmin) b = calibBadge(calibCount);
       if(m.route === 'schedule') b = doorIncompleteCount > 0 ? badge(doorIncompleteCount) : '';
       if(m.route === 'warehouse') b = whPendingCount > 0 ? badge(whPendingCount) : '';
+      if(m.route === 'purchases') b = poInTransitCount > 0 ? badge(poInTransitCount) : '';
       const click = m.route === 'orders' ? "gotoOrdersList()" : `navigate('${m.route}')`;
       return `
       <div class="nav-item ${currentRoute===m.route?'active':''}" onclick="${click}">
@@ -7319,9 +7369,14 @@ function onOrderSearchComposed(el){
   onOrderSearchInput(el);
 }
 // 通用搜索框防抖渲染（仓库/回款等页）：组字中不重渲染，结束后渲染并恢复焦点/光标
+// v2026110901：定时器按「函数名+输入框」分开计。旧版共用一个 window._debouncedSearchRenderTimer，
+// 两个搜索框先后输入会互相 clearTimeout，前一个框的渲染被吞掉（输入了但列表不更新）。
 function _debouncedSearchRender(fnName, inputId, delay){
-  clearTimeout(window._debouncedSearchRenderTimer);
-  window._debouncedSearchRenderTimer = setTimeout(function(){
+  if(!window._debSearchTimers) window._debSearchTimers = {};
+  var _k = fnName + '|' + (inputId || '');
+  clearTimeout(window._debSearchTimers[_k]);
+  window._debSearchTimers[_k] = setTimeout(function(){
+    window._debSearchTimers[_k] = null;
     var f = window[fnName];
     if(typeof f === 'function') f();
     if(inputId){
@@ -7329,6 +7384,27 @@ function _debouncedSearchRender(fnName, inputId, delay){
       if(inp){ inp.focus(); try{ inp.setSelectionRange(inp.value.length, inp.value.length); }catch(e){} }
     }
   }, delay == null ? 250 : delay);   // 注意不能写 delay||250：传 0（组合输入结束立即渲染）会被当成 250ms
+}
+// v2026110901：通用输入防抖（采购/供应商/台账/清理等自行读 DOM 的筛选函数）。
+// 定时器按函数名独立，互不干扰；中文输入法组字期间不触发，组字结束由 _onImeEnd 立即补一次。
+function _debInput(el, fnName, delay){
+  if(window._imeComposing) return;
+  if(!window._debInputTimers) window._debInputTimers = {};
+  clearTimeout(window._debInputTimers[fnName]);
+  window._debInputTimers[fnName] = setTimeout(function(){
+    window._debInputTimers[fnName] = null;
+    var f = window[fnName];
+    if(typeof f !== 'function') return;
+    try{ f(); }catch(e){ console.error('[输入防抖] ' + fnName + ' 执行失败：', e); }
+  }, delay == null ? 250 : delay);
+}
+function _onImeStart(){ window._imeComposing = true; }
+function _onImeEnd(el, fnName){
+  window._imeComposing = false;
+  if(!fnName) return;
+  var f = window[fnName];
+  if(typeof f !== 'function') return;
+  try{ f(); }catch(e){ console.error('[输入法结束] ' + fnName + ' 执行失败：', e); }
 }
 // 重渲染后恢复订单搜索框焦点（仅当本次渲染由搜索输入触发时）
 function restoreOrderSearchFocus(){
@@ -8112,7 +8188,7 @@ function openCleanupPanel(){
         <div class="modal-body">
           <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">按订单号或客户姓名检索，单条删除的订单会进入回收站，并在所有设备同步。</p>
           <div style="display:flex;gap:8px;margin-bottom:12px">
-            <input type="text" class="form-control" id="cleanupKeyword" placeholder="输入订单号或客户姓名…" oninput="renderCleanupResult()" style="flex:1">
+            <input type="text" class="form-control" id="cleanupKeyword" placeholder="输入订单号或客户姓名…" oninput="_debInput(this,'renderCleanupResult')" oncompositionstart="_onImeStart()" oncompositionend="_onImeEnd(this,'renderCleanupResult')" style="flex:1">
             <button class="btn btn-secondary" onclick="document.getElementById('cleanupKeyword').value='';renderCleanupResult()">重置</button>
           </div>
           <div id="cleanupResult"></div>
@@ -15254,24 +15330,105 @@ function importFreightExcel(){
 
 function parseFreightBill(rows){
   if(!rows.length) return [];
-  // v2026101903：表头识别，按关键词定位列，容错顺丰原始账单的列名/列序差异；无表头时退化为固定列序
-  let start = 0;
-  const COL = { tracking:-1, amount:-1, phone:-1, ship:-1, name:-1 };
-  const head = (rows[0]||[]).map(function(c){ return String(c==null?'':c).trim(); });
-  const headText = head.join(' ');
-  const isHeader = /运单|单号|金额|手机号|电话|日期|tracking|客户|姓名|name/i.test(headText);
-  if(isHeader){
-    head.forEach(function(h, i){
-      const s = h.toLowerCase();
-      if(/运单|单号|tracking/.test(s) && COL.tracking<0) COL.tracking=i;
-      else if(/金额|应付|费用|amount|price/.test(s) && COL.amount<0) COL.amount=i;
-      else if(/手机|电话|phone|mobile/.test(s) && COL.phone<0) COL.phone=i;
-      else if(/日期|发货|ship|date/.test(s) && COL.ship<0) COL.ship=i;
-      else if(/姓名|客户|name|customer/.test(s) && COL.name<0) COL.name=i;
+  // v2026110901：修复导入 HTTP 400（numeric field overflow）根因——账单首行是标题/合并单元格时，
+  // 旧逻辑只看第 1 行认不出表头→退化为固定列序(0运单/1金额/2手机/3日期)，实际列序若为(0运单/1手机/…)
+  // 则"金额"列吃到手机号(11位≥1e10)，超出云端 amount numeric(12,2) 上限→POST 400。
+  // 三层防御：①扫描前10行找真表头 ②无表头按数据特征推断列 ③金额离谱(≥1e5)标 _abnormal 禁止导入。
+  const KW = {
+    tracking: /运单|单号|tracking/i,
+    amount: /金额|应付|费用|amount|price/i,
+    phone: /手机|电话|phone|mobile/i,
+    ship: /日期|发货|ship|date/i,
+    name: /姓名|客户|name|customer/i
+  };
+  function rowKeywordHits(r){
+    const hits = {};
+    (r||[]).forEach(function(c){
+      const s = String(c==null?'':c).trim().toLowerCase();
+      if(!s) return;
+      Object.keys(KW).forEach(function(k){ if(KW[k].test(s)) hits[k] = (hits[k]||0)+1; });
     });
-    start = 1;
+    return hits;
+  }
+  // ① 扫描前 10 行，命中≥2 类关键词的行视为表头（兼容标题行+表头行、空行开头等情况）
+  let headIdx = -1;
+  const scanMax = Math.min(rows.length, 10);
+  for(let i=0;i<scanMax;i++){
+    const hits = rowKeywordHits(rows[i]);
+    if(Object.keys(hits).length >= 2){ headIdx = i; break; }
+  }
+  const COL = { tracking:-1, amount:-1, phone:-1, ship:-1, name:-1 };
+  let start = 0;
+  if(headIdx >= 0){
+    (rows[headIdx]||[]).forEach(function(c, i){
+      const s = String(c==null?'':c).trim().toLowerCase();
+      if(!s) return;
+      if(KW.tracking.test(s) && COL.tracking<0) COL.tracking=i;
+      else if(KW.amount.test(s) && COL.amount<0) COL.amount=i;
+      else if(KW.phone.test(s) && COL.phone<0) COL.phone=i;
+      else if(KW.ship.test(s) && COL.ship<0) COL.ship=i;
+      else if(KW.name.test(s) && COL.name<0) COL.name=i;
+    });
+    start = headIdx + 1;
+  }
+  // 数据特征统计：mobile=11位手机号 / amount=小额数值 / date=日期样式 / tracking=字母数字长串非手机号
+  function colStats(from){
+    const stats = [];
+    let ncol = 0;
+    for(let i=from;i<rows.length;i++){ const l=(rows[i]||[]).length; if(l>ncol) ncol=l; }
+    for(let c=0;c<ncol;c++) stats.push({ mobile:0, amount:0, date:0, tracking:0, n:0 });
+    for(let i=from;i<rows.length;i++){
+      const r = rows[i]||[];
+      for(let c=0;c<ncol;c++){
+        const raw = r[c];
+        const v = String(raw==null?'':raw).trim();
+        if(!v) continue;
+        const st = stats[c]; st.n++;
+        if(/^1[3-9]\d{9}$/.test(v)) st.mobile++;
+        const cleaned = v.replace(/[¥￥$,]/g,'');
+        if(/^\d+(\.\d{1,2})?$/.test(cleaned)){
+          const num = Number(cleaned);
+          if(num>0 && num<100000) st.amount++;
+        }
+        if(/^\d{4}[\/-]\d{1,2}[\/-]\d{1,2}/.test(v) || (typeof raw==='number' && raw>20000 && raw<60000)) st.date++;
+        if(/^[A-Za-z0-9]{8,20}$/.test(v) && !/^1[3-9]\d{9}$/.test(v)) st.tracking++;
+      }
+    }
+    return stats;
+  }
+  const stats = colStats(start);
+  function domi(st, kind){ return st.n>=2 && (st[kind]/st.n) >= 0.6; }
+  function bestCol(kind, exclude){
+    let best=-1, bestPct=0;
+    stats.forEach(function(st,c){
+      if(exclude && exclude.indexOf(c)>=0) return;
+      const pct = st.n? st[kind]/st.n : 0;
+      if(pct>bestPct){ bestPct=pct; best=c; }
+    });
+    return bestPct>=0.6 ? best : -1;
+  }
+  if(headIdx >= 0){
+    // ②a 表头已识别，但做数据特征复核——金额列若被手机号占据，自动改判
+    const aIdx = COL.amount;
+    if(aIdx>=0 && stats[aIdx] && domi(stats[aIdx],'mobile')){
+      const alt = bestCol('amount', [aIdx, COL.tracking]);
+      if(alt>=0){
+        // 手机号列顺延：旧金额列其实才是手机号列
+        if(!(COL.phone>=0 && domi(stats[COL.phone],'mobile'))) COL.phone = aIdx;
+        COL.amount = alt;
+      }
+    }
+    if(COL.tracking<0) COL.tracking = bestCol('tracking');
+    if(COL.amount<0) COL.amount = bestCol('amount', [COL.tracking]);
+    if(COL.phone<0) COL.phone = bestCol('mobile');
+    if(COL.ship<0) COL.ship = bestCol('date');
   } else {
-    COL.tracking=0; COL.amount=1; COL.phone=2; COL.ship=3; COL.name=-1;
+    // ②b 无表头：按数据特征推断，不再盲按固定列序
+    COL.tracking = bestCol('tracking');
+    COL.amount = bestCol('amount', [COL.tracking]);
+    COL.phone = bestCol('mobile');
+    COL.ship = bestCol('date');
+    if(COL.tracking<0) COL.tracking=0; // 极端兜底：运单号总在第 0 列
   }
   const out = [];
   for(let i=start;i<rows.length;i++){
@@ -15284,13 +15441,16 @@ function parseFreightBill(rows){
     const tracking = String(r[tIdx]||'').toUpperCase().replace(/\s+/g, '');
     const amount = parseFreightAmount(r[aIdx]);
     if(!tracking || isNaN(amount)) continue;
+    // ③ 金额离谱（<0 或 ≥¥10万）→ 标记 _abnormal，匹配阶段拦入"未匹配"且禁止导入（防列错位脏数据入库）
+    const abnormal = amount <= 0 || amount >= 100000;
     out.push({
       tracking_no: tracking,
       amount: amount,
       phone: String(r[pIdx]||'').replace(/[^\d]/g,''),
       // v2026101904：保留原始类型交给 parseShipDate（Excel 日期序列号为 number，不能先 String 化否则丢失）；可解析则归一化为 ISO 日期串，写库兼容 date 列
       ship_date: (function(){ var raw = (r[sIdx]==null?'':r[sIdx]); var d = parseShipDate(raw); return d ? d.toISOString().slice(0,10) : (typeof raw==='string'?raw.trim():''); })(),
-      customer_name: nIdx>=0 ? String(r[nIdx]||'').trim() : ''
+      customer_name: nIdx>=0 ? String(r[nIdx]||'').trim() : '',
+      _abnormal: abnormal
     });
   }
   return out;
@@ -15317,6 +15477,11 @@ function matchFreightToOrders(bills){
   function alreadyImported(tracking, amount){ return !!_importedSet[tracking+'|'+amount]; }
   const result = { matched: [], manual: [], unmatched: [], duplicates: [] };
   bills.forEach(function(b, bi){
+    // v2026110901：金额离谱（列错位吃到手机号等）→ 拦入未匹配，绝不写入云端（numeric(12,2) 会 400 且脏金额毁利润）
+    if(b._abnormal){
+      result.unmatched.push({ bill:b, orderIds:[], reason:'金额异常（¥'+b.amount+'，疑似账单列错位/手机号串列），已拦截；请检查账单文件列格式' });
+      return;
+    }
     // v2026101904：key 加序号，避免两笔"同运单+同金额"共用 key 互相覆盖人工选择
     const key = b.tracking_no + '|' + b.amount + '|' + bi;
     if(alreadyImported(b.tracking_no, b.amount)){
@@ -15479,7 +15644,12 @@ async function confirmImportFreight(){
       headers: { 'Content-Type':'application/json', 'apikey': SUPABASE_KEY, 'Authorization':'Bearer '+SUPABASE_KEY, 'x-app-secret': APP_SECRET, 'Prefer':'return=minimal' },
       body: JSON.stringify(rows)
     });
-    if(!res.ok) throw new Error('HTTP ' + res.status);
+    if(!res.ok){
+      // v2026110901：把云端错误体带出来（如 numeric field overflow），不再只显示 HTTP 400
+      let detail = '';
+      try{ const _t = await res.text(); if(_t) detail = ' ' + _t.slice(0, 200); }catch(_e){}
+      throw new Error('HTTP ' + res.status + detail);
+    }
     window._freightsCache = (window._freightsCache||[]).concat(rows);
     buildFreightIndex(); // v2026101903+：即时更新聚合索引，利润扣减立即生效
     // v2026101903+：已导入的从结果中移除，未匹配的保留供再次导出（流程闭环：导入→看未匹配→导出→补录→再导入）
@@ -15495,7 +15665,8 @@ async function confirmImportFreight(){
       else if(currentRoute==='profit-report' && typeof renderProfitReport==='function') renderProfitReport();
     }
   }catch(e){
-    showToast('导入失败：' + ((e&&e.message)||e), 'error');
+    // v2026110901：报错含云端错误体时较长（8s），给用户时间看清 numeric field overflow 等细节
+    showToast('导入失败：' + ((e&&e.message)||e), 'error', 8000);
   }finally{
     window._freightImporting = false;
   }
@@ -16694,7 +16865,7 @@ function renderSuppliers(){
   const isAdmin = !!(currentUser && currentUser.role === 'admin');
   const html = `
     <div class="page-actions">
-      <input type="text" class="form-control" id="supplierSearch" placeholder="🔍 搜索名称 / 联系人 / 电话" oninput="filterSuppliers()" style="max-width:260px">
+      <input type="text" class="form-control" id="supplierSearch" placeholder="🔍 搜索名称 / 联系人 / 电话" oninput="_debInput(this,'filterSuppliers')" oncompositionstart="_onImeStart()" oncompositionend="_onImeEnd(this,'filterSuppliers')" style="max-width:260px">
       ${isAdmin ? `<button class="btn btn-primary" onclick="openSupplierModal()">+ 新增供应商</button>` : ''}
     </div>
     <div class="table-wrap">
@@ -16822,9 +16993,13 @@ function renderPurchases(){
   const _prevFilter = _prevFilterEl ? _prevFilterEl.value : 'ordered';
   const _prevSearchEl = document.getElementById('purchaseSearch');
   const _prevSearch = _prevSearchEl ? _prevSearchEl.value : '';
+  // v2026110901：同步/入库等后台动作可能随时整页重渲染，若正在搜索框里打字，重渲染会把焦点和光标一起扔掉。
+  // 记录焦点状态，重渲染后（且值未变时）原位恢复，避免打字打到一半被迫重新点输入框。
+  const _hadSearchFocus = !!(_prevSearchEl && document.activeElement === _prevSearchEl);
+  const _prevSearchSel = _hadSearchFocus && typeof _prevSearchEl.selectionStart === 'number' ? _prevSearchEl.selectionStart : null;
   const html = `
     <div class="page-actions">
-      <input type="text" class="form-control" id="purchaseSearch" placeholder="搜索单号 / 供应商 / 商品 / 备注" style="max-width:260px" value="${escAttr(_prevSearch)}" onkeydown="if(event.key==='Enter')filterPurchases()" oninput="filterPurchases()">
+      <input type="text" class="form-control" id="purchaseSearch" placeholder="搜索单号 / 供应商 / 商品 / 备注" style="max-width:260px" value="${escAttr(_prevSearch)}" onkeydown="if(event.key==='Enter')filterPurchases()" oninput="_debInput(this,'filterPurchases')" oncompositionstart="_onImeStart()" oncompositionend="_onImeEnd(this,'filterPurchases')">
       <button class="btn btn-secondary" onclick="filterPurchases()">🔍 检索</button>
       <select class="form-control" id="purchaseFilter" onchange="filterPurchases()" style="max-width:200px">
         <option value="" ${_prevFilter === '' ? 'selected' : ''}>全部状态</option>
@@ -16843,6 +17018,13 @@ function renderPurchases(){
     </div>`;
   document.getElementById('mainContent').innerHTML = html;
   filterPurchases();
+  if(_hadSearchFocus){
+    const _el = document.getElementById('purchaseSearch');
+    if(_el){
+      _el.focus();
+      try{ const _p = Math.min(_prevSearchSel == null ? _el.value.length : _prevSearchSel, _el.value.length); _el.setSelectionRange(_p, _p); }catch(e){}
+    }
+  }
 }
 function filterPurchases(){
   const isAdmin = !!(currentUser && currentUser.role === 'admin');
@@ -16878,21 +17060,29 @@ function filterPurchases(){
   // v2026110702：在途（未入库完）金额统计——跟随当前筛选/检索结果实时联动。
   // 口径：status !== 'inbound' 的采购单都算在途（已下单未入 + 部分入库未入完）；
   // 部分入库 = 任一行 0 < inboundQty < qty（与列表状态徽标同判定）。
+  // v2026110901：加「在途数量」——在途单的剩余未入库件数 Σ(max(qty-已入库,0))，
+  //   完全未入库的单子算全部数量、部分入库的单子扣掉已入部分，两种都计入。
   const kpiBar = document.getElementById('purchaseKpiBar');
   if(kpiBar){
-    let tCnt = 0, tTotal = 0, pCnt = 0, pTotal = 0;
+    let tCnt = 0, tTotal = 0, pCnt = 0, pTotal = 0, tQty = 0, pQty = 0;
     list.forEach(function(p){
       if(p.status === 'inbound') return;
       const amt = _round2(Number(p.totalAmount) || 0);
-      tCnt++; tTotal += amt;
+      const remainQty = (p.items||[]).reduce(function(s,it){
+        if(!it) return s;
+        const q = Number(it.qty)||0, ib = Number(it.inboundQty)||0;
+        return s + Math.max(q - ib, 0);
+      }, 0);
+      tCnt++; tTotal += amt; tQty += remainQty;
       const isPartial = (p.items||[]).some(function(it){ return it && (Number(it.inboundQty)||0) > 0 && (Number(it.inboundQty)||0) < (Number(it.qty)||0); });
-      if(isPartial){ pCnt++; pTotal += amt; }
+      if(isPartial){ pCnt++; pTotal += amt; pQty += remainQty; }
     });
     tTotal = _round2(tTotal); pTotal = _round2(pTotal);
     kpiBar.innerHTML =
       '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:var(--bg);border:1px solid var(--border);border-radius:999px;font-size:13px">🚚 在途（未入库完）<b>' + tCnt + '</b> 笔</span>' +
+      '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:var(--bg);border:1px solid var(--border);border-radius:999px;font-size:13px">在途数量 <b>' + tQty + '</b> 件</span>' +
       '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:var(--bg);border:1px solid var(--border);border-radius:999px;font-size:13px">在途金额 <b style="color:var(--danger,#e74c3c)">¥' + tTotal.toFixed(2) + '</b></span>' +
-      (pCnt ? '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:var(--bg);border:1px solid var(--border);border-radius:999px;font-size:13px;color:var(--text-muted)">其中部分入库 <b style="color:var(--text)">' + pCnt + '</b> 笔 · ¥' + pTotal.toFixed(2) + '</span>' : '');
+      (pCnt ? '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:var(--bg);border:1px solid var(--border);border-radius:999px;font-size:13px;color:var(--text-muted)">其中部分入库 <b style="color:var(--text)">' + pCnt + '</b> 笔 · <b style="color:var(--text)">' + pQty + '</b> 件 · ¥' + pTotal.toFixed(2) + '</span>' : '');
   }
   const tbody = document.getElementById('purchaseTbody');
   if(!tbody) return;
@@ -17522,6 +17712,7 @@ function savePurchase(){
   closeModal();
   showToast('✓ 采购单已保存', 'success');
   renderPurchases();
+  try{ renderSidebar(); }catch(e){} // v2026110901：保存/新建采购单后立即刷新侧边栏采购角标
 }
 // v20261022：采购单支持「按行部分入库」。打开入库弹窗，逐行填本次入库数量；
 // 已入量累计到 item.inboundQty，全部入完才标记 status='inbound'，否则保持 partial。
@@ -17659,6 +17850,7 @@ async function confirmInbound(id){
   closeModal();
   showToast(allDone ? '✓ 已全额入库，库存已增加' : '✓ 已部分入库（' + items.reduce(function(s,x){return s+(Number(x.inboundQty)||0);},0) + '/' + items.reduce(function(s,x){return s+(Number(x.qty)||0);},0) + '）', 'success', 3500);
   renderPurchases();
+  try{ renderSidebar(); }catch(e){} // v2026110901：入库后立即刷新侧边栏采购角标
   } finally {
     window._inboundBusy = null;
     const _btn2 = document.querySelector('#modalContainer .modal-footer .btn-primary');
@@ -17752,6 +17944,7 @@ function deletePurchase(id){
   _invDeleteSync('purchases', '_deletedPurchaseIds', id);
   showToast('已删除', 'success');
   renderPurchases();
+  try{ renderSidebar(); }catch(e){} // v2026110901：删除采购单后立即刷新侧边栏采购角标
 }
 // 采购单号单元格：展示 orderNo（无则回退内部 id）；点击查看详情（按 id 定位），📋 复制订单号
 function purchaseIdCell(p){
@@ -18021,7 +18214,7 @@ function renderStockLedger(){
     </div>` : ''}
     ${lowStock.length ? `<div class="alert alert-warning">⚠️ 库存预警：${lowStock.map(function(p){ return escAttr(p.name) + '(' + (Number(p.stockQty)||0) + '/' + (Number(p.warnQty)||0) + ')'; }).join('、')}</div>` : ''}
     <div class="page-actions">
-      <input type="text" class="form-control" id="ledgerProduct" placeholder="🔍 商品名" oninput="filterStockLedger()" style="max-width:200px">
+      <input type="text" class="form-control" id="ledgerProduct" placeholder="🔍 商品名" oninput="_debInput(this,'filterStockLedger')" oncompositionstart="_onImeStart()" oncompositionend="_onImeEnd(this,'filterStockLedger')" style="max-width:200px">
       <div style="position:relative;max-width:200px" class="po-wh-box" title="按仓库筛选流水（支持打字检索）">
         <input type="hidden" class="po-wh-value" id="ledgerWarehouse" value="">
         <input type="text" class="form-control po-wh-input" id="ledgerWarehouseName" placeholder="全部仓库（输入检索）" value="" autocomplete="off" oninput="ledgerSearchWh(this)" onfocus="ledgerSearchWh(this)" onblur="ledgerHideWhDrop(this)">
@@ -18265,7 +18458,7 @@ function computeProductTotalValueMap(products){
   return map;
 }
 
-function filterStockLedger(){
+function filterStockLedger(_keepLimit){
   const logs = (DB.get('stock_logs') || []).filter(Boolean).slice().sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); }); // v2026110610 兜 null 脏流水
   const _pTotalMap = computeProductTotalValueMap(DB.get('products')); // v2026110801：库存总值列
   const kw = (document.getElementById('ledgerProduct') ? document.getElementById('ledgerProduct').value : '').trim().toLowerCase();
@@ -18288,7 +18481,12 @@ function filterStockLedger(){
     tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-muted)">暂无库存变动记录</td></tr>';
     return;
   }
-  tbody.innerHTML = list.map(function(l){
+  // v2026110901（性能）：流水改为分批渲染。历史流水可上万条，一次拼全部行会让「敲一个字重渲染」卡住整页；
+  // 筛选变化时重置回首批，「加载更多」按批追加。导出 CSV 仍用全量 list，口径不变。
+  if(!_keepLimit) window._ledgerLimit = _LEDGER_PAGE_SIZE;
+  const _limit = window._ledgerLimit || _LEDGER_PAGE_SIZE;
+  const shown = list.slice(0, _limit);
+  tbody.innerHTML = shown.map(function(l){
     const delta = Number(l.delta) || 0;
     const deltaTxt = (delta > 0 ? '+' : '') + delta;
     const deltaColor = delta > 0 ? '#16a34a' : (delta < 0 ? 'var(--danger)' : 'inherit');
@@ -18304,8 +18502,19 @@ function filterStockLedger(){
       <td>${escapeHtml(l.remark || '')}</td>
       <td style="text-align:right" title="该商品在系统默认仓+各他仓的库存合计 × 采购成本">${_pTotalMap[l.productId] != null ? money(_pTotalMap[l.productId]) : '—'}</td>
     </tr>`;
-  }).join('');
+  }).join('') + (list.length > shown.length
+    ? `<tr><td colspan="10" style="text-align:center;padding:10px">
+        <span style="font-size:12px;color:var(--text-muted);margin-right:10px">已显示 ${shown.length} / ${list.length} 条</span>
+        <button class="btn btn-secondary btn-sm" onclick="moreStockLedger()">加载更多（还有 ${list.length - shown.length} 条）</button>
+      </td></tr>`
+    : '');
 }
+// v2026110901：台账「加载更多」——每批追加 _LEDGER_PAGE_SIZE 条
+function moreStockLedger(){
+  window._ledgerLimit = (window._ledgerLimit || _LEDGER_PAGE_SIZE) + _LEDGER_PAGE_SIZE;
+  filterStockLedger(true);
+}
+var _LEDGER_PAGE_SIZE = 300;
 
 // v20261022：库存台账导出 CSV（按当前筛选结果），带 BOM 防 Excel 中文乱码
 function exportStockLedgerCSV(){
@@ -20023,7 +20232,7 @@ function openNewAftersaleModal(){
             <div class="product-search-wrap">
               <input type="text" class="form-control" id="aftersaleOrderSearch"
                 placeholder="${isAdmin ? '搜索订单号/客户姓名/电话（支持所有状态订单）' : '搜索我的订单号/客户姓名/电话（支持所有状态订单）'}" autocomplete="off"
-                oninput="searchOrdersForAftersale(this.value)">
+                oninput="_debInput(this,'searchOrdersForAftersale')" oncompositionstart="_onImeStart()" oncompositionend="_onImeEnd(this,'searchOrdersForAftersale')">
               <div class="product-search-results" id="orderSearchResults" style="display:none"></div>
             </div>
             <div id="selectedOrderInfo" style="margin-top:10px"></div>
@@ -20241,7 +20450,13 @@ function calcAfterSaleLossPreview(){
 
 // 搜索订单（全部状态历史订单；销售仅检索自己创建的订单）
 function searchOrdersForAftersale(keyword){
+  // v2026110901：防抖入口不带参数调用时，自己去输入框取当前值（否则会把搜索结果当成空串隐藏掉）
+  if(keyword === undefined){
+    const _inp = document.getElementById('aftersaleOrderSearch');
+    keyword = _inp ? _inp.value : '';
+  }
   const results = document.getElementById('orderSearchResults');
+  if(!results) return;
   if(!keyword || !keyword.trim()){ results.style.display='none'; return; }
   let orders = DB.get('orders').filter(o => !isOrderDeleted(o));
   const isAdmin = currentUser.role === 'admin';
