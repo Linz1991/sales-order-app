@@ -1792,7 +1792,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026110901</div>
+          <div class="brand-sub">v2026111001</div>
         </div>
       </div>
     </div>
@@ -7590,7 +7590,7 @@ async function renderOrders(){
           html += `
             <div class="order-card" onclick="viewOrder('${o.id}', true)" style="${missingTracking?'border-left:4px solid #8b5cf6;background:#f5f3ff;':''}">
               <div class="card-row" style="margin-bottom:6px"><span class="card-label">订单号</span>${orderIdCell(o.id, {clickView:true})}</div>
-              <div class="card-customer">${escapeHtml(displayNameOf(o))||'-'}</div>
+              <div class="card-customer">${escapeHtml(displayNameOf(o))||'-'}${_phoneCopyBtn(o)}</div>
               <div class="card-row"><span class="card-label">类型</span>${orderTypeTag(o.type)}</div>
               ${o.salesName ? `<div class="card-row"><span class="card-label">销售</span><span style="text-align:right">${escapeHtml(o.salesName)}</span></div>` : ''}
               <div class="card-row"><span class="card-label">状态</span>${statusTag(o.status)}${paymentSettledTag(o)}</div>
@@ -7615,7 +7615,7 @@ async function renderOrders(){
         filtered.forEach(o => {
           const productList = products || [];
           html += `<tr>`;
-          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span>${o.salesName?`<br><span style="font-size:11px;color:var(--text-muted)">销售 ${escapeHtml(o.salesName)}</span>`:''}</td>`;
+          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}${_phoneCopyBtn(o)}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span>${o.salesName?`<br><span style="font-size:11px;color:var(--text-muted)">销售 ${escapeHtml(o.salesName)}</span>`:''}</td>`;
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/>':''}<col class="stock-col"/>${canStock?'<col class="wh-col"/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>利润</th>':''}<th title="本行发货仓当前库存：系统默认仓=系统库存；选供应商则显示该他仓（缺货直发不扣）。订单变为已下单时扣减">库存</th>${canStock?'<th>发货仓</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const cost = effectiveItemCost(o, it, _productMap);
@@ -7652,7 +7652,7 @@ async function renderOrders(){
       if(filtered.length){
         filtered.forEach(o => {
           html += `<tr>`;
-          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span>${o.salesName?`<br><span style="font-size:11px;color:var(--text-muted)">销售 ${escapeHtml(o.salesName)}</span>`:''}</td>`;
+          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}${_phoneCopyBtn(o)}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span>${o.salesName?`<br><span style="font-size:11px;color:var(--text-muted)">销售 ${escapeHtml(o.salesName)}</span>`:''}</td>`;
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/><col/>':''}${canStock?'<col class="wh-col"/>':''}</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}${canStock?'<th>发货仓</th>':''}</tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const cost = effectiveItemCost(o, it, _productMap);
@@ -7686,7 +7686,7 @@ async function renderOrders(){
       if(filtered.length){
         filtered.forEach(o => {
           html += `<tr>`;
-          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span>${o.salesName?`<br><span style="font-size:11px;color:var(--text-muted)">销售 ${escapeHtml(o.salesName)}</span>`:''}</td>`;
+          html += `<td style="vertical-align:top">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}${_phoneCopyBtn(o)}<br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(o.phone)||''}</span>${o.salesName?`<br><span style="font-size:11px;color:var(--text-muted)">销售 ${escapeHtml(o.salesName)}</span>`:''}</td>`;
           html += `<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>${isAdmin?'<col/><col/><col/>':''}${canStock?'<col class="wh-col"/>':''}<col/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>${isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':''}${canStock?'<th>发货仓</th>':''}<th>运单号</th></tr></thead><tbody>`;
           (o.items||[]).forEach((it, idx) => {
             const cost = effectiveItemCost(o, it, _productMap);
@@ -7869,7 +7869,7 @@ async function renderOrders(){
         html += `
           <div class="order-card" onclick="viewOrder('${o.id}')" style="${missingTracking?'border-left:4px solid #8b5cf6;background:#f5f3ff;':''}">
             <div class="card-row" style="margin-bottom:6px"><span class="card-label">订单号</span>${orderIdCell(o.id, {clickView:true})}</div>
-            <div class="card-customer">${escapeHtml(displayNameOf(o))||'-'}</div>
+            <div class="card-customer">${escapeHtml(displayNameOf(o))||'-'}${_phoneCopyBtn(o)}</div>
             <div class="card-tags">
               ${salesStatusLabel(o.status)}
             </div>
@@ -7903,7 +7903,7 @@ async function renderOrders(){
       if(filtered.length){
         filtered.forEach(function(o){
           html += '<tr>';
-          html += '<td style="vertical-align:top">'+orderIdCell(o.id, {clickView:true})+'<br>'+(escapeHtml(displayNameOf(o))||'-')+'</td>';
+          html += '<td style="vertical-align:top">'+orderIdCell(o.id, {clickView:true})+'<br>'+(escapeHtml(displayNameOf(o))||'-')+_phoneCopyBtn(o)+'</td>';
           html += '<td colspan="3" style="padding:0;vertical-align:top"><table class="order-items-sub-table"><colgroup><col/><col/><col/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th></tr></thead><tbody>';
           (o.items||[]).forEach(function(it){
             var missingTracking = ['confirmed','shipped'].indexOf(o.status) >= 0 && o.type !== 'door' && !o.noTracking && !it.trackingNo;
@@ -7945,7 +7945,7 @@ async function renderOrders(){
             ? '<button class="btn btn-primary btn-sm" onclick="editOrder(\''+o.id+'\')">编辑</button>'
             : '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>';
           html += '<tr>';
-          html += '<td style="vertical-align:top">'+orderIdCell(o.id, {clickView:true})+'<br>'+(escapeHtml(displayNameOf(o))||'-')+'</td>';
+          html += '<td style="vertical-align:top">'+orderIdCell(o.id, {clickView:true})+'<br>'+(escapeHtml(displayNameOf(o))||'-')+_phoneCopyBtn(o)+'</td>';
           html += '<td colspan="4" style="padding:0;vertical-align:top"><table class="order-items-sub-table"><colgroup><col/><col/><col/><col class="stock-col"/></colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th><th title="本行发货仓当前库存：系统默认仓=系统库存；选供应商则显示该他仓（缺货直发不扣）。订单变为已下单时扣减">库存</th></tr></thead><tbody>';
           (o.items||[]).forEach(function(it){
             // 销售端：商品子表只读 name / qty / price；严禁渲染 cost / waste / profit
@@ -7986,7 +7986,7 @@ async function renderOrders(){
               const missingTracking = ['confirmed','shipped'].includes(o.status) && o.type !== 'door' && !o.noTracking && (o.items||[]).some(it => !it.trackingNo);
               return `
               <tr style="${missingTracking?'background:#f5f3ff;':''}">
-                <td style="${missingTracking?'border-left:3px solid #8b5cf6;padding-left:7px;color:#6d28d9;font-weight:600;':''}">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}</td>
+                <td style="${missingTracking?'border-left:3px solid #8b5cf6;padding-left:7px;color:#6d28d9;font-weight:600;':''}">${orderIdCell(o.id)}<br>${escapeHtml(displayNameOf(o))||'-'}${_phoneCopyBtn(o)}</td>
                 <td>${escapeHtml(o.phone) || '<span style="color:var(--text-muted)">未填写</span>'}</td>
                 <td>${salesStatusLabel(o.status)}</td>
                 <td style="font-size:12px">${remark}</td>
@@ -11165,6 +11165,23 @@ function orderIdCell(id, opts){
   var sid = (''+id).replace(/'/g, "\\'");
   var clickAttr = (opts && opts.clickView) ? ' onclick="event.stopPropagation();viewOrder(\''+sid+'\')" style="cursor:pointer"' : '';
   return '<span class="oid-box" title="复制订单号"><span class="oid-text"'+clickAttr+'>'+sid+'</span><button type="button" class="oid-copy" title="复制订单号" onclick="event.stopPropagation();copyToClipboard(\''+sid+'\',\'订单号\')">📋</button></span>';
+}
+
+
+// v2026111001：一键复制客户电话（普通/上门/留仓所有订单列表客户列复用；无电话不渲染按钮）
+function _phoneCopyBtn(o){
+  if(!o || !o.phone) return '';
+  var pid = (''+o.id).replace(/'/g, "\\'");
+  return ' <button type="button" title="一键复制客户电话" onclick="event.stopPropagation();copyCustomerPhone(\''+pid+'\')" style="font-size:11px;padding:1px 7px;border-radius:4px;border:1px solid var(--border);background:#fff;color:var(--primary);cursor:pointer;vertical-align:middle;line-height:1.7;white-space:nowrap">📞 复制电话</button>';
+}
+function copyCustomerPhone(orderId){
+  try{
+    var o = (DB.get('orders')||[]).find(function(x){ return x && x.id === orderId; });
+    if(!o || !o.phone){ showToast('该订单没有客户电话','error'); return; }
+    copyToClipboard(String(o.phone).trim(), '客户电话');
+  }catch(e){
+    showToast('复制失败，请手动复制','error');
+  }
 }
 
 
@@ -14902,7 +14919,7 @@ async function renderProducts(){
               <th>分类</th>
               <th>售价</th>
               ${isAdmin ? '<th>利润</th>' : ''}
-              ${canStock ? '<th>库存</th>' : ''}
+              <th>库存</th><!-- v2026111001：库存列全员可见（只读） -->
               <th>状态</th>
               ${isAdmin ? '<th>操作</th>' : ''}
             </tr>
@@ -14931,6 +14948,7 @@ function renderProductRowsHtml(){
   // v2026102102：库存列对「管理员+操作员」显示，必须与 renderProducts 表头的 canStock 条件完全一致，
   // 否则表头 th 数与本函数 td 数不等 → 整表列错位。此处不能引用 renderProducts 的局部变量 canStock（本函数是顶层函数，取不到）。
   const canStock = isAdmin || currentUser.role === 'operator';
+  // v2026111001：库存列全员可见 → colspan 销售端从 5 改为 6（序号/名称/分类/售价/库存/状态）；admin 原本就含库存列不变
   const products = DB.get('products');
   const keyword = window._productFilter || '';
   let filtered = products;
@@ -14951,7 +14969,7 @@ function renderProductRowsHtml(){
   const batchMode = window._productBatchMode || false;
   const exportMode = window._productExportMode || false;
   const selectedIds = window._productSelectedIds || {};
-  const colspan = (isAdmin?((batchMode||exportMode)?10:9):5); // 多一列"序号"、管理员再加库存列
+  const colspan = (isAdmin?((batchMode||exportMode)?10:9):6); // 多一列"序号"、管理员再加库存列；销售端 v2026111001 加只读库存列
   // 分页
   const pageSize = window._productPageSize || 20;
   let page = window._productPage || 1;
@@ -14980,10 +14998,10 @@ function renderProductRowsHtml(){
         <td>${escAttr(p.category)||'-'}</td>
         <td style="font-weight:600">${money(p.price)}</td>
         ${isAdmin ? `<td style="color:${profitColor};font-weight:600">${profitText}</td>` : ''}
-        ${canStock ? `<td>
+        <td><!-- v2026111001：库存列全员可见，操作入口按角色渲染 -->
           ${(()=>{ const sq=Number(p.stockQty)||0; const wq=Number(p.warnQty)||0; const low = wq>0 && sq<=wq; const neg = sq<0; return `<b style="color:${(low||neg)?'var(--danger)':'inherit'}">${sq}</b>${low?' ⚠️':''}${neg&&isAdmin?' <span class="badge badge-danger" style="font-size:10px">负库存</span>':''}`; })()}
-          <button class="btn-link" onclick="openStockAdjustModal('${p.id}')" title="手动出入库">出入库</button><button class="btn-link" onclick="openStockTakeModal('${p.id}')" title="盘库（设为实际库存并记流水）">盘库</button>${isAdmin ? `${(()=>{ const wq=Number(p.warnQty)||0; const sq=Number(p.stockQty)||0; return (sq<=0 || (wq>0 && sq<=wq)) ? ` <button class="btn-link" style="color:#f59e0b" onclick="quickReplenish('${p.id}')" title="库存不足/低于预警，一键开补货采购单">补货</button>` : ''; })()}` : ''}
-        </td>` : ''}
+          ${canStock ? `<button class="btn-link" onclick="openStockAdjustModal('${p.id}')" title="手动出入库">出入库</button><button class="btn-link" onclick="openStockTakeModal('${p.id}')" title="盘库（设为实际库存并记流水）">盘库</button>${isAdmin ? `${(()=>{ const wq=Number(p.warnQty)||0; const sq=Number(p.stockQty)||0; return (sq<=0 || (wq>0 && sq<=wq)) ? ` <button class="btn-link" style="color:#f59e0b" onclick="quickReplenish('${p.id}')" title="库存不足/低于预警，一键开补货采购单">补货</button>` : ''; })()}` : ''}` : ''}
+        </td>
         <td>${p.status==='on'?'<span class="tag tag-onshelf">在售</span>':'<span class="tag tag-offshelf">已下架</span>'}</td>
         ${isAdmin ? `<td>
           <button class="btn-link" onclick="openProductModal('${p.id}')">编辑</button>
@@ -21010,7 +21028,7 @@ async function renderSchedule(){
       sorted.forEach(function(o){
         var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>';
         html += '<tr>';
-        html += '<td style="vertical-align:top;word-break:break-all">'+orderIdCell(o.id)+'<br>'+escapeHtml(displayNameOf(o))+'<br><span style="font-size:11px;color:var(--text-muted)">'+escapeHtml(o.phone||'')+'</span></td>';
+        html += '<td style="vertical-align:top;word-break:break-all">'+orderIdCell(o.id)+'<br>'+escapeHtml(displayNameOf(o))+_phoneCopyBtn(o)+'<br><span style="font-size:11px;color:var(--text-muted)">'+escapeHtml(o.phone||'')+'</span></td>';
         html += '<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>'+(isAdmin?'<col/><col/>':'')+(showStock?'<col class="stock-col"/>':'')+(doorCanStock?'<col class="wh-col"/>':'')+'</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>'+(isAdmin?'<th>成本</th><th>利润</th>':'')+(showStock?'<th title="本行发货仓当前库存：系统默认仓=系统库存；选供应商则显示该他仓（缺货直发不扣）。订单变为已下单时扣减">库存</th>':'')+(doorCanStock?'<th>发货仓</th>':'')+'</tr></thead><tbody>';
         (o.items||[]).forEach(function(it){
           var cost = effectiveItemCost(o, it, _doorProductMap);
@@ -21041,7 +21059,7 @@ async function renderSchedule(){
     html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>上门日期</th><th>操作</th></tr></thead><tbody>';
       if(sorted.length){
       sorted.forEach(function(o){
-        var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+escapeHtml(displayNameOf(o))+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDate(doorDateOf(o))+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+        var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+escapeHtml(displayNameOf(o))+_phoneCopyBtn(o)+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDate(doorDateOf(o))+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
       });
     }
     html += '</tbody></table></div>';
@@ -21065,7 +21083,7 @@ function showScheduleDayOrders(dateStr){
   if(!dayOrders.length){ el.innerHTML = ''; return; }
   var html = '<div class="detail-section card"><h4 style="margin-bottom:10px">'+dateStr+' 的上门订单</h4><div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>备注</th><th>上门日期</th><th>操作</th></tr></thead><tbody>';
   dayOrders.forEach(function(o){
-    var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+escapeHtml(displayNameOf(o))+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDate(doorDateOf(o))+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+    var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>'; html += '<tr><td>'+orderIdCell(o.id)+'<br>'+escapeHtml(displayNameOf(o))+_phoneCopyBtn(o)+'</td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td><td>'+formatOrderDate(doorDateOf(o))+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
   });
   html += '</tbody></table></div></div>';
   el.innerHTML = html;
@@ -21148,7 +21166,7 @@ async function renderWarehouse(){
       html += '<div class="table-wrap"><table><thead><tr><th>客户</th><th>商品明细</th><th>操作</th></tr></thead><tbody>';
       filtered.forEach(function(o){
         html += '<tr>';
-        html += '<td style="vertical-align:top">'+orderIdCell(o.id)+'<br>'+(escapeHtml(displayNameOf(o))||'-')+'<br><span style="font-size:11px;color:var(--text-muted)">'+escapeHtml(o.phone||'')+'</span></td>';
+        html += '<td style="vertical-align:top">'+orderIdCell(o.id)+'<br>'+(escapeHtml(displayNameOf(o))||'-')+_phoneCopyBtn(o)+'<br><span style="font-size:11px;color:var(--text-muted)">'+escapeHtml(o.phone||'')+'</span></td>';
         html += '<td style="vertical-align:top;padding:0"><table class="order-items-sub-table"><colgroup><col/><col/><col/>'+(isAdmin?'<col/><col/><col/>':'')+'</colgroup><thead><tr><th>商品名称</th><th>数量</th><th>售价</th>'+(isAdmin?'<th>成本</th><th>损耗</th><th>利润</th>':'')+'</tr></thead><tbody>';
         (o.items||[]).forEach(function(it){
           var cost = effectiveItemCost(o, it);
@@ -21212,7 +21230,7 @@ async function renderWarehouse(){
         var profit = calcOrderProfit(o);
         var profitColor = profit >= 0 ? 'var(--success)' : 'var(--danger)';
         var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>';
-        html += '<tr><td>'+orderIdCell(o.id)+'<br>'+(o.customerName||'-')+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td>'+(isAdmin?'<td style="text-align:center"><div style="font-weight:600;color:'+profitColor+'">'+money(profit)+'</div><div style="font-size:11px;color:var(--text-muted)">损耗 '+money(totalWaste)+'</div></td>':'')+'<td>'+(o.orderDate ? formatOrderDate(o.orderDate) : '<span style="color:var(--text-muted)">未设置</span>')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
+        html += '<tr><td>'+orderIdCell(o.id)+'<br>'+(o.customerName||'-')+_phoneCopyBtn(o)+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td>'+(isAdmin?'<td style="text-align:center"><div style="font-weight:600;color:'+profitColor+'">'+money(profit)+'</div><div style="font-size:11px;color:var(--text-muted)">损耗 '+money(totalWaste)+'</div></td>':'')+'<td>'+(o.orderDate ? formatOrderDate(o.orderDate) : '<span style="color:var(--text-muted)">未设置</span>')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
       });
       html += '</tbody></table></div>';
     }
