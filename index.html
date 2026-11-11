@@ -1792,7 +1792,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026111101</div>
+          <div class="brand-sub">v2026111102</div>
         </div>
       </div>
     </div>
@@ -6686,18 +6686,23 @@ function renderSidebar(){
   const pendingCount = myOrders.filter(o => o.status === 'pending').length;
   const feedbackCount = myOrders.filter(o => o.status === 'feedback').length;
   // 留仓订单（warehouse 类型）待下单数量徽标：销售只看自己、管理员/下单操作员看全部
-  // v2026111103：角标跟随留仓页的发货日期筛选（_whDateStart/_whDateEnd，留仓单 orderDate 即发货日期）——
-  // 页面选了日期就只数发货日期落在该区间的待下单数；未选日期维持原口径（全部待下单数）。
+  // v2026111104：角标=「需要发货的待下单数」——留仓页选了发货日期区间时数区间内的；
+  // 未选日期时只数**发货日期已到期（orderDate ≤ 今天）**的待下单数（今天要发+逾期未处理的），
+  // 未来发货日期的不算（还没到发货时间）。无发货日期的订单不计（无法判定到期）。
   const _whBadgeStart = window._whDateStart || '';
   const _whBadgeEnd = window._whDateEnd || '';
   const _deletedOrderIdsBadge = (DB.get('_deletedOrderIds') || []);
+  const _whBadgeToday = (function(){ var d=new Date(); var m=d.getMonth()+1, day=d.getDate(); return d.getFullYear()+'-'+(m<10?'0':'')+m+'-'+(day<10?'0':'')+day; })();
   const whPendingCount = ((isAdmin || isOperator) ? allOrders : myOrders).filter(function(o){
     if(!o || o.type !== 'warehouse' || o.status !== 'pending') return false;
     if(_deletedOrderIdsBadge.indexOf(o.id) >= 0 || isOrderDeleted(o)) return false;
+    var _d = o.orderDate ? String(o.orderDate).slice(0,10) : '';
     if(_whBadgeStart || _whBadgeEnd){
-      var _d = o.orderDate ? String(o.orderDate).slice(0,10) : '';
       if(_whBadgeStart && (!_d || _d < _whBadgeStart)) return false;
       if(_whBadgeEnd && (!_d || _d > _whBadgeEnd)) return false;
+    } else {
+      // 未选日期：只数发货日期已到期（≤ 今天）的待下单
+      if(!_d || _d > _whBadgeToday) return false;
     }
     return true;
   }).length;
@@ -21150,19 +21155,21 @@ async function renderWarehouse(){
   }
   filtered = filtered.slice().sort(function(a,b){ return _createdAtDesc(a,b); });
 
-  // KPI 三项（仅管理员可见）：v2026111102 改口径——统计全部「未完成」留仓订单（不含已完成/已反馈）：
-  // ① 未完成订单总价 = Σ total；② 已付定金总额 = Σ deposit（建单已收定金）；
-  // ③ 剩余尾款总额 = Σ getOrderRemaining（口径与待收尾款页一致：总额-已收-已到账收款，防误收款冲零）。
-  // 不受关键词/日期/Tab 筛选影响。
+  // KPI 四项（仅管理员可见）：统计全部「未完成」留仓订单（不含已完成/已反馈）：
+  // ① 未完成订单总价 = Σ total；② 已实收总额 = 总价 − 未收尾款（已收回来的钱）；
+  // ③ 已付定金总额 = Σ deposit（建单已收定金）；④ 剩余尾款总额 = Σ getOrderRemaining（口径与待收尾款页一致：总额-已收-已到账收款）。
+  // 等式：未完成订单总价 = 已实收总额 + 剩余尾款总额（一眼平）。不受关键词/日期/Tab 筛选影响。
   var _whOpen = orders.filter(function(o){ return ['completed','feedback_done'].indexOf(o.status) < 0; });
   var openTotal = _whOpen.reduce(function(s,o){ return s + (parseInt(o.total)||0); }, 0);
-  var openDeposit = _whOpen.reduce(function(s,o){ return s + (parseInt(o.deposit)||0); }, 0);
   var openRemain = _whOpen.reduce(function(s,o){ return s + getOrderRemaining(o); }, 0);
+  var openCollected = Math.max(0, openTotal - openRemain);   // 已实收（= 总价 − 未收尾款）
+  var openDeposit = _whOpen.reduce(function(s,o){ return s + (parseInt(o.deposit)||0); }, 0);
   var _kpiB = 'font-size:15px';
   var adminKpi = isAdmin ? '<span style="margin-right:12px;font-size:13px;color:var(--text-muted)">'
     +'未完成订单总价 <b style="color:var(--primary);'+_kpiB+'">'+money(openTotal)+'</b>'
     +' <span style="font-size:12px">('+_whOpen.length+' 笔)</span> · '
-    +'已付定金总额 <b style="color:var(--success);'+_kpiB+'">'+money(openDeposit)+'</b> · '
+    +'已实收总额 <b style="color:var(--success);'+_kpiB+'">'+money(openCollected)+'</b> · '
+    +'已付定金总额 <b style="color:var(--info);'+_kpiB+'">'+money(openDeposit)+'</b> · '
     +'剩余尾款总额 <b style="color:var(--warning);'+_kpiB+'">'+money(openRemain)+'</b>'
     +(openRemain>0? ' <span style="font-size:12px">('+_whOpen.filter(function(o){ return getOrderRemaining(o) > 0; }).length+' 笔有尾款)</span>' : '')
     +'</span>' : '';
