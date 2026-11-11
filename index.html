@@ -1792,7 +1792,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026111102</div>
+          <div class="brand-sub">v2026111103</div>
         </div>
       </div>
     </div>
@@ -12591,8 +12591,13 @@ function buildFreightIndex(){
 }
 function getOrderFreightSum(orderId){
   if(!orderId) return { freight: 0, loss: 0 };
-  if(window._freightIndexRef !== window._freightsCache) buildFreightIndex();
-  const e = window._freightIndex[orderId];
+  // v2026111103：空指针修复——_freightsCache 尚未加载(null)时 _freightIndexRef/_freightIndex 同为 null，
+  // 旧判断 null!==null 为 false 跳过 build → null[orderId] 崩（管理员首页今日利润→calcOrderProfit 链路，
+  // 报错「Cannot read properties of null (reading 'ORD…')」，dashboard 整页渲染失败）。
+  // 现补「索引不存在时强制 build」：cache 为 null 时 buildFreightIndex 内部 ||[] 建空索引，返回 0；
+  // 运费真正加载完成后 cache 变数组、与 _freightIndexRef 不一致会自动重建，口径不受影响。
+  if(!window._freightIndex || window._freightIndexRef !== window._freightsCache) buildFreightIndex();
+  const e = window._freightIndex ? window._freightIndex[orderId] : null;
   return e ? { freight: e.freight, loss: e.loss } : { freight: 0, loss: 0 };
 }
 // v2026110108：订单运费合计（快递费 + 运输损耗）。利润报表与订单导出共用同一口径，
