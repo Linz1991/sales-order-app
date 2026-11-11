@@ -1792,7 +1792,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026111103</div>
+          <div class="brand-sub">v2026111104</div>
         </div>
       </div>
     </div>
@@ -2929,13 +2929,45 @@ const DB = {
         }
       }
 
-      const _merged = this._mergeById(_localNow, _gapFilled, this.get('_deletedOrderIds', []), 'orders');
+      // v2026111104 复活裁定（治死循环）：补拉回的缺口单里，若云端是活跃行（_deleted≠true）且
+      // updated_at 比本地墓碑（_deleted=true / items[0]._delSync.d=true / _deletedOrderIds）更晚，
+      // 说明云端已被恢复而本地墓碑是陈旧残留 → 先剥离本地墓碑、从 _deletedOrderIds 移除，
+      // 再进 _mergeById。否则墓碑权威合并会把刚拉回的单再次标成已删，
+      // 形成「报缺失→补拉→仍缺失」死循环（2026-11-11 实测 ORD20250620003）。
+      const _delIds = (this.get('_deletedOrderIds', []) || []).slice();
+      let _revived = 0;
+      (_gapFilled || []).forEach((cr) => {
+        if(!cr || cr.id == null || cr._deleted === true) return;
+        const cut = this._tsUtc(cr.updatedAt || cr.createdAt || '');
+        const lr = _localNow.find(function(x){ return x && x.id === cr.id; }) || null;
+        const inDelList = _delIds.indexOf(cr.id) >= 0;
+        const lrDeleted = !!(lr && lr._deleted === true);
+        if(!lrDeleted && !inDelList) return; // 本地活跃且不在删除名单 → 与复活裁定无关，不动
+        const _ds = lrDeleted && Array.isArray(lr.items) && lr.items[0] && lr.items[0]._delSync;
+        // 墓碑时间取第一个能解析成功的候选（_delSync.at 权威 → _deletedAt → updatedAt）；
+        // 注意纯日期串（如 '2026-12-01'）尾部 '-01' 会被 _parseTsUtc 误判为时区解析成 0，不能单靠它。
+        let localDelAt = null;
+        const _delCands = [(_ds && _ds.at), lr && lr._deletedAt, lr && lr.updatedAt];
+        for(let ci = 0; ci < _delCands.length; ci++){
+          const tv = this._tsUtc(_delCands[ci] || '');
+          if(tv > 0){ localDelAt = tv; break; }
+        }
+        if(lrDeleted && localDelAt !== null && cut > localDelAt){
+          lr._deleted = false; lr._deletedAt = null; lr._deletedBy = null;
+          if(Array.isArray(lr.items) && lr.items[0]) lr.items[0]._delSync = { d: false, at: cr.updatedAt || '' };
+          _revived++;
+        }
+        const di = _delIds.indexOf(cr.id);
+        if(di >= 0 && (localDelAt === null || cut > localDelAt)){ _delIds.splice(di, 1); _revived++; }
+      });
+      if(_revived){ try{ this.set('_deletedOrderIds', _delIds); }catch(e){} }
+      const _merged = this._mergeById(_localNow, _gapFilled, _delIds, 'orders');
       localStorage.setItem('soms_orders', JSON.stringify(_merged));
       // 游标取云端全域最大 updatedAt，但封顶为当前时间-60s（v20260926 修复：此前直接用最大值会落到未来，
       // 导致之后 gte(updated_at, 未来) 恒空 → 新订单同步不到，表现为「订单突然消失」）
       const _m = this._safeCursorFrom(_cursorRows, 'updatedAt');
       if(_m) this._setIncTs(_m);
-      console.warn('['+(tag||'repair')+'] 订单补洞完成：本地', (_localNow||[]).length, '条 →', _merged.length, '条（补拉', _needIds.length, '单）');
+      console.warn('['+(tag||'repair')+'] 订单补洞完成：本地', (_localNow||[]).length, '条 →', _merged.length, '条（补拉', _needIds.length, '单', (_revived ? '，复活被陈旧墓碑误删 ' + _revived + ' 单' : '') + '）');
       return true;
     }catch(e){
       console.warn('['+(tag||'repair')+'] 订单补洞失败:', e && e.message);
@@ -6629,6 +6661,7 @@ function _isStockLedgerBlocked(){
 
 /* ============ 侧边栏渲染 ============ */
 function renderSidebar(){
+  if(!currentUser) return; // v2026111103：登录身份未恢复时（刷新竞态）直接跳过，防 null.role 崩溃
   const isAdmin = currentUser.role === 'admin';
   const isOperator = currentUser.role === 'operator';
   document.getElementById('sidebarRoleName').textContent = currentUser.name;
@@ -7463,6 +7496,7 @@ async function renderOrders(){
   // v2026110504：进订单页重试历史省市区回填（启动那次可能因数据未拉回而空跑，幂等无害）
   try{ if(typeof _backfillOrderArea === 'function') _backfillOrderArea(); }catch(e){}
   // 渲染函数只负责展示，不自己拉网络：navigate()/Realtime/afterWriteRefresh 已保证数据为云端最新。
+  if(!currentUser) return; // v2026111103：登录身份未恢复时（刷新竞态/Realtime 回调）跳过，防 null.role 崩溃
   if(typeof renderSidebar === 'function') renderSidebar();
   const isAdmin = currentUser.role === 'admin';
   const isOperator = currentUser.role === 'operator';
@@ -14847,6 +14881,7 @@ async function renderProducts(){
     detectProductStockColumn().then(function(){ if(currentRoute === 'products') renderProducts(); }).catch(function(){});
   }
   // 渲染函数只负责展示，不自己拉网络：navigate()/Realtime/afterWriteRefresh 已保证数据为云端最新。
+  if(!currentUser) return; // v2026111103：登录身份未恢复时（刷新竞态/异步探测回调）跳过，防 null.role 崩溃
   if(typeof renderSidebar === 'function') renderSidebar();
   const isAdmin = currentUser.role === 'admin';
   const isOperator = currentUser.role === 'operator';
