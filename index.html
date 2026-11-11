@@ -1792,7 +1792,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026111001</div>
+          <div class="brand-sub">v2026111101</div>
         </div>
       </div>
     </div>
@@ -6686,7 +6686,21 @@ function renderSidebar(){
   const pendingCount = myOrders.filter(o => o.status === 'pending').length;
   const feedbackCount = myOrders.filter(o => o.status === 'feedback').length;
   // 留仓订单（warehouse 类型）待下单数量徽标：销售只看自己、管理员/下单操作员看全部
-  const whPendingCount = ((isAdmin || isOperator) ? allOrders : myOrders).filter(function(o){ return o.type === 'warehouse' && o.status === 'pending'; }).length;
+  // v2026111103：角标跟随留仓页的发货日期筛选（_whDateStart/_whDateEnd，留仓单 orderDate 即发货日期）——
+  // 页面选了日期就只数发货日期落在该区间的待下单数；未选日期维持原口径（全部待下单数）。
+  const _whBadgeStart = window._whDateStart || '';
+  const _whBadgeEnd = window._whDateEnd || '';
+  const _deletedOrderIdsBadge = (DB.get('_deletedOrderIds') || []);
+  const whPendingCount = ((isAdmin || isOperator) ? allOrders : myOrders).filter(function(o){
+    if(!o || o.type !== 'warehouse' || o.status !== 'pending') return false;
+    if(_deletedOrderIdsBadge.indexOf(o.id) >= 0 || isOrderDeleted(o)) return false;
+    if(_whBadgeStart || _whBadgeEnd){
+      var _d = o.orderDate ? String(o.orderDate).slice(0,10) : '';
+      if(_whBadgeStart && (!_d || _d < _whBadgeStart)) return false;
+      if(_whBadgeEnd && (!_d || _d > _whBadgeEnd)) return false;
+    }
+    return true;
+  }).length;
   // 上门未完成订单数（全员可见：统计全部上门订单中未完成的数量，不按销售过滤）
   const deletedIds = (DB.get('_deletedOrderIds') || []);
   const doorIncompleteCount = allOrders.filter(o =>
@@ -6812,6 +6826,16 @@ function restoreRoute(){
   }catch(e){}
   return false;
 }
+// v2026111105：从订单详情「返回」列表时，恢复到进入详情前的滚动位置（普通/留仓/上门等所有列表通用）。
+// 覆盖同步渲染与后台拉取后的二次渲染：通过带有效期的 _scrollRestore 令牌重复应用，直到 2s 后过期。
+function restoreSavedScroll(){
+  var s = window._scrollRestore;
+  if(!s) return;
+  if(currentRoute !== s.route) return;
+  if(Date.now() > s.until){ window._scrollRestore = null; return; }
+  try{ window.scrollTo(0, s.y); }catch(e){}
+}
+
 async function navigate(route){
   currentRoute = route;
   // 权限检查：销售角色不能访问管理员专属页面
@@ -6928,6 +6952,7 @@ async function navigate(route){
           const _renderer = (window._routeRenderers && window._routeRenderers[route]) || fn;
           try{ _renderer(); }catch(e){}
           if(route === 'orders') checkOrderSyncGap();   // 数据已最新，比对本机 vs 云端最准
+          requestAnimationFrame(restoreSavedScroll); // v2026111105：后台拉取二次渲染后再次恢复滚动位置
         }
       })
       .catch(function(e){
@@ -6953,6 +6978,16 @@ async function navigate(route){
   document.getElementById('sidebar').classList.remove('open');
   document.getElementById('sidebarOverlay').classList.remove('show');
   window.scrollTo(0,0);
+  // v2026111105：从订单详情「返回」列表时，恢复到进入详情前的滚动位置。
+  // 仅当本次导航目标 == 进入详情前记录的来源列表路由时触发；进入详情本身（route==='order-detail'）或导航到其它页面则不触发/清除。
+  if(window._scrollSave && window._scrollSave.route === route && route !== 'order-detail'){
+    window._scrollRestore = { y: (window._scrollSave.y||0), route: route, until: Date.now()+2000 };
+    window._scrollSave = null;
+    requestAnimationFrame(restoreSavedScroll);
+  } else if(window._scrollSave && route !== 'order-detail'){
+    // 导航到与来源列表不同的页面：丢弃保存的滚动位置，避免后续回到列表时错位跳滚
+    window._scrollSave = null;
+  }
   // 浏览器历史记录兼容：导航时推送 state
   if(window._skipHistoryPush !== true){
     history.pushState({route: route, orderId: window._currentOrderId}, '', '#' + route);
@@ -8047,6 +8082,8 @@ function loadMoreSalesOrders(){
 }
 
 function viewOrder(orderId, forceViewOnly){
+  // v2026111105：进入详情前记录来源列表路由与滚动位置，便于返回时恢复到原位置
+  try{ window._scrollSave = { y: (window.scrollY||0), route: currentRoute }; }catch(e){ window._scrollSave = null; }
   window._currentOrderId = orderId;
   window._orderEditMode = false;
   window._orderForceViewOnly = forceViewOnly === true;
@@ -10550,9 +10587,17 @@ function renderOrderDetail(){
   // 不能只读 collectedAmount（它只是初始值，不含后续收款），否则收完尾款仍显示"待收款"。
   const _doorRemain = getOrderRemaining(order);
   const _doorPaidSum = Math.max(0, (parseInt(order.total) || 0) - _doorRemain);
+  // 收款信息只读展示所需变量（v2026111104）：付款/收款方式标签、提交时收款、后续收款记录（含到账日期）
+  const _pmLabel = order.paymentMethod==='wechat'?'微信支付':(order.paymentMethod==='scan'?'扫码支付':'-');
+  const _payModeLabel = order.deposit ? ('定金 '+money(order.deposit)+' · 尾款 '+money(Math.max(0,(parseInt(order.total)||0)-(parseInt(order.deposit)||0)))) : '全款';
+  const _basePaid = getOrderPaidBase(order);
+  const _finalPay = parseInt(order.finalPayment)||Math.max(0,(parseInt(order.total)||0)-_basePaid);
+  const _paidRecords = (DB.get('payments')||[]).filter(function(p){ return p && p.orderId===order.id && p.status==='paid' && (parseInt(p.amount)||0)>0 && (parseInt(p.amount)||0) <= _finalPay; });
   if(canViewFinancials && (!isSalesRestrictedView || isSalesReadOnlyView)){
-    if(showPaymentReadonly){
-      html += `
+    // v2026111105：收款模块统一为只读卡片——之前存在两套分支（销售只读/提交成功页为「简版」、管理员为「完整版」），
+    // 导致同一订单不同角色看到的收款信息不一致。现合并为同一张卡，覆盖普通/留仓/上门各状态、各财务可见角色。
+    // 顶部三项金额 + 付款方式/收款方式/提交时收款 + 后续收款（含到账日期）。改收款仍走「编辑」入口。
+    html += `
       <div class="detail-section card">
         <div class="detail-green">
           <div class="detail-green-title">💰 收款信息</div>
@@ -10560,68 +10605,20 @@ function renderOrderDetail(){
             <div class="info-item"><div class="info-label">订单总额</div><div class="info-value" style="color:var(--primary);font-size:18px">${money(order.total||0)}</div></div>
             <div class="info-item"><div class="info-label">已收款</div><div class="info-value" style="color:var(--success)">${money(Math.min((order.total||0), _doorPaidSum))}</div></div>
             <div class="info-item"><div class="info-label">待收款</div><div class="info-value" style="color:var(--danger)">${money(_doorRemain)}</div></div>
-            <div class="info-item"><div class="info-label">收款方式</div><div class="info-value">${order.paymentMethod==='wechat'?'微信支付':(order.paymentMethod==='scan'?'扫码支付':'-')}</div></div>
-            <div class="info-item"><div class="info-label">尾款状态</div><div class="info-value">${order.deposit ? '有尾款（'+money(Math.max(0,(order.total||0)-(order.deposit||0)))+'）' : '无尾款（全款）'}</div></div>
           </div>
+          <div class="info-grid" style="margin-top:10px">
+            <div class="info-item"><div class="info-label">付款方式</div><div class="info-value">${_payModeLabel}</div></div>
+            <div class="info-item"><div class="info-label">收款方式</div><div class="info-value">${_pmLabel}</div></div>
+            <div class="info-item"><div class="info-label">提交时收款</div><div class="info-value">${money(order.collectedAmount||0)}${order.deposit?'（定金）':''}</div></div>
+          </div>
+          ${_paidRecords.length ? `
+          <div style="margin-top:12px;border-top:1px dashed rgba(0,0,0,0.12);padding-top:10px">
+            <div class="info-label" style="margin-bottom:6px">后续收款（${_paidRecords.length} 笔，含到账日期）</div>
+            ${_paidRecords.map(function(p){ return '<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:5px 0;border-bottom:1px solid rgba(0,0,0,0.06)"><span style="font-weight:500">'+money(p.amount)+' · '+(p.method||'-')+'</span><span style="color:var(--text-secondary)">'+escAttr(p.payDate||'日期未登记')+'</span></div>'; }).join('')}
+          </div>` : ''}
+          <div style="margin-top:10px;font-size:11px;color:var(--text-tertiary)">需修改收款信息请用「编辑」入口，此处仅展示提交时登记内容</div>
         </div>
       </div>`;
-    } else {
-      html += `
-      <div class="detail-section card">
-        <h4>💰 收款信息</h4>
-        <div style="margin-top:12px">
-          <div class="payment-check-title">💰 核对订单金额</div>
-          <div class="pay-mode">
-            <label class="pay-mode-option">
-              <input type="radio" name="doorPayMode" value="full" ${(order.fullPayment||(!order.deposit))?'checked':''} onchange="onDoorPayModeChange()">
-              <span>全款</span>
-            </label>
-            <label class="pay-mode-option">
-              <input type="radio" name="doorPayMode" value="deposit" ${order.deposit?'checked':''} onchange="onDoorPayModeChange()">
-              <span>定金</span>
-            </label>
-          </div>
-          <div class="form-row" id="doorFullPayRow">
-            <div class="form-group">
-              <label class="form-label">全款金额（元）</label>
-              <input type="number" class="form-control" id="doorFullPay" value="${order.fullPayment||order.total||''}" readonly style="background:#f3f4f6" placeholder="自动填入订单总额">
-            </div>
-          </div>
-          <div class="form-row" id="doorDepositPayRow" style="display:${order.deposit?'':'none'}">
-            <div class="form-group">
-              <label class="form-label">定金（元）</label>
-              <input type="number" class="form-control" id="doorDeposit" value="${order.deposit||''}" min="0" step="1" placeholder="输入定金金额" oninput="calcDetailFinalPay();validateDetailDeposit();fillDoorCollectedByMode()">
-            </div>
-            <div class="form-group">
-              <label class="form-label">尾款（元）<span style=\"font-size:11px;color:var(--text-muted);font-weight:normal\">（自动计算）</span></label>
-              <input type="number" class="form-control" id="doorFinalPayment" value="${(order.total!==undefined&&order.deposit!==undefined)?Math.max(0,(order.total||0)-order.deposit):''}" readonly style="background:#f3f4f6" placeholder="自动计算">
-            </div>
-          </div>
-          <div class="payment-check-title" style="margin-top:18px">💳 收款方式<span style="color:var(--danger);font-weight:normal">（必选）</span></div>
-          <div class="pay-mode">
-            <label class="pay-mode-option">
-              <input type="radio" name="doorPayMethod" value="wechat" ${order.paymentMethod==='wechat'?'checked':''} onchange="fillDoorCollectedByMode()">
-              <span>微信支付</span>
-            </label>
-            <label class="pay-mode-option">
-              <input type="radio" name="doorPayMethod" value="scan" ${order.paymentMethod==='scan'?'checked':''} onchange="fillDoorCollectedByMode()">
-              <span>扫码支付</span>
-            </label>
-          </div>
-          <div class="form-row" style="margin-top:12px;align-items:flex-start">
-            <div class="form-group">
-              <label class="form-label">收款金额（元）<span style="font-size:11px;color:var(--text-muted);font-weight:normal">（自动带出，不可修改）</span></label>
-              <input type="number" class="form-control" id="doorCollected" value="${order.collectedAmount||''}" min="0" step="1" placeholder="选择收款方式后自动带出" readonly style="background:#f5f5f7;color:var(--text-muted);cursor:not-allowed">
-            </div>
-            <div class="form-group" id="wechatTotalDisplayEdit" style="display:none;">
-              <label class="form-label" style="color:var(--success)">💰 微信收款总额提示</label>
-              <div id="wechatTotalValueEdit" style="padding:10px 12px;background:#e0f2f1;border:1px solid #b8d8d6;border-radius:8px;font-size:13px;color:var(--text);line-height:1.6"></div>
-            </div>
-          </div>
-          <div class="payment-hint" id="detailPaymentHint"></div>
-      </div>
-    `;
-    }
   } else if(!isOperator){
     // 无财务权限且非 operator（如销售查看他人订单）：保留只读提示
     html += `
@@ -11417,6 +11414,7 @@ function salesSubmitFeedback(orderId){
     showToast('该订单不是待反馈状态', 'error');
     return;
   }
+  if(!canCompleteOrder(orders[idx])) return; // v2026111102 尾款未收齐禁止完成
   showConfirm('确认提交反馈？确认后该订单将转入「已完成」列表。', async () => {
     orders[idx].status = 'completed';
     if(!orders[idx].completedAt) orders[idx].completedAt = nowStr(); // v2026100109：利润归属日期依赖此字段，此前漏写
@@ -11458,6 +11456,7 @@ function markOrderFeedbackDone(orderId){
     showToast('该订单不是待反馈状态', 'error');
     return;
   }
+  if(!canCompleteOrder(orders[idx])) return; // v2026111102 尾款未收齐禁止完成
   showConfirm('确认将该订单标记为「已反馈」？确认后订单将转入「已完成」列表。', async () => {
     orders[idx].status = 'completed';
     if(!orders[idx].completedAt) orders[idx].completedAt = nowStr(); // v2026100109：利润归属日期依赖此字段，此前漏写
@@ -11499,6 +11498,7 @@ function setOrderCompleted(orderId){
     showToast('上门订单需先「已下单」后才能确认完成，不可从待下单直接完成', 'error');
     return;
   }
+  if(!canCompleteOrder(orders[idx])) return; // v2026111102 尾款未收齐禁止完成
   updateOrderStatus(orderId, 'completed');
 }
 
@@ -11543,6 +11543,8 @@ function confirmSetOrderCompleted(orderId){
 
 // 上门订单「已下单」详情页：点「已完成」→ 二次确认 → 标记完成并跳转上门订单「已完成」列表
 function completeDoorOrderFromDetail(orderId){
+  var _doorO = DB.get('orders').find(function(o){ return o.id === orderId; });
+  if(_doorO && !canCompleteOrder(_doorO)) return; // v2026111102 尾款未收齐禁止完成
   showConfirm('确认将上门订单标记为「已完成」？此操作不可撤销，订单将转入上门订单「已完成」列表。', function(){
     const orders = DB.get('orders');
     const idx = orders.findIndex(o => o.id === orderId);
@@ -12361,6 +12363,12 @@ async function updateOrderStatus(orderId, status){
   const idx = orders.findIndex(o => o.id === orderId);
   if(idx >= 0){
     const auditOldStatus = orders[idx].status;
+    if(status === 'completed' && !canCompleteOrder(orders[idx])){
+      // v2026111102 兜底拦截：任何绕过前置入口的「已完成」路径（如详情状态下拉）也必须尾款收齐；
+      // 重渲染详情恢复下拉框选中值，避免界面显示已切换但实际未生效
+      if(currentRoute === 'order-detail') renderOrderDetail();
+      return;
+    }
     orders[idx].status = status;
     if(status === 'confirmed'){
       // 管理员直接改状态为「已下单」：先固化成本快照（此后不再随商品库变动）
@@ -18922,6 +18930,19 @@ function getOrderRemaining(order){
   return Math.max(0, (parseInt(order.total) || 0) - basePaid - paidSum);
 }
 
+// v2026111102 尾款收齐守卫（普通/留仓/上门通用，全员受限含管理员）：
+// 尾款未收齐的订单不允许标记「已完成」，必须先在详情页/待收尾款页把全部金额收齐。
+// 所有「转入已完成」的入口（反馈完成/确认已反馈/上门完成/状态下拉/一键完成）统一调此守卫。
+function canCompleteOrder(order){
+  if(!order) return true;
+  var rem = getOrderRemaining(order);
+  if(rem > 0){
+    showToast('⛔ 尾款未收齐：'+escAttr(order.customerName||'')+' 的订单还剩尾款 '+money(rem)+' 未收，必须把订单全部金额收齐后才能标记「已完成」', 'error', 6000);
+    return false;
+  }
+  return true;
+}
+
 // 是否存在待收尾款（v2026110614b 口径，业务拍板）：
 // ① 有剩余尾款；② 满足任一：有定金 / 提交时填了尾款金额 / 订单未完成（未完成且未收清即挂账，
 //    fp=0 时按剩余总额收）。
@@ -21129,11 +21150,22 @@ async function renderWarehouse(){
   }
   filtered = filtered.slice().sort(function(a,b){ return _createdAtDesc(a,b); });
 
-  // 待下单总额（仅管理员可见）：固定显示全部「留仓 + 待下单」总额，不受关键词/日期/状态Tab 任何筛选影响
-  var pendingOrders = orders.filter(function(o){ return o.status === 'pending'; });
-  var pendingTotal = pendingOrders.reduce(function(s,o){ return s + (Number(o.total)||0); }, 0);
-  var pendingCount = pendingOrders.length;
-  var adminKpi = isAdmin ? '<span style="margin-right:12px;font-size:13px;color:var(--text-muted)">待下单总额 <b style="color:var(--warning);font-size:15px">'+money(pendingTotal)+'</b>'+(pendingCount? ' <span style="font-size:12px;color:var(--text-muted)">('+pendingCount+' 笔)</span>' : '')+'</span>' : '';
+  // KPI 三项（仅管理员可见）：v2026111102 改口径——统计全部「未完成」留仓订单（不含已完成/已反馈）：
+  // ① 未完成订单总价 = Σ total；② 已付定金总额 = Σ deposit（建单已收定金）；
+  // ③ 剩余尾款总额 = Σ getOrderRemaining（口径与待收尾款页一致：总额-已收-已到账收款，防误收款冲零）。
+  // 不受关键词/日期/Tab 筛选影响。
+  var _whOpen = orders.filter(function(o){ return ['completed','feedback_done'].indexOf(o.status) < 0; });
+  var openTotal = _whOpen.reduce(function(s,o){ return s + (parseInt(o.total)||0); }, 0);
+  var openDeposit = _whOpen.reduce(function(s,o){ return s + (parseInt(o.deposit)||0); }, 0);
+  var openRemain = _whOpen.reduce(function(s,o){ return s + getOrderRemaining(o); }, 0);
+  var _kpiB = 'font-size:15px';
+  var adminKpi = isAdmin ? '<span style="margin-right:12px;font-size:13px;color:var(--text-muted)">'
+    +'未完成订单总价 <b style="color:var(--primary);'+_kpiB+'">'+money(openTotal)+'</b>'
+    +' <span style="font-size:12px">('+_whOpen.length+' 笔)</span> · '
+    +'已付定金总额 <b style="color:var(--success);'+_kpiB+'">'+money(openDeposit)+'</b> · '
+    +'剩余尾款总额 <b style="color:var(--warning);'+_kpiB+'">'+money(openRemain)+'</b>'
+    +(openRemain>0? ' <span style="font-size:12px">('+_whOpen.filter(function(o){ return getOrderRemaining(o) > 0; }).length+' 笔有尾款)</span>' : '')
+    +'</span>' : '';
 
   var whTabs = [
     {key:'pending',label:'待下单'},{key:'confirmed',label:'已下单'},
