@@ -1792,7 +1792,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026111301</div>
+          <div class="brand-sub">v2026111302</div>
         </div>
       </div>
     </div>
@@ -2474,6 +2474,26 @@ const DB = {
   _applyInvSoftFilter(key, cloud, merged){
     if(key !== 'purchases' && key !== 'suppliers') return { cloud: cloud || [], merged: merged || [] };
     const _ids = _invSoftDelIds(cloud);
+    // v2026111302：本机「永久墓碑」自愈——云端墓碑若被他端陈旧副本覆盖回 _deleted=false，
+    // 这台设备仍认得它已删：① 不让它回到列表 ② 把 id 重新塞回待重试队列，下次同步重新软删。
+    // 起因见 CG2026110902：云端行 updated_at 从未变过（删除只在本机生效），清掉本机墓碑后即复活。
+    try{
+      const doneKey = (typeof _invTombKeyDone === 'function') ? _invTombKeyDone(key) : null;
+      const done = doneKey ? (this.get(doneKey, []) || []).filter(Boolean) : [];
+      if(done.length){
+        const cloudAlive = {};
+        (cloud || []).forEach(function(r){ if(r && r.id != null && r._deleted !== true) cloudAlive[r.id] = true; });
+        const retryKey = key === 'purchases' ? '_deletedPurchaseIds' : '_deletedSupplierIds';
+        let retry = (this.get(retryKey, []) || []).filter(Boolean);
+        let changed = false;
+        done.forEach(function(id){
+          if(!cloudAlive[id]) return;
+          if(_ids.indexOf(id) < 0) _ids.push(id);
+          if(retry.indexOf(id) < 0){ retry.push(id); changed = true; }
+        });
+        if(changed) this.set(retryKey, retry);
+      }
+    }catch(e){}
     return {
       cloud: _invDropSoftDeleted(cloud, _ids),
       merged: _invDropSoftDeleted(merged, _ids)
@@ -3827,7 +3847,11 @@ const DB = {
             if(delErr) console.warn('清理已删除账号失败 ['+key+']:', delErr.message);
           }
         }
-      }else if(key !== 'products'){
+      }else if(key !== 'products' && key !== 'purchases' && key !== 'suppliers'){
+        // v2026111302 🔴 采购单/供应商也除外（重大复活根因）：这两张表的删除已改「云端软删墓碑」
+        // PATCH _deleted=true，且 _applyInvSoftFilter 会把墓碑行从 data 里剔除；若这里仍按本地清单
+        // delete().not('id','in',...) 反删云端，就会把刚建立的墓碑行物理删掉 → 云端无痕 →
+        // 他端陈旧副本一 upsert 就复活。实测 CG2026110902：PATCH 软删成功后墓碑被下一次同步清空。
         // 商品表除外：商品是“云端唯一真相”，绝不允许按本设备本地清单反删云端，
         // 否则某设备本地缓存为旧子集时一旦新增/修改商品，会把云端其它商品误删，导致各端数量不一致。
         // 商品的删除由批量删除入口显式物理删除云端（products.delete().in('id',...)）传播，无需此处批量清理。
@@ -11088,7 +11112,10 @@ function copySingleOrderInfo(orderId){
   else if(order.region || order.address) head += ' ' + [order.region, order.address].filter(Boolean).join(' ');
   lines.push(head);
   if(order.type === 'door' && order.items && order.items.length){
-    // 上门订单：地址与商品之间分隔横线（与下方统计块标题同款） + ✅/❗️ 标记 + 备货/货款/国补统计
+    // 上门订单：地址与商品之间分隔横线 + ✅/❗️ 标记 + 备货/货款/国补统计
+    // v2026111303：✅ 照旧表示「店里已备货 / 到店在途」；只有详情页「货到客户」列填了序列号
+    // （it.customerArrival 非空）的那一行才额外显示 🏠，表示该件货是发到客户家里的。
+    // 其它商品行、统计行文案一律不动。
     lines.push('————— 商品信息 —————');
     order.items.forEach(it => {
       const qty = (it.qty || 1);
@@ -11096,13 +11123,13 @@ function copySingleOrderInfo(orderId){
       const bucket = doorItemBucket(it);
       let mark = '';
       if(arrival){
-        mark = ' — #' + arrival;            // 货到客户：显示物流单号，不标 ✅/❗️
+        mark = ' — 🏠 #' + arrival;            // 选了「货到客户」：只有这一行显示 🏠，保留序列号
       } else if(bucket === 'stocked'){
-        mark = ' — ' + '✅'.repeat(qty);     // 店里已备货：按数量标 ✅
+        mark = ' — ' + '✅'.repeat(qty);       // 店里已备货：按数量标 ✅（原样）
       } else if(bucket === 'transit'){
-        mark = ' — #' + (it.stockOrderNo || '').trim() + '✅';  // 到店在途：订货到店物流单号 + ✅
+        mark = ' — #' + (it.stockOrderNo || '').trim() + '✅';  // 到店在途：订货到店物流单号 + ✅（原样）
       } else {
-        mark = '❗️'.repeat(qty);             // 需要备货：按数量标 ❗️
+        mark = '❗️'.repeat(qty);               // 需要备货：按数量标 ❗️
       }
       const base = (it.name || '未命名商品') + ' ×' + qty;
       lines.push(base + mark);
@@ -17057,7 +17084,7 @@ function deleteSupplier(id){
   if(!confirm('确定删除该供应商？该操作不可撤销。')) return;
   // v2026110501→v2026110611：同采购单——本地删 + tombstone + 云端软删占位（PATCH _deleted=true），否则下次拉取会复活
   _invDeleteSync('suppliers', '_deletedSupplierIds', id);
-  showToast('已删除', 'success');
+  showToast('已删除，正在同步到云端', 'success');
   renderSuppliers();
 }
 
@@ -18033,6 +18060,29 @@ function _invGuardDropRows(rows, cloudRows){
 
 // 把 tombstone 里还没在云端软删掉的 id 逐条 PATCH _deleted=true（幂等：可反复重试）。
 // v2026110611（方案A）：改软删占位，不再物理 DELETE——物理删后云端无痕迹，他端陈旧副本会推回复活。
+// v2026111302：删除成功判定必须校验「受影响行数」+ 成功后写永久墓碑。
+// 起因（CG2026110902 实测）：PostgREST 对「没匹配到任何行」的 PATCH 也返回 HTTP 200 + []，
+// 旧版只判 res.ok 就当软删成功并清掉本机 tombstone → 云端其实没删、本机依据也没了，
+// 下一轮全量拉取把云端活跃行合并回来 →「昨天删了今天又出现」。
+function _invTombKeyDone(table){
+  return table === 'purchases' ? '_deletedPurchaseIdsDone' : (table === 'suppliers' ? '_deletedSupplierIdsDone' : null);
+}
+function _invMarkDeletedDone(table, id){
+  const k = _invTombKeyDone(table);
+  if(!k) return;
+  try{
+    const done = (DB.get(k, []) || []).filter(Boolean);
+    if(done.indexOf(id) < 0){ done.push(id); DB.set(k, done); }
+  }catch(e){}
+}
+function _invWarnDelete(msg){
+  try{
+    const now = Date.now();
+    if(window._invDelWarnAt && (now - window._invDelWarnAt) < 5000) return; // 限频，避免刷屏
+    window._invDelWarnAt = now;
+    if(typeof showToast === 'function') showToast(msg, 'error', 6000);
+  }catch(e){}
+}
 function _flushInvDeletes(table, tombKey){
   const ids = (DB.get(tombKey, []) || []).filter(Boolean);
   if(!ids.length) return Promise.resolve();
@@ -18044,16 +18094,20 @@ function _flushInvDeletes(table, tombKey){
       if(window._invDeleting[lockKey]) return;      // 同一行不并发重试
       window._invDeleting[lockKey] = true;
       const _url = SUPABASE_URL + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(id);
-      const _hdr = { 'Content-Type':'application/json', 'apikey': SUPABASE_KEY, 'Authorization':'Bearer '+SUPABASE_KEY, 'x-app-secret': APP_SECRET, 'Prefer':'return=minimal' };
+      const _hdr = { 'Content-Type':'application/json', 'apikey': SUPABASE_KEY, 'Authorization':'Bearer '+SUPABASE_KEY, 'x-app-secret': APP_SECRET, 'Prefer':'return=representation' };
       return fetch(_url, {
         method: 'PATCH',
         headers: _hdr,
         body: JSON.stringify({ _deleted: true, updated_at: (typeof window.nowStr === 'function' ? window.nowStr() : new Date().toISOString().slice(0,19).replace('T',' ')) })
       }).then(function(res){
         if(!res.ok) throw new Error('HTTP ' + res.status);
-        // 软删已上云：从 tombstone 摘掉（云端墓碑行 + 拉取过滤/推送守卫会挡住复活）
-        const left = (DB.get(tombKey, []) || []).filter(function(x){ return x !== id; });
-        DB.set(tombKey, left);
+        // 必须确认云端真的改到了 1 行；0 行 = 没删成功，绝不能清 tombstone
+        return res.json().catch(function(){ return null; }).then(function(rep){
+          if(!Array.isArray(rep) || rep.length === 0) throw new Error('云端软删未命中任何行（0 行受影响）');
+          const left = (DB.get(tombKey, []) || []).filter(function(x){ return x !== id; });
+          DB.set(tombKey, left);
+          _invMarkDeletedDone(table, id); // 永久墓碑：云端墓碑日后被覆盖，本机仍能自愈
+        });
       }).catch(function(e){
         // 云端缺 _deleted 列（未跑建列 SQL 的极端情况）→ 退回物理 DELETE（旧行为），tombstone 兜底重试
         const msg = String((e && e.message) || e);
@@ -18062,11 +18116,14 @@ function _flushInvDeletes(table, tombKey){
             if(!res2.ok) throw new Error('HTTP ' + res2.status);
             const left = (DB.get(tombKey, []) || []).filter(function(x){ return x !== id; });
             DB.set(tombKey, left);
+            _invMarkDeletedDone(table, id);
           });
         }
         throw e;
       }).catch(function(e){
-        console.warn('[删除] 云端软删失败 ' + table + ' ' + id + '：' + ((e && e.message) || e) + '（tombstone 保留，下次重试）');
+        const msg = String((e && e.message) || e);
+        console.warn('[删除] 云端软删失败 ' + table + ' ' + id + '：' + msg + '（tombstone 保留，下次重试）');
+        _invWarnDelete('删除未同步到云端（' + table + ' ' + id + '）：' + msg + '。已保留本机记录，稍后自动重试');
       }).then(function(){ window._invDeleting[lockKey] = false; });
     });
   });
@@ -18076,7 +18133,7 @@ function _flushInvDeletes(table, tombKey){
 function deletePurchase(id){
   if(!confirm('确定删除该采购单？删除后不影响已入库库存。')) return;
   _invDeleteSync('purchases', '_deletedPurchaseIds', id);
-  showToast('已删除', 'success');
+  showToast('已删除，正在同步到云端', 'success');
   renderPurchases();
   try{ renderSidebar(); }catch(e){} // v2026110901：删除采购单后立即刷新侧边栏采购角标
 }
