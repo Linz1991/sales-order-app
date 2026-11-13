@@ -1792,7 +1792,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026111302</div>
+          <div class="brand-sub">v2026111304</div>
         </div>
       </div>
     </div>
@@ -8417,6 +8417,14 @@ function restoreOrder(orderId){
       orders[idx].items[0] = orders[idx].items[0] || {};
       orders[idx].items[0]._delSync = { d: false, at: nowR };
       DB.set('orders', orders);
+      // v2026111305 修复：恢复时必须把该单从本机「已删除名单」(soms__deletedOrderIds) 移除。
+      // 此前 restoreOrder 只清了行上的 _deleted 标记，名单残留 → 利润报表/订单列表按
+      // 「名单 + isOrderDeleted」双重过滤（v2026110108），恢复的单在本机仍然隐藏、利润加不回来
+      // （2026-11-13 实测 ORD20261028-chao1381610：云端已恢复、本机报表仍少 ¥1,540）。
+      try{
+        const _restList = (DB.get('_deletedOrderIds') || []).filter(function(x){ return x !== orderId; });
+        localStorage.setItem('soms__deletedOrderIds', JSON.stringify(_restList));
+      }catch(e){ /* 名单清理失败不阻断恢复 */ }
     }
     showToast('订单已恢复','success');
     schedulePushToCloud();
@@ -12444,6 +12452,10 @@ async function updateOrderStatus(orderId, status){
       if(currentRoute === 'order-detail') renderOrderDetail();
       return;
     }
+    // v2026111304：状态「已下单及之后 → 待下单」时，先按操作员确认返还库存（弹窗期间不改数据）
+    if(auditOldStatus !== 'pending' && status === 'pending'){
+      await maybeRestoreStockOnRollback(orders[idx], auditOldStatus, status);
+    }
     orders[idx].status = status;
     if(status === 'confirmed'){
       // 管理员直接改状态为「已下单」：先固化成本快照（此后不再随商品库变动）
@@ -13139,12 +13151,14 @@ async function markItemUnordered(orderId, idx){
   const oi = orders.findIndex(o => o.id === orderId);
   if(oi < 0) return;
   const o = orders[oi];
+  let _rollbackFrom = null; // v2026111304：记录本次是否把订单从已下单带回待下单
   if(!o.items || !o.items[idx]) return;
   if(o.items[idx].ordered !== true) return;
   o.items[idx].ordered = false;
   o.items[idx].orderedAt = null;
   o.updatedAt = nowStr();
   if(o.status === 'confirmed' && !o.items.every(it => it.ordered === true)){
+    _rollbackFrom = o.status;
     o.status = 'pending';
     showToast('已撤销「' + (o.items[idx].name || '商品') + '」的下单，订单回到「待下单」', 'info');
   } else {
@@ -13153,6 +13167,16 @@ async function markItemUnordered(orderId, idx){
   DB.set('orders', orders);
   _pinWriteLock(orderId); // 写入窗口锁：撤销下单（含把 confirmed 改回 pending）3 秒内禁止云端覆盖
   syncOrdersNow().catch(function(){});
+  // v2026111304：撤销单个商品下单也会把订单带回「待下单」，与状态下拉同口径询问返还库存。
+  // 状态已先落库；弹窗异步完成后重新取数组清 _stockDeducted，避免覆盖期间的其他写入。
+  if(_rollbackFrom && _rollbackFrom !== 'pending'){
+    maybeRestoreStockOnRollback(o, _rollbackFrom, 'pending').then(function(restored){
+      if(!restored) return;
+      const _arr = DB.get('orders') || [];
+      const _i = _arr.findIndex(function(x){ return x && x.id === orderId; });
+      if(_i >= 0){ _arr[_i]._stockDeducted = false; _arr[_i].updatedAt = nowStr(); DB.set('orders', _arr); }
+    }).catch(function(){});
+  }
   releaseOrderLock(orderId).catch(function(){}); // 管理员撤销下单，释放锁（Req7）
   if(currentRoute === 'order-detail') renderOrderDetail();
   else renderOrders();
@@ -16845,6 +16869,8 @@ async function saveStockTake(productId){
 // （2026-10-31「ORD20261031-k2de6112357 德龙咖啡机 17:50 与 17:56 各扣一次」事故）。
 // 这里以「本订单 + 本商品」已有的出库流水为准计算待扣差额：已扣够则跳过，未扣够才补差额。
 // 好处：即使标记再次丢失也不会重复扣；部分商品扣减失败时，下次触发仍能补齐，不会被幂等卡死。
+// v2026111304：改为「净出库量」口径——订单回退返还库存后写反向流水冲销，净额归零，
+// 下次重新下单才能再扣一遍；否则只靠不删除的历史 outbound 流水会判定「已扣够」而漏扣。
 function _outQtyAlreadyDone(orderId, productId){
   try{
     const logs = DB.get('stock_logs') || [];
@@ -16852,11 +16878,107 @@ function _outQtyAlreadyDone(orderId, productId){
     for(let i=0;i<logs.length;i++){
       const l = logs[i];
       if(!l || l.relId !== orderId || l.productId !== productId) continue;
-      if(l.type !== 'outbound' && l.type !== 'outbound_other') continue;
-      sum += Math.abs(Number(l.delta) || 0);
+      if(l.type === 'outbound' || l.type === 'outbound_other') sum += Math.abs(Number(l.delta) || 0);
+      else if(l.type === 'outbound_reverse' || l.type === 'outbound_other_reverse') sum -= Math.abs(Number(l.delta) || 0);
     }
     return sum;
   }catch(e){ return 0; }
+}
+// 某订单/商品/仓库下已写过的冲销量（幂等：重复回退不重复返还）
+function _reverseQtyDone(orderId, productId, warehouse, revType){
+  const logs = DB.get('stock_logs') || [];
+  let sum = 0;
+  for(let i=0;i<logs.length;i++){
+    const l = logs[i];
+    if(!l || l.relId !== orderId || l.productId !== productId || l.type !== revType) continue;
+    if((l.warehouse || '本仓') !== (warehouse || '本仓')) continue;
+    sum += Math.abs(Number(l.delta) || 0);
+  }
+  return sum;
+}
+// v2026111304：订单回退到待下单时返还库存。
+// 原则：① 台账只增不删（写反向流水，保留审计链）② 只有真实扣减的 outbound 才加回库存；
+// outbound_other 是「他仓直发留痕」，本来就没扣库存，只冲销流水、绝不加库存；
+// ③ 按原流水的 warehouse 还原（本仓回 stockQty、他仓回 warehouse_stock）；
+// ④ 按「已冲销量」算差额，重复调用不会重复还。
+async function restoreStockForOrder(order){
+  if(!order) return { ok:false, err:'订单不存在' };
+  const groups = {};
+  (DB.get('stock_logs') || []).forEach(function(l){
+    if(!l || l.relId !== order.id) return;
+    if(l.type !== 'outbound' && l.type !== 'outbound_other') return;
+    const wh = l.warehouse || '本仓';
+    const key = l.productId + '|' + wh + '|' + l.type;
+    if(!groups[key]) groups[key] = { productId:l.productId, warehouse:wh, type:l.type, productName:l.productName || '', qty:0 };
+    groups[key].qty += Math.abs(Number(l.delta) || 0);
+  });
+  let restored = 0, anyFail = false, failMsg = '';
+  const keys = Object.keys(groups);
+  for(let i=0;i<keys.length;i++){
+    const g = groups[keys[i]];
+    const revType = g.type === 'outbound' ? 'outbound_reverse' : 'outbound_other_reverse';
+    const remain = g.qty - _reverseQtyDone(order.id, g.productId, g.warehouse, revType);
+    if(remain <= 0) continue;
+    if(g.type === 'outbound'){
+      const r = await applyStockChange({
+        productId:g.productId, delta:+remain, type:revType, warehouse:g.warehouse,
+        relId:order.id, remark:'订单回退待下单 · 返还库存 · ' + (order.customerName || order.id)
+      });
+      if(!r.ok){ anyFail = true; failMsg = r.err || ''; }
+      else restored += remain;
+    }else{
+      writeStockLog({
+        productId:g.productId, productName:g.productName, type:revType, delta:+remain,
+        beforeQty:0, afterQty:0, warehouse:g.warehouse, relId:order.id,
+        operator:(currentUser && currentUser.name) || '',
+        remark:'订单回退待下单 · 冲销直发留痕（不返还库存）· ' + (order.customerName || order.id)
+      });
+    }
+  }
+  return { ok:!anyFail, restored:restored, err:failMsg };
+}
+// v2026111304：状态「非待下单 → 待下单」时询问并返还库存。
+// 决策权交给操作员：确认=返还（之后重新下单会再扣一遍），取消=仅改状态、库存保持已扣。
+// 若订单里已有「货到客户」序号或物流单号，说明货可能已发出，追加一次警告，防止账面虚增。
+async function maybeRestoreStockOnRollback(order, prevStatus, nextStatus){
+  if(!order || prevStatus === 'pending' || nextStatus !== 'pending') return false;
+  const mine = (DB.get('stock_logs') || []).filter(function(l){
+    return l && l.relId === order.id &&
+      (l.type === 'outbound' || l.type === 'outbound_other' || l.type === 'outbound_reverse' || l.type === 'outbound_other_reverse');
+  });
+  if(!mine.length) return false; // 从没出库过，无需询问
+  const net = mine.reduce(function(s, l){
+    return s + ((l.type === 'outbound' || l.type === 'outbound_other') ? 1 : -1) * Math.abs(Number(l.delta) || 0);
+  }, 0);
+  if(net <= 0) return false; // 已冲销过，幂等
+  let ok = false;
+  try{
+    ok = await showConfirmAsync(
+      '订单回退到「待下单」：该订单此前已出库，仍有 ' + net + ' 件出库未冲销。\n\n'
+      + '是否同时返还库存并冲销出库台账？\n'
+      + '【确认】返还库存（下次重新下单会再次扣减）\n'
+      + '【取消】只改状态，库存保持已扣'
+    );
+  }catch(e){ return false; }
+  if(!ok) return false;
+  const hints = (order.items || []).filter(function(it){ return it && ((it.customerArrival || '').trim() || (it.trackingNo || '').trim()); }).length;
+  if(hints > 0){
+    try{
+      ok = await showConfirmAsync(
+        '⚠️ 检测到 ' + hints + ' 件商品已填「货到客户」序号或物流单号，货可能已发出。\n'
+        + '若货已发出，返还库存会造成账面虚增。\n\n仍要返还吗？'
+      );
+    }catch(e){ return false; }
+    if(!ok) return false;
+  }
+  const r = await restoreStockForOrder(order);
+  if(!r.ok){
+    try{ showToast('库存返还失败：' + (r.err || '部分商品失败') + '（状态已回退，请检查台账）', 'error', 6000); }catch(e){}
+    return false;
+  }
+  order._stockDeducted = false; // 清标记，下次重新下单才会再扣
+  try{ showToast('已返还 ' + r.restored + ' 件库存并冲销出库台账', 'success'); }catch(e){}
+  return true;
 }
 async function deductStockForOrder(order){
   if(!order || order._stockDeducted) return { ok:true, skipped:true };
@@ -21430,6 +21552,15 @@ async function renderWarehouse(){
         var profit = calcOrderProfit(o);
         var profitColor = profit >= 0 ? 'var(--success)' : 'var(--danger)';
         var opHtml = '<button class="btn btn-primary btn-sm" onclick="viewOrder(\''+o.id+'\')">查看</button>';
+        // v2026111303：留仓订单也要能像普通订单一样「反馈完成」。
+        // 此前「留仓订单」页面（待反馈/全部）操作列只有「查看」，销售在这里根本找不到反馈入口，
+        // 而管理员/销售在「订单列表」的留仓分段是有按钮的 —— 两个入口行为不一致。
+        if(o.status === 'feedback' && currentUser.role !== 'operator'){
+          opHtml += '<div style="display:flex;gap:6px;justify-content:center;flex-wrap:wrap;margin-top:6px">'
+            + '<button class="btn btn-warning btn-sm" onclick="markOrderFeedbackDone(\''+o.id+'\')">'+(isAdmin?'确认已反馈':'反馈')+'</button>'
+            + '<button class="btn btn-default btn-sm" title="一键复制物流信息" onclick="copyLogisticsInfo(\''+o.id+'\')">一键复制物流信息</button>'
+            + '</div>';
+        }
         html += '<tr><td>'+orderIdCell(o.id)+'<br>'+(o.customerName||'-')+_phoneCopyBtn(o)+'<br><span style="font-size:11px;color:var(--text-muted)">'+(o.phone||'')+'</span></td><td>'+statusTag(o.status)+'</td><td>'+(o.remark||'-')+'</td>'+(isAdmin?'<td style="text-align:center"><div style="font-weight:600;color:'+profitColor+'">'+money(profit)+'</div><div style="font-size:11px;color:var(--text-muted)">损耗 '+money(totalWaste)+'</div></td>':'')+'<td>'+(o.orderDate ? formatOrderDate(o.orderDate) : '<span style="color:var(--text-muted)">未设置</span>')+'</td><td style="text-align:center">'+opHtml+'</td></tr>';
       });
       html += '</tbody></table></div>';
