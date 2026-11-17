@@ -1792,7 +1792,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026111304</div>
+          <div class="brand-sub">v2026111305</div>
         </div>
       </div>
     </div>
@@ -11623,13 +11623,26 @@ function confirmSetOrderCompleted(orderId){
 function completeDoorOrderFromDetail(orderId){
   var _doorO = DB.get('orders').find(function(o){ return o.id === orderId; });
   if(_doorO && !canCompleteOrder(_doorO)) return; // v2026111102 尾款未收齐禁止完成
-  showConfirm('确认将上门订单标记为「已完成」？此操作不可撤销，订单将转入上门订单「已完成」列表。', function(){
+  showConfirm('确认将上门订单标记为「已完成」？此操作不可撤销，订单将转入上门订单「已完成」列表。', async function(){
     const orders = DB.get('orders');
     const idx = orders.findIndex(o => o.id === orderId);
     if(idx >= 0){
       orders[idx].status = 'completed';
       if(!orders[idx].completionDate) orders[idx].completionDate = todayStr();
       orders[idx].completedAt = nowStr();
+      // v2026111305：上门订单改「点完成才扣库存」——完成时点出库；严格模式库存不足则阻断完成，
+      // 避免订单已完成但库存账没动的断档。存量旧规则已扣过的单靠 _stockDeducted 不重复扣。
+      if(!orders[idx]._stockDeducted){
+        const _mode = (DB.get('stockMode') === 'strict' ? 'strict' : 'loose');
+        if(_mode !== 'loose'){
+          const _chk = _strictOutboundAllowed(orders[idx]);
+          if(!_chk.ok){ showToast('⛔ 严格模式：'+escAttr(_chk.name)+' 库存不足（当前 '+_chk.have+'，需 '+_chk.need+'），已阻止完成，请先补足库存', 'error', 6000); return; }
+        }
+        try{
+          const _dr = await deductStockForOrder(orders[idx]);
+          if(_dr.ok) orders[idx]._stockDeducted = true;
+        }catch(e){ console.warn('上门完成出库扣库存异常', e); }
+      }
       orders[idx].updatedAt = nowStr();
       DB.set('orders', orders);
       schedulePushToCloud();
@@ -12471,7 +12484,9 @@ async function updateOrderStatus(orderId, status){
     if(status === 'shipped') orders[idx].shippedAt = nowStr();
     // v2026103007 出库联动库存：订单推进到「已下单」即出库（普通/留仓/上门统一）；
     // 后续的已发货/待反馈/已完成状态同样放行，作为绕过 confirmed 路径的兜底，靠 _stockDeducted 防重复
-    const _isOutbound = (status !== 'pending');
+    // v2026111305 例外：上门订单改为「点完成才扣库存」——仅 status='completed' 时出库，
+    // 已下单阶段（含备货齐自动流转）不再扣；存量已扣过的上门单靠 _stockDeducted 不重复扣。
+    const _isOutbound = (status !== 'pending') && !(orders[idx].type === 'door' && status !== 'completed');
     if(_isOutbound && !orders[idx]._stockDeducted){
       const _mode = (DB.get('stockMode') === 'strict' ? 'strict' : 'loose');
       if(_mode !== 'loose'){
@@ -17047,6 +17062,11 @@ function _outboundOnShipped(order){
     // 更后面的状态（shipped/feedback/completed/feedback_done）保留为兜底入口：
     // 正常流转已在此前扣过，靠 order._stockDeducted 拦截，不会重复扣减。
     if(order.status === 'pending') return;
+    // v2026111305：上门订单出库时点改为「已完成」（管理员点完成才扣库存+写台账），
+    // 待下单→已下单（含备货齐自动流转 autoDoorConfirmIfAllStocked / markItemOrdered 确认回调）
+    // 阶段不再出库；已完成时点的扣减由 updateOrderStatus / completeDoorOrderFromDetail 触发，
+    // 此处放行 door+completed 作为录单号等旁路的兜底入口。
+    if(order.type === 'door' && order.status !== 'completed') return;
     const _mode = (DB.get('stockMode') === 'strict' ? 'strict' : 'loose');
     if(_mode !== 'loose'){
       const _chk = _strictOutboundAllowed(order);
