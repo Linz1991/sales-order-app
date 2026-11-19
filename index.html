@@ -1792,7 +1792,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026111305</div>
+          <div class="brand-sub">v2026111901</div>
         </div>
       </div>
     </div>
@@ -7515,6 +7515,113 @@ function restoreOrderSearchFocus(){
   window._orderSearchSel = null;
 }
 
+// ===== 滞留订单提醒（v2026111901）=====
+// 口径（用户拍板：按业务节奏该处理时没处理，不用创建时间）：
+// · 待下单/已下单：锚点=发货日期 orderDate——发货日期未到不算滞留（还没轮到处理），已过 ≥7 天才提醒
+// · 运输中 shipped：锚点=shippedAt，≥7 天
+// · 待反馈 feedback：锚点=feedbackAt（录满物流单号发货那一刻），≥14 天（留仓等客户回音属正常节奏）
+// · 锚点缺失回退创建时间（fmtDateCN 换算北京日历日）；已完成/已反馈/回收站永不计
+// · 角色过滤：管理员/操作员看全部，销售只看自己名下（salesId）
+function _bjTodayYmd(){
+  try{
+    return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date());
+  }catch(e){
+    return bjDateKey(new Date());
+  }
+}
+function _staleAnchorYmd(o){
+  const st = o.status;
+  if(st === 'pending' || st === 'confirmed'){
+    if(o.orderDate) return String(o.orderDate).slice(0,10);
+    return fmtDateCN(o.createdAt || o.created_at);
+  }
+  if(st === 'shipped'){
+    if(o.shippedAt) return bjDateKey(o.shippedAt);
+    if(o.orderDate) return String(o.orderDate).slice(0,10);
+    return fmtDateCN(o.createdAt || o.created_at);
+  }
+  if(st === 'feedback'){
+    if(o.feedbackAt) return bjDateKey(o.feedbackAt);
+    return fmtDateCN(o.createdAt || o.created_at);
+  }
+  return '';
+}
+function _staleOverdueDays(o){
+  const aYmd = _staleAnchorYmd(o);
+  if(!aYmd) return null;
+  const a = Date.parse(aYmd + 'T00:00:00Z');
+  const b = Date.parse(_bjTodayYmd() + 'T00:00:00Z');
+  if(isNaN(a) || isNaN(b)) return null;
+  return Math.round((b - a) / 86400000);
+}
+function getStaleOrders(){
+  if(!currentUser) return [];
+  const isPrivileged = currentUser.role === 'admin' || currentUser.role === 'operator';
+  const delIds = (DB.get('_deletedOrderIds') || []);
+  let orders = (DB.get('orders') || []).filter(o => o && delIds.indexOf(o.id) < 0 && !isOrderDeleted(o));
+  if(!isPrivileged) orders = orders.filter(o => o.salesId === currentUser.id);
+  const out = [];
+  orders.forEach(function(o){
+    if(o.status === 'completed' || o.status === 'feedback_done') return;
+    const th = (o.status === 'feedback') ? 14 : 7;
+    const d = _staleOverdueDays(o);
+    if(d == null || d < th) return;
+    out.push({ id: o.id, customerName: o.customerName || o.contact || '', phone: o.phone || '',
+      total: parseInt(o.total, 10) || 0, type: o.type || 'normal', status: o.status, days: d });
+  });
+  out.sort(function(a,b){ return b.days - a.days; });
+  return out;
+}
+var _staleTypeLabel = { normal: '普通', warehouse: '留仓', door: '上门' };
+var _staleStatusLabel = { pending: '待下单', confirmed: '已下单', shipped: '运输中', feedback: '待反馈' };
+function _toggleStaleBanner(){
+  window._staleBannerOpen = !window._staleBannerOpen;
+  _injectStaleBanner();
+}
+function _staleBannerHtml(list){
+  const open = !!window._staleBannerOpen;
+  const statusCounts = {};
+  list.forEach(function(x){ statusCounts[x.status] = (statusCounts[x.status] || 0) + 1; });
+  let h = '<div style="display:flex;align-items:center;gap:8px;cursor:pointer" onclick="_toggleStaleBanner()">';
+  h += '<b style="font-size:13px;color:#633806">⏰ 滞留提醒：' + list.length + ' 单需要处理</b>';
+  h += '<span style="margin-left:auto;font-size:12px;color:#854F0B">' + (open ? '收起 ▴' : '展开 ▾') + '</span></div>';
+  h += '<div style="margin-top:6px">';
+  Object.keys(statusCounts).forEach(function(k){
+    h += '<span style="display:inline-block;background:#fff;border:0.5px solid #E8D9B8;border-radius:999px;padding:1px 8px;font-size:12px;color:#412402;margin:2px 6px 2px 0">' + (_staleStatusLabel[k] || k) + ' ' + statusCounts[k] + '</span>';
+  });
+  h += '</div>';
+  if(open){
+    const shown = list.slice(0, 30);
+    h += '<div style="margin-top:8px;background:#fff;border:0.5px solid #E8D9B8;border-radius:8px;overflow:hidden">';
+    shown.forEach(function(x, i){
+      const red = x.days >= 14;
+      h += '<div onclick="viewOrder(\'' + x.id + '\')" style="display:flex;align-items:center;gap:10px;padding:9px 10px;font-size:13px;cursor:pointer' + (i < shown.length - 1 ? ';border-bottom:0.5px solid #F0E7D2' : '') + '">';
+      h += '<div style="min-width:0"><div style="font-weight:500">' + escapeHtml(x.customerName) + '<span style="font-size:11px;color:#888;margin-left:6px">' + (_staleTypeLabel[x.type] || x.type) + '</span></div>';
+      h += '<div style="font-size:11px;color:#888">' + money(x.total) + (x.phone ? ' · ' + escapeHtml(x.phone) : '') + '</div></div>';
+      h += '<span style="font-size:11px;background:#F5F2EA;border-radius:4px;padding:1px 6px;color:#5F5E5A;white-space:nowrap">' + (_staleStatusLabel[x.status] || x.status) + '</span>';
+      h += '<span style="margin-left:auto;font-size:12px;font-weight:500;color:' + (red ? '#A32D2D' : '#B45309') + ';white-space:nowrap">' + x.days + ' 天</span>';
+      h += '</div>';
+    });
+    h += '</div>';
+    if(list.length > 30) h += '<div style="font-size:11px;color:#854F0B;margin-top:6px">仅显示前 30 单（共 ' + list.length + ' 单），按滞留天数倒序</div>';
+    h += '<div style="font-size:11px;color:#854F0B;margin-top:6px">待下单/已下单超发货日期 7 天 · 待反馈超发货 14 天 · 点行打开订单详情 · 全部处理完自动消失</div>';
+  }
+  return '<div id="staleBannerBox" style="background:#FFF6E5;border:1px solid #EF9F27;border-radius:8px;padding:10px 12px;margin-bottom:12px">' + h + '</div>';
+}
+function _injectStaleBanner(){
+  try{
+    const host = document.getElementById('mainContent');
+    if(!host) return;
+    const old = document.getElementById('staleBannerBox');
+    if(old) old.remove();
+    const list = getStaleOrders();
+    if(!list.length) return;
+    const box = document.createElement('div');
+    box.innerHTML = _staleBannerHtml(list);
+    host.insertBefore(box.firstChild, host.firstChild);
+  }catch(e){ /* 滞留提醒失败不影响列表渲染 */ }
+}
+
 async function renderOrders(){
  try {
   // v2026110504：进订单页重试历史省市区回填（启动那次可能因数据未拉回而空跑，幂等无害）
@@ -7835,6 +7942,7 @@ async function renderOrders(){
     initAdminListVirtualScroll();
     // 检查留仓/上门订单是否到期待流转
     checkOrderAutoFlow();
+    _injectStaleBanner();
     return;
   }
 
@@ -8118,6 +8226,7 @@ async function renderOrders(){
   restoreOrderSearchFocus();
   // 检查留仓/上门订单是否到期待流转
   checkOrderAutoFlow();
+  _injectStaleBanner();
  } catch(err) {
   console.error('renderOrders error:', err);
   const mc = document.getElementById('mainContent');
@@ -8562,6 +8671,7 @@ function renderOrderNew(defaultType){
         <input type="hidden" id="custCityVal">
         <input type="hidden" id="custDistrictVal">
         <div id="custInfoParsed" style="font-size:12px;color:var(--text-muted);margin-top:4px;display:none"></div>
+        <div id="custDupHint" style="display:none"></div>
       </div>
 
       <div class="form-group">
@@ -8791,6 +8901,8 @@ function parseCustInfo(text){
     showRecognizeConfirmModal(parsed);
   }else if(el){
     el.style.display = 'none';
+    // 识别不出客户信息时顺带清掉历史购买提示卡片，避免残留上一客户的数据
+    try{ renderCustomerDupHint(''); }catch(e){}
   }
   }catch(e){
     console.error('parseCustInfo 出错:', e);
@@ -8913,6 +9025,8 @@ function confirmRecognize(){
     }
     const ce = document.getElementById('custContact'); if(ce) ce.value = contact;
     const pe = document.getElementById('custPhone'); if(pe) pe.value = phone;
+    // 重复下单提醒：识别确认后按手机号刷新历史购买提示卡片（无历史自动清空）
+    try{ renderCustomerDupHint(phone); }catch(e){}
     // v2026110603：直辖市 city===province，去重避免「北京市 北京市 朝阳区」式脏数据
     const regionParts = [p, c, d].filter(Boolean);
     const region = regionParts.filter(function(s, i){ return regionParts.slice(0, i).indexOf(s) < 0; }).join(' ');
@@ -9732,7 +9846,126 @@ function finishImageRecognize(base64, source){
 }
 
 // 提交订单
-function submitOrder(){
+/* ============ 重复下单提醒（v2026111901，按手机号匹配客户历史购买） ============ */
+// 场景：销售重复提交同一客户的订单（同一批商品买两遍）。两层防护：
+// ① 新建订单页识别出手机号后，实时显示该客户历史购买汇总卡片（不拦截，仅供参考）；
+// ② 提交时购物车与该客户近 30 天订单出现相同商品 → 弹确认框列明细，确认后才放行。
+function _customerHistoryByPhone(phone){
+  const _p = normalizePhone(phone || '');
+  if(!_p || String(_p).replace(/\D/g,'').length < 7) return null;
+  const orders = (DB.get('orders') || []).filter(function(o){
+    return o && o._deleted !== true && !isOrderDeleted(o) && normalizePhone(o.phone || '') === _p;
+  });
+  if(!orders.length) return null;
+  orders.sort(function(a,b){ return String(b.createdAt||'').localeCompare(String(a.createdAt||'')); });
+  const agg = {};
+  orders.forEach(function(o){
+    (Array.isArray(o.items) ? o.items : []).forEach(function(it){
+      if(!it || !it.name) return;
+      const k = it.productId || it.name;
+      if(!agg[k]) agg[k] = { name: it.name, qty: 0, lastAt: '', lastOrderId: '' };
+      agg[k].qty += Number(it.qty) || 0;
+      const at = String(o.orderDate || o.createdAt || '');
+      if(at > agg[k].lastAt){ agg[k].lastAt = at; agg[k].lastOrderId = o.id || ''; }
+    });
+  });
+  // 客户姓名：取最近一笔历史订单的收件人/客户名；都为空时回退手机号
+  let name = '';
+  for(let i = 0; i < orders.length; i++){
+    const n = String(orders[i].contact || orders[i].customerName || orders[i].customer || '').trim();
+    if(n){ name = n; break; }
+  }
+  return { phone: _p, name: name || _p, count: orders.length, orders: orders, agg: agg };
+}
+
+function _orderTypeLabel(t){ return t === 'warehouse' ? '留仓' : (t === 'door' ? '上门' : '普通'); }
+function _orderStatusLabel(s){
+  return ({pending:'待下单',confirmed:'已下单',shipped:'运输中',feedback:'待反馈',completed:'已完成',cancelled:'已取消'})[s] || (s || '-');
+}
+
+// 商品同一性判断：两边都有 productId 按其相等；否则按名称兜底（手工加的商品常缺 productId）
+function _dupItemMatch(a, b){
+  if(!a || !b) return false;
+  const pa = String(a.productId || ''), pb = String(b.productId || '');
+  if(pa && pb) return pa === pb;
+  return String(a.name || '') !== '' && a.name === b.name;
+}
+
+// 购物车与客户历史订单的商品重叠项（只统计 near 天内的订单，默认 30 天）
+function _dupOverlapForCart(hist, items, nearDays){
+  if(!hist) return [];
+  const near = (typeof nearDays === 'number' && nearDays >= 0) ? nearDays : 30;
+  const cutoff = Date.now() - near * 86400000;
+  const recentIds = {};
+  hist.orders.forEach(function(o){
+    const t = Date.parse(String(o.orderDate || o.createdAt || '').replace(' ', 'T'));
+    if(!isNaN(t) && t >= cutoff) recentIds[o.id] = true;
+  });
+  const out = [];
+  (items || []).forEach(function(c){
+    if(!c || !c.name) return;
+    // 匹配历史：先按键（productId||name）直查，再用名称兜底（购物车缺 productId 时）
+    const k = c.productId || c.name;
+    let matched = hist.agg[k];
+    if(!matched){
+      const keys = Object.keys(hist.agg);
+      for(let i = 0; i < keys.length; i++){
+        if(hist.agg[keys[i]].name === c.name){ matched = hist.agg[keys[i]]; break; }
+      }
+    }
+    if(!matched) return;
+    const detail = [];
+    hist.orders.forEach(function(o){
+      if(!recentIds[o.id]) return;
+      (Array.isArray(o.items) ? o.items : []).forEach(function(it){
+        if(it && it.name && _dupItemMatch(it, c)){
+          // 日期展示走 _orderYmd（北京时间口径），禁止裸 UTC 前缀取日期（_test_ledger_time 静态断言）
+          detail.push({ orderId: o.id, at: _orderYmd(o),
+            qty: Number(it.qty) || 0, status: _orderStatusLabel(o.status), type: _orderTypeLabel(o.type) });
+        }
+      });
+    });
+    if(detail.length) out.push({ name: c.name, qty: Number(c.qty) || 0, detail: detail });
+  });
+  return out;
+}
+
+// 提交时确认框文案：近 30 天有重叠才返回非空
+function _buildDupWarnMsg(phone, items){
+  const hist = _customerHistoryByPhone(phone);
+  if(!hist) return '';
+  const overlaps = _dupOverlapForCart(hist, items, 30);
+  if(!overlaps.length) return '';
+  const lines = overlaps.map(function(x){
+    const d = x.detail[0];
+    return '· ' + escapeHtml(x.name) + '（本次 ×' + x.qty + '；历史单 ' + escapeHtml(d.orderId) + ' ' + d.at + ' ' + d.type + '单·' + d.status + ' 已买 ×' + d.qty + '）';
+  }).join('<br>');
+  return '该客户（' + escapeHtml(hist.name) + '，共 ' + hist.count + ' 笔历史订单）近 30 天内买过相同商品：<br><b>' + lines + '</b><br>请核实是否重复下单。点「确认」= 仍要提交；「取消」= 返回检查。';
+}
+
+// 新建订单页实时提示卡片：识别出手机号后调用（无历史则清空）
+function renderCustomerDupHint(phone){
+  const box = document.getElementById('custDupHint');
+  if(!box) return;
+  const hist = _customerHistoryByPhone(phone);
+  if(!hist){ box.style.display = 'none'; box.innerHTML = ''; return; }
+  const overlaps = _dupOverlapForCart(hist, cart, 30);
+  const recent = hist.orders.slice(0, 3).map(function(o){
+    const names = (Array.isArray(o.items) ? o.items : [])
+      .map(function(it){ return (it && it.name ? it.name : '') + '×' + (Number(it && it.qty) || 0); })
+      .filter(Boolean).slice(0, 4).join('、');
+    return '<div style="margin-top:4px">· ' + escapeHtml(String(o.orderDate || '').slice(0,10)) + ' [' + _orderTypeLabel(o.type) + '·' + _orderStatusLabel(o.status) + '] ' + escapeHtml(names) + ' — ' + money(o.total || 0) + '</div>';
+  }).join('');
+  const overlapHtml = overlaps.length
+    ? '<div style="margin-top:6px;color:#ad6800;font-weight:600">⚠️ 与本次已选商品重叠：' + overlaps.map(function(x){ return escapeHtml(x.name) + '×' + x.qty; }).join('、') + '</div>'
+    : '';
+  box.style.display = 'block';
+  box.innerHTML = '<div style="margin-top:8px;padding:10px 12px;background:#f0f7ff;border:1px solid #bfdbfe;border-radius:8px;font-size:12px;color:#1e40af;line-height:1.6">' +
+    '<b>📋 ' + escapeHtml(hist.name) + ' 已有 ' + hist.count + ' 笔订单</b>' + overlapHtml +
+    '<div style="margin-top:4px;color:#374151">最近购买：</div>' + recent + '</div>';
+}
+
+function submitOrder(skipDupCheck){
   const orderId = document.getElementById('orderNumber').value;
   const contact = document.getElementById('custContact').value.trim();
   const phone = normalizePhone(document.getElementById('custPhone').value);
@@ -9751,6 +9984,12 @@ function submitOrder(){
   if(!contact){ showToast('请填写收件人','error'); return; }
   if(!phone){ showToast('请填写手机号码','error'); return; }
   if(cart.length === 0){ showToast('请至少添加一个商品','error'); return; }
+
+  // 重复下单提醒（v2026111901）：购物车与该客户近 30 天订单重叠 → 弹确认，确认后带 skip 标记放行
+  if(!skipDupCheck){
+    const _dupMsg = _buildDupWarnMsg(phone, cart);
+    if(_dupMsg){ showConfirm(_dupMsg, function(){ submitOrder(true); }); return; }
+  }
 
   const isAdmin = currentUser.role === 'admin';
   let salesId, salesName;
@@ -21397,6 +21636,7 @@ async function renderSchedule(){
 
   html += '</div>';
   document.getElementById('mainContent').innerHTML = html;
+  _injectStaleBanner();
 }
 
 function showScheduleDayOrders(dateStr){
