@@ -26,6 +26,13 @@ if('serviceWorker' in navigator){
 const SUPABASE_URL = 'https://daxian-soms-proxy.pages.dev/sb';
 const SUPABASE_KEY = 'sb_publishable_x1lj1wREId-JMCVTqxJG6w_mcBK0j2Q';
 const APP_SECRET = 'soms_2025_secure_access_key_8f3k9q2m';
+// v2026112001：重复客户档案合并墓碑。客户表无 _deleted 列、同步走「并集合并 + 整表 upsert」，
+// 仅删云端会被持有旧档案的设备推回复活（2026-11 实测上次合并的 5 组长回）。
+// 这里内置被合并掉的重复档案 id，拉取时剔除（不留本地缓存）、推送时剔除（不推回云端），双向根治。
+const MERGED_CUSTOMER_IDS = ['c_msre3kkgyoaoi','c_msvggz9em0xmk','c_msvohoskyrizd','c_msafom1mga76j','c_msle93ew5ajbz','c_msmjtw4hm1b3c','c_msvmbknen8958','c_msvlkh9nnjbkw'];
+function _filterMergedCustomers(arr){
+  return (arr || []).filter(function(c){ return c && MERGED_CUSTOMER_IDS.indexOf(c.id) < 0; });
+}
 // v2026102903：同步状态徽章统一入口。
 // 此前 11 处 updateSyncBadge() 调用全部指向一个**从未定义**的函数（调用点都有 typeof 守卫，
 // 所以不报错、但功能从未生效 → 离线/同步失败时界面完全没提示）。
@@ -1792,7 +1799,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026111902</div>
+          <div class="brand-sub">v2026111903</div>
         </div>
       </div>
     </div>
@@ -3514,8 +3521,8 @@ const DB = {
               return u;
             });
           }
-          // 写回本地缓存为合并后的全集（users 不写密码哈希）
-          localStorage.setItem('soms_' + key, JSON.stringify(key === 'users' ? this._scrubUserPasswords(data) : data));
+          // 写回本地缓存为合并后的全集（users 不写密码哈希；customers 剔除合并墓碑，避免残留本地成为脏行源复活）
+          localStorage.setItem('soms_' + key, JSON.stringify(key === 'users' ? this._scrubUserPasswords(data) : (key === 'customers' ? _filterMergedCustomers(data) : data)));
         }
       }catch(e){
         console.warn('合并云端数据失败，改用本地数据 ['+key+']:', e.message);
@@ -3558,6 +3565,8 @@ const DB = {
         }
       }
       let snakeData = this._toSnake(data);
+      // v2026112001：客户表推送前剔除合并墓碑，防止本地残留的重复档案被整表 upsert 推回云端。
+      if(table === 'customers') snakeData = _filterMergedCustomers(snakeData);
       // 客户表：upsert 容错 + 不云端反删（与 products 同理，避免误删其它设备刚建档的客户）。
       // ① 若云端缺某些列（如 email/province/city/district——手动建客户无这些列），全字段 upsert 会整批报
       //    “column does not exist” 失败，导致“提交订单自动建档的客户”永远到不了云端。故退化为核心列同步。
@@ -3944,6 +3953,9 @@ const DB = {
     // v20260907：小表（customers/aftersales/payments/commissions）脏行上推也加列白名单，
     // 与 syncTable 保持一致，避免把本地多余字段（gender/status/stage 等）推上云导致 PGRST204 整批失败。
     if(key === 'customers'){
+      // v2026112001：脏行上推是客户表主通道（提交订单就会调），必须同样剔除合并墓碑，
+      // 否则本地残留的重复档案会绕过 syncTable 的过滤被 upsert 回云端复活。
+      snakeData = _filterMergedCustomers(snakeData);
       const coreCols = new Set(['id','name','contact','phone','email','region','address','remark','owner_id','created_at']);
       snakeData = snakeData.map(function(o){ const f={}; Object.keys(o).forEach(function(k){ if(coreCols.has(k)) f[k]=o[k]; }); return f; });
       snakeData.forEach(function(o){ if(o.created_at == null || o.created_at === ''){ o.created_at = (typeof window.nowStr === 'function' ? window.nowStr().slice(0,19) : ''); } });
@@ -4501,7 +4513,7 @@ const DB = {
       });
       if(maxTs) this._setCustIncTs(maxTs);
       // excludeIds=null：客户不按「已删除」过滤（无客户删除传播场景），本地未上云客户由 _mergeById 并集保留。
-      const merged = this._mergeById(local, cloud, null, 'customers');
+      const merged = _filterMergedCustomers(this._mergeById(local, cloud, null, 'customers'));
       localStorage.setItem('soms_customers', JSON.stringify(merged));
       return merged;
     }catch(e){
@@ -6386,17 +6398,31 @@ document.addEventListener('visibilitychange', function(){
     // 不会因切前台而触发。缩短到 10s 后，销售微信通知 → 管理员切微信看完再切回，即可立即看到新单，
     // 且成本可忽略（按一天切回 100 次算仅 ~350KB/天）。自动轮询仍保持关闭（避免固定周期持续开销）。
     var _lastFgSync = window._lastFgSyncAt || 0;
+    window._didFgSyncRender = false;   // v2026112001：本次回前台是否已由云同步回调负责渲染
     if(typeof DB !== 'undefined' && DB.syncFromCloud && (Date.now() - _lastFgSync) > 10000){
       window._lastFgSyncAt = Date.now();
+      window._didFgSyncRender = true;
       DB.syncFromCloud().then(function(){
         if(typeof schedulePushToCloud === 'function'){ try{ schedulePushToCloud(); }catch(e){} }
         if(typeof checkDueDateReminders === 'function'){ try{ checkDueDateReminders(); }catch(e){} }
         if(window._routeRenderers && currentRoute && window._routeRenderers[currentRoute]){
           try{ window._routeRenderers[currentRoute](); }catch(e){}
         }
-      }).catch(function(){});
+      }).catch(function(){
+        window._didFgSyncRender = false;
+        // v2026112001：云同步失败时下方渲染链已被 return 跳过，这里补一次列表页渲染，
+        // 保证用当前本地数据刷新，避免停留在切后台前的陈旧 DOM。
+        if(window._routeRenderers && currentRoute && window._routeRenderers[currentRoute]){
+          try{ window._routeRenderers[currentRoute](); }catch(e){}
+        }
+      });
     }
   }
+  // v2026112001：本次回前台若已触发云同步补拉（其 .then 会渲染当前页），跳过下方同步渲染，
+  // 避免「旧数据渲染一次 → 云同步回来再渲染一次」的双重整页重建（性能浪费 + 闪烁）。
+  // ⚠️ 仅当当前路由在 _routeRenderers 映射内才跳过；order-detail 等不在映射内的路由（详情页走 pullOrderById
+  // 特殊刷新）必须继续走下方分支，否则回前台详情页不刷新。未触发同步时也照常走下方。
+  if(window._didFgSyncRender && window._routeRenderers && currentRoute && window._routeRenderers[currentRoute]) return;
   if(typeof currentUser === 'undefined' || !currentUser || !window._sbpbClient) return;
   const route = typeof currentRoute !== 'undefined' ? currentRoute : '';
   if(route === 'orders' && !(window._currentOrderId && document.getElementById('orderDetailPanel')) && typeof renderOrders === 'function') renderOrders();
@@ -6917,7 +6943,8 @@ async function navigate(route){
   // 权限检查：销售角色不能访问管理员专属页面
   const isAdmin = currentUser.role === 'admin';
   // v2026102102：供应商/采购属经营与资金决策，非管理员一律拦截（下单操作员菜单无入口，此处再兜一层防直跳）
-  const restrictedRoutes = ['customers','payments','dashboard2','settings','commissions','profit-report','audit','suppliers','purchases'];
+  // v2026112001：运费对账/人员管理/待收尾款含资金与人员敏感数据，补入拦截表防篡改路由直跳（菜单本就仅管理员可见）
+  const restrictedRoutes = ['customers','payments','dashboard2','settings','commissions','profit-report','audit','suppliers','purchases','freight','users','collect-balance'];
   if(!isAdmin && restrictedRoutes.includes(route)){
     showToast('无访问权限','error');
     // 下单操作员无首页，兜底跳订单列表
@@ -10010,7 +10037,10 @@ function submitOrder(skipDupCheck){
   if(isAdmin){
     salesId = document.getElementById('orderSales').value;
     if(!salesId){ showToast('请指派销售','error'); return; }
-    salesName = DB.get('users').find(u=>u.id===salesId).name;
+    // v2026112001：指派的销售本地用户表可能还没同步到（新设备/被清理），find 会返回 undefined 导致
+    // .name 抛 TypeError、整个提交中断。兜底：从云端已带的 salesName 或当前可见列表取，最后用 id 占位，不阻塞下单。
+    const _salesUser = (DB.get('users') || []).find(u=>u && u.id===salesId);
+    salesName = (_salesUser && _salesUser.name) || document.getElementById('orderSales')?.selectedOptions?.[0]?.text || salesId;
   }else{
     salesId = currentUser.id;
     salesName = currentUser.name;
@@ -11033,14 +11063,22 @@ function renderOrderDetail(){
       html += `<button class="btn btn-success btn-sm" onclick="openAddPayment('${order.id}')">+ 记录收款</button>`;
     }
     // 管理员：修改状态
+    // v2026112001：已完成/已反馈是终态——普通/留仓下拉本就没有「已完成」选项（销售点「反馈」即完成），
+    // 此前打开已完成单时下拉无匹配项、浏览器默认回落第一项「待下单」，管理员改别的字段误触 change 会把已完成单打回待下单。
+    // 终态改为只读状态标签，不渲染可修改的下拉，从根上杜绝误回退（含库存/利润重算）。
     if(isAdmin){
-      html += `
-        <span style="font-size:13px;color:var(--text-muted);align-self:center">修改状态：</span>
-        <select class="form-control" id="detailStatus" style="width:auto;padding:6px 10px" onchange="updateOrderStatus('${order.id}',this.value)">
+      const _finalDone = (order.status === 'completed' || order.status === 'feedback_done');
+      html += `<span style="font-size:13px;color:var(--text-muted);align-self:center">${_finalDone?'订单状态':'修改状态'}：</span>`;
+      if(_finalDone){
+        // 终态只读防误触；但保留显式「回退」入口（二次确认）——否则门/仓完成单原本经下拉回退的路径被切断，
+        // 而回退会触发 maybeRestoreStockOnRollback（库存返还），不能让管理员完全没入口。
+        html += `${statusTag(order.status)}<button class="btn btn-default btn-sm" style="margin-left:8px" onclick="_confirmRollbackDone('${order.id}')">回退状态</button>`;
+      }else{
+        html += `<select class="form-control" id="detailStatus" style="width:auto;padding:6px 10px" onchange="updateOrderStatus('${order.id}',this.value)">
           ${statusOptions.map(s=>`<option value="${s[0]}" ${(order.status===s[0] || (order.status==='shipped'&&s[0]==='confirmed'))?'selected':''}>${s[1]}</option>`).join('')}
-        </select>
-        ${!isFullyPaid ? `<button class="btn btn-success btn-sm" onclick="openAddPayment('${order.id}')">+ 记录收款</button>` : ''}
-      `;
+        </select>`;
+      }
+      html += `${!isFullyPaid ? `<button class="btn btn-success btn-sm" onclick="openAddPayment('${order.id}')">+ 记录收款</button>` : ''}`;
     }
     // 销售查看「待下单」订单（只读，含被管理员部分下单锁定的情况）：返回待下单列表
     if(!isAdmin && isOwner && order.status === 'pending' && !editMode){
@@ -12704,6 +12742,14 @@ function validateDetailPaymentInput(el){
   }else{
     if(hint) hint.textContent = '';
   }
+}
+
+// 终态（已完成/已反馈）订单的显式回退入口：二次确认后回退到待下单，会触发 maybeRestoreStockOnRollback 库存返还。
+// 与只读状态标签配套——杜绝误触回退（原下拉无「已完成」选项会默认回落 pending），又保留管理员的回退能力。
+function _confirmRollbackDone(orderId){
+  showConfirm('确定把该订单回退到「待下单」吗？<br><span style="color:#b45309">回退会按提示处理库存返还，请确认货款/发货实际情况。</span>', function(){
+    if(typeof updateOrderStatus === 'function') updateOrderStatus(orderId, 'pending');
+  });
 }
 
 // 更新订单状态
@@ -15625,6 +15671,7 @@ window._lastFreightMatch = null;
 window._freightBatchId = null;
 
 function renderFreightReconcile(){
+  if(!currentUser || currentUser.role !== 'admin'){ showToast('无访问权限','error'); return; }
   const root = document.getElementById('mainContent');
   if(!root) return;
   root.innerHTML = `
@@ -21849,6 +21896,7 @@ async function renderWarehouse(){
 
 /* ============ 待收尾款（首页入口） ============ */
 function renderCollectBalance(){
+  if(!currentUser || currentUser.role !== 'admin'){ showToast('无访问权限','error'); return; }
   var isAdmin = currentUser.role === 'admin';
     var keyword = window._balanceKeyword || '';
     var orders = (DB.get('orders') || []).filter(o => !isOrderDeleted(o));
@@ -22031,6 +22079,7 @@ function getProfitDate(order){
 }
 /* ============ 人员管理 ============ */
 function renderUsers(){
+  if(!currentUser || currentUser.role !== 'admin'){ showToast('无访问权限','error'); return; }
   const users = DB.get('users').filter(u => !u.disabled);
   let html = `<div class="card"><div class="card-title"><span class="title-text">👥 人员管理</span><button class="btn btn-primary btn-sm" onclick="toggleUserForm()">+ 新增人员</button></div>`;
   html += `<div id="userFormArea" style="display:none;margin-bottom:16px">`;
