@@ -84,6 +84,8 @@ function _initSupabase(){
     // 只有进入商品页才探测，其它页面（下单/订单/台账）拉到的商品一律缺库存字段。
     window.addEventListener('DOMContentLoaded', function(){
       setTimeout(function(){ try{ if(typeof detectProductStockColumn === 'function') detectProductStockColumn(); }catch(e){} }, 1500);
+      // v2026112301：探测 products 墓碑/状态戳列（DB加列后自动启用删除墓碑+状态保护）
+      setTimeout(function(){ try{ if(typeof detectProductTombColumn === 'function') detectProductTombColumn(); }catch(e){} }, 1800);
       // v2026110504：历史订单省市区回填（幂等，只补 pcd 全空且能解析出市/区的单）
       setTimeout(function(){ try{ if(typeof _backfillOrderArea === 'function') _backfillOrderArea(); }catch(e){} }, 2000);
     });
@@ -1799,7 +1801,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026111904</div>
+          <div class="brand-sub">v2026111905</div>
         </div>
       </div>
     </div>
@@ -2437,6 +2439,19 @@ const DB = {
             return r;
           });
           merged = _applyCalibCloudAuthority(merged, cloud); // v2026101902：云端已校准结论权威落地
+          merged = _applyProductStatusAuthority(merged, local, cloud); // v2026112301：商品状态戳保护
+          // v2026112301：增量路径补售价守卫（此前只有全量 loadProductsFromCloud 有 _guardPrice）。
+          // 历史脏 price（≤成本）经 2 分钟增量拉取覆盖本地可信售价时，保留本地售价。
+          merged = merged.map(function(r){
+            if(!r || r.id == null) return r;
+            const l = (local || []).find(function(x){ return x && x.id === r.id; });
+            if(!l) return r;
+            if(typeof r.price === 'number' && typeof l.price === 'number' && l.price > 0){
+              const rc = Number(r.cost) || 0, lc = Number(l.cost) || 0;
+              if(r.price <= rc && rc > 0 && l.price > lc) return Object.assign({}, r, { price: l.price });
+            }
+            return r;
+          });
           window._lastCloudProducts = cloud || [];
         }
         if(t === 'orders'){
@@ -2479,7 +2494,10 @@ const DB = {
   // 不进合并池；本地同 id 副本一并剔除（哪怕本地更「新」）——删除优先于他端并发编辑，
   // 杜绝「A 端删除 → B 端陈旧副本拉取合并复活」。其它表原样返回（orders 软删由自身墓碑体系管理）。
   _applyInvSoftFilter(key, cloud, merged){
-    if(key !== 'purchases' && key !== 'suppliers') return { cloud: cloud || [], merged: merged || [] };
+    // v2026112301：products 也纳入软删过滤——但仅当云端已加 _deleted 列（探测为 true）才启用，
+    // 否则列不存在时 cloud 行根本没有 _deleted 字段，过滤是空操作、行为与现在完全一致（降级兼容）。
+    const _prodTombOn = (key === 'products' && window._prodHasTombCol === true);
+    if(key !== 'purchases' && key !== 'suppliers' && !_prodTombOn) return { cloud: cloud || [], merged: merged || [] };
     const _ids = _invSoftDelIds(cloud);
     // v2026111302：本机「永久墓碑」自愈——云端墓碑若被他端陈旧副本覆盖回 _deleted=false，
     // 这台设备仍认得它已删：① 不让它回到列表 ② 把 id 重新塞回待重试队列，下次同步重新软删。
@@ -2490,7 +2508,7 @@ const DB = {
       if(done.length){
         const cloudAlive = {};
         (cloud || []).forEach(function(r){ if(r && r.id != null && r._deleted !== true) cloudAlive[r.id] = true; });
-        const retryKey = key === 'purchases' ? '_deletedPurchaseIds' : '_deletedSupplierIds';
+        const retryKey = key === 'purchases' ? '_deletedPurchaseIds' : (key === 'products' ? '_deletedProductIds' : '_deletedSupplierIds');
         let retry = (this.get(retryKey, []) || []).filter(Boolean);
         let changed = false;
         done.forEach(function(id){
@@ -2562,7 +2580,7 @@ const DB = {
         ? this._mergeAdminCloudPriority(local, cloud, excludeIds, key)
         : this._mergeById(local, cloud, excludeIds, key);
       // v2026110611（方案A）：库存表软删过滤（云端墓碑行 + 本地陈旧副本一并剔除，详见 _applyInvSoftFilter）
-      if(key === 'purchases' || key === 'suppliers'){
+      if(key === 'purchases' || key === 'suppliers' || (key === 'products' && window._prodHasTombCol === true)){
         const _sf = this._applyInvSoftFilter(key, cloud, merged);
         cloud = _sf.cloud; merged = _sf.merged;
       }
@@ -2628,7 +2646,7 @@ const DB = {
         merged = this._mergeById(local, cloud, excludeIds, key);
       }
       // v2026110611（方案A）：库存表软删过滤（云端墓碑行 + 本地陈旧副本一并剔除，详见 _applyInvSoftFilter）
-      if(key === 'purchases' || key === 'suppliers'){
+      if(key === 'purchases' || key === 'suppliers' || (key === 'products' && window._prodHasTombCol === true)){
         const _sf = this._applyInvSoftFilter(key, cloud, merged);
         cloud = _sf.cloud; merged = _sf.merged;
       }
@@ -2644,6 +2662,7 @@ const DB = {
           return r;
         });
         merged = _applyCalibCloudAuthority(merged, cloud); // v2026101902：云端已校准结论权威落地
+        if(key === 'products') merged = _applyProductStatusAuthority(merged, local, cloud); // v2026112301：状态戳保护
       }
       // 删除传播：云端已不存在、又不在本端排除集的本地行，视为被他人删除 → 移除。
       // 但 customers / products 表不执行此过滤：
@@ -3486,7 +3505,7 @@ const DB = {
           );
           // v2026110611（方案A）：库存表软删过滤——云端墓碑行不进合并全集，
           // 避免下方整表 upsert 把已删行（含他端刚删的）重新推回云端。
-          if(key === 'purchases' || key === 'suppliers'){
+          if(key === 'purchases' || key === 'suppliers' || (key === 'products' && window._prodHasTombCol === true)){
             const _sf = this._applyInvSoftFilter(key, cloud, data);
             cloud = _sf.cloud; data = _sf.merged;
           }
@@ -4066,7 +4085,7 @@ const DB = {
     // 本地陈旧脏副本不得重新 upsert 复活——CG2026110201 删除 8 分钟后复活的根因之二：
     // 他端推送路径此前对 purchases/suppliers 完全没有云端状态校验（payments 同类问题早有 guard）。
     // 云端没有这行 → 放行（真正新建的单）。查云端失败只跳过守卫、不阻断推送。
-    if((key === 'purchases' || key === 'suppliers') && snakeData && snakeData.length){
+    if((key === 'purchases' || key === 'suppliers' || (key === 'products' && window._prodHasTombCol === true)) && snakeData && snakeData.length){
       try{
         const _iids = snakeData.map(function(o){ return o.id; }).filter(Boolean);
         if(_iids.length){
@@ -4469,6 +4488,7 @@ const DB = {
     merged = _guardPrice(merged);
     // v2026101902：云端 need_calibration=false 权威落地（压过 LWW 时间戳与本机 auto_added 残留），增量/全量两分支统一生效
     merged = _applyCalibCloudAuthority(merged, cloud);
+    merged = _applyProductStatusAuthority(merged, local, cloud); // v2026112301：状态戳保护
     localStorage.setItem('soms_products', JSON.stringify(merged));
     window._lastCloudProducts = cloud || [];
     // v20261003：仅在真正拿到云端数据后才写标记，失败则下次继续重试（不留下「已修复」的假象）。
@@ -9220,6 +9240,42 @@ function normalizeProductName(s){
     .toLowerCase()
     .replace(/[^0-9a-z\u4e00-\u9fff]+/g, '');
 }
+// v2026112301：近似名判定——捕捉 Noan/Noah 这类"错一个字母"的重复档案。
+// 编辑距离(Levenshtein) ≤ maxDist 视为近似；仅对归一化后长度≥4的名称生效，避免短名误报。
+// 供 saveProduct 相似提示 / 导入去重 / cleanupDuplicateProducts 三处共用，口径不再分叉。
+function _nameEditDistance(a, b){
+  a = String(a || ''); b = String(b || '');
+  if(a === b) return 0;
+  if(!a.length) return b.length;
+  if(!b.length) return a.length;
+  let prev = new Array(b.length + 1);
+  for(let j = 0; j <= b.length; j++) prev[j] = j;
+  for(let i = 1; i <= a.length; i++){
+    const cur = new Array(b.length + 1); cur[0] = i;
+    for(let j = 1; j <= b.length; j++){
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
+function _isNearDuplicateName(nameA, nameB, maxDist){
+  const a = normalizeProductName(nameA), b = normalizeProductName(nameB);
+  if(!a || !b || a.length < 4 || b.length < 4) return false;
+  // 长度差超过阈值直接否（避免长短差异大的误报）
+  if(Math.abs(a.length - b.length) > (maxDist || 1)) return false;
+  return _nameEditDistance(a, b) <= (maxDist || 1);
+}
+// 在商品列表里找与 name 近似重复的在售商品（供导入去重 / 去重工具共用）
+function _findNearDuplicateProduct(name, list){
+  const arr = (list || DB.get('products') || []).filter(Boolean);
+  for(let i = 0; i < arr.length; i++){
+    const p = arr[i];
+    if(!p || !p.name || normalizeProductName(p.name) === normalizeProductName(name)) continue;
+    if(_isNearDuplicateName(p.name, name, 1)) return p;
+  }
+  return null;
+}
 // v20261006：撞唯一索引时，按归一化名在云端查「在架」同名商品，供复用
 let _cloudNormCache = { ts: 0, list: null }; // v2026100803：云端同名兜底快照，30s 内复用，降低高频撞索引流量
 async function _findCloudProductByNormName(name, excludeId){
@@ -9277,7 +9333,54 @@ function _applyCalibCloudAuthority(merged, cloudRows){
   }catch(e){ return merged; }
 }
 
+// v2026112301：商品 status 跨端保护——合并结果里，若云端与本地 status 不一致，
+// 取 statusAt 更新的一方（列已加且本地/云端带该戳才生效）。根治「本地下架被整表批量同步的旧 on 覆盖」。
+// 无 statusAt 列时保持合并结果原样（降级兼容，行为与现在一致）。
+function _applyProductStatusAuthority(merged, local, cloud){
+  try{
+    if(window._prodHasStatusAtCol !== true || !Array.isArray(merged)) return merged;
+    const loc = {}, clo = {};
+    (local || []).forEach(function(r){ if(r && r.id != null) loc[r.id] = r; });
+    (cloud || []).forEach(function(r){ if(r && r.id != null) clo[r.id] = r; });
+    return merged.map(function(r){
+      if(!r || r.id == null) return r;
+      const l = loc[r.id], c = clo[r.id];
+      if(!l || !c || !l.status || !c.status || l.status === c.status) return r;
+      const ls = Date.parse(l.statusAt || l.status_at || 0) || 0;
+      const cs = Date.parse(c.statusAt || c.status_at || 0) || 0;
+      if(ls === cs) return r;
+      const winner = ls > cs ? l : c;
+      return Object.assign({}, r, { status: winner.status });
+    });
+  }catch(e){ return merged; }
+}
+
 window._prodHasCalibCol = null; // null=未探测 / true=有列 / false=无列
+// v2026112301：products 墓碑/状态戳列探测。列由 SQL 手动加（products_墓碑与状态戳_部署.sql）。
+// 未加列时保持 false（降级：行为与现在完全一致），加列后自动启用删除墓碑 + status_at 状态保护。
+window._prodHasTombCol = null;  // _deleted 列
+window._prodHasStatusAtCol = null; // status_at 列
+window._prodTombProbeStarted = false;
+async function detectProductTombColumn(){
+  try{
+    if(window._prodHasTombCol !== null) return window._prodHasTombCol;
+    if(window._prodTombProbeStarted) return null;
+    if(!window._sbpbClient) return null;
+    window._prodTombProbeStarted = true;
+    const { error } = await window._sbpbClient.from('products').select('_deleted').limit(1);
+    if(!error) window._prodHasTombCol = true;
+    else if(error && (error.code === '42703' || /does not exist|Could not find|PGRST204/i.test(String(error.message || '')))) window._prodHasTombCol = false;
+    else { window._prodTombProbeStarted = false; return null; } // 网络抖动，留待下次重试
+    // 顺带探测 status_at
+    if(window._prodHasTombCol === true && window._prodHasStatusAtCol === null){
+      try{
+        const r2 = await window._sbpbClient.from('products').select('status_at').limit(1);
+        window._prodHasStatusAtCol = r2 && !r2.error ? true : false;
+      }catch(e){ window._prodHasStatusAtCol = false; }
+    }
+    return window._prodHasTombCol;
+  }catch(e){ window._prodTombProbeStarted = false; return null; }
+}
 async function detectProductCalibColumn(){
   try{
     if(window._prodHasCalibCol !== null) return window._prodHasCalibCol;
@@ -9352,13 +9455,17 @@ async function detectProductStockColumn(){
     //   更糟的是本机一旦编辑该商品并保存，还会把云端真实库存回写成 0。
     //   与 need_calibration 同机制：探测确认列存在后，① 把库存列并入白名单 ② 强制全量重拉一次，
     //   让本机立刻学到云端权威库存（此前拉取的行都缺库存字段，增量补不回来）。
-    if(window._prodHasStockCol === true && typeof DB !== 'undefined'){
-      if(DB._PRODUCTS_COLS){
+    // v2026112301：本仓/他仓白名单并入解耦——warehouse_stock 不再被 _prodHasStockCol 门槛挡住。
+    // 此前只加了他仓列(未加stock_qty)时，warehouse_stock 永不并入白名单 → 拉取恒缺该列、他仓库存刷新即丢。
+    if(typeof DB !== 'undefined' && DB._PRODUCTS_COLS){
+      if(window._prodHasStockCol === true){
         if(DB._PRODUCTS_COLS.indexOf('stock_qty') < 0) DB._PRODUCTS_COLS = DB._PRODUCTS_COLS + ',stock_qty';
         if(DB._PRODUCTS_COLS.indexOf('warn_qty') < 0) DB._PRODUCTS_COLS = DB._PRODUCTS_COLS + ',warn_qty';
-        // v2026110502：他仓库存列（与 stock_qty 同一次迁移）
-        if(window._prodHasWhStockCol === true && DB._PRODUCTS_COLS.indexOf('warehouse_stock') < 0) DB._PRODUCTS_COLS = DB._PRODUCTS_COLS + ',warehouse_stock';
       }
+      // v2026110502：他仓库存列（独立并入）
+      if(window._prodHasWhStockCol === true && DB._PRODUCTS_COLS.indexOf('warehouse_stock') < 0) DB._PRODUCTS_COLS = DB._PRODUCTS_COLS + ',warehouse_stock';
+    }
+    if((window._prodHasStockCol === true || window._prodHasWhStockCol === true) && typeof DB !== 'undefined'){
       if(typeof DB.loadProductsFromCloud === 'function' && !window._stockFullRefetchDone){
         window._stockFullRefetchDone = true;
         try{
@@ -15508,6 +15615,8 @@ function gotoProductPage(p){
 function filterProducts(value){
   window._productFilter = value;
   window._productPage = 1;
+  // v2026112301：切换搜索/筛选后清空勾选——此前保留跨筛选的选中 id，确认删除时可能删掉当前看不见的商品
+  window._productSelectedIds = {};
   refreshProductTable();
 }
 
@@ -15569,6 +15678,10 @@ function doImportProductLines(lines, category){
       // v2026102903：售价必须 > 0（此前只判 < 0，能导入「售价 0 + 成本 100」这种无售价商品）
       if(price <= 0){
         reason = '售价必须大于 0（不允许只填成本、不填售价的商品）';
+      }else if(_findNearDuplicateProduct(name, products)){
+        // v2026112301：导入也查近似重复（Noan/Noah），避免绕过 saveProduct 的查重造出重复档案
+        const _nd = _findNearDuplicateProduct(name, products);
+        reason = '疑似重复商品「'+(_nd ? _nd.name : '')+'」（名称相近），已跳过；如确为不同商品请先在商品管理确认';
       }else{
         const cost = costRaw ? parseInt(costRaw) : 0;
         if(costRaw !== '' && isNaN(cost)){
@@ -16334,8 +16447,9 @@ function batchDeleteProducts(){
     window._productBatchMode = false;
     window._productSelectedIds = {};
   }else{
-    // 进入批量删除模式
+    // 进入批量删除模式（v2026112301：与导出模式互斥，否则 renderProducts 里 exportMode 优先，界面仍显示导出按钮）
     window._productBatchMode = true;
+    window._productExportMode = false;
     window._productSelectedIds = {};
   }
   renderProducts();
@@ -16467,7 +16581,10 @@ function confirmBatchDeleteProducts(){
   const selectedIds = window._productSelectedIds || {};
   const ids = Object.keys(selectedIds);
   if(ids.length === 0){ showToast('请先勾选要删除的商品','error'); return; }
-  showConfirm('确认删除选中的 '+ids.length+' 个商品吗？删除后不可恢复。', () => {
+  // v2026112301：确认时列出商品名，避免误删（尤其跨筛选残留选择时看不清删的是什么）
+  const _names = (DB.get('products') || []).filter(p => p && selectedIds[p.id]).slice(0,12).map(p => '· '+p.name).join('\n');
+  const _more = ids.length > 12 ? '\n… 等共 '+ids.length+' 个' : '';
+  showConfirm('确认删除选中的 '+ids.length+' 个商品吗？删除后不可恢复。\n\n'+_names+_more, () => {
     const products = DB.get('products').filter(p => !selectedIds[p.id]);
     DB.set('products', products);
     // 记录已删除商品 id 到排除集，防止同步从云端拉回
@@ -16478,13 +16595,20 @@ function confirmBatchDeleteProducts(){
     window._productBatchMode = false;
     showToast('已删除 '+ids.length+' 个商品','success');
     renderProducts();
-    // 跨设备同步删除：同时把选中的商品从云端物理删除，避免其它设备（手机/其它浏览器）仍看得到
+    // 跨设备同步删除：云端墓碑列已加则软删（PATCH _deleted=true，杜绝他端陈旧副本复活）；
+    // 未加列则降级物理删除（行为与旧版一致）。
     if(window._sbpbClient){
       (async () => {
         try{
           for(let i = 0; i < ids.length; i += 100){
             const batch = ids.slice(i, i + 100);
-            await window._sbpbClient.from('products').delete().in('id', batch);
+            if(window._prodHasTombCol === true){
+              const { error } = await window._sbpbClient.from('products')
+                .update({ _deleted:true, _deleted_at:new Date().toISOString() }).in('id', batch);
+              if(error) console.warn('云端软删商品失败:', error.message);
+            }else{
+              await window._sbpbClient.from('products').delete().in('id', batch);
+            }
           }
         }catch(e){ console.warn('云端删除商品失败:', e.message); }
       })();
@@ -16590,7 +16714,13 @@ function cleanupDuplicateProducts(cloudProducts){
       const _cloudDelIds = Object.keys(idMap);
       (async function(){
         for(const _did of _cloudDelIds){
-          try{ await window._sbpbClient.from('products').delete().eq('id', _did); }
+          try{
+            if(window._prodHasTombCol === true){
+              await window._sbpbClient.from('products').update({ _deleted:true, _deleted_at:new Date().toISOString() }).eq('id', _did);
+            }else{
+              await window._sbpbClient.from('products').delete().eq('id', _did);
+            }
+          }
           catch(e){ console.warn('云端删除重复商品失败:', _did, (e && e.message) || e); }
         }
       })();
@@ -16918,9 +17048,20 @@ function _productRowToSnake(p){
     const _pc = Number(p.profitCost);
     if(!isNaN(_pc) && _pc > 0) row.profit_cost = _pc;
   }
+  // v2026112301：updated_at 必须与 _pushDirtyRows 口径一致——上下架依赖此戳做多端 LWW 合并。
+  // 此前本函数不传 updated_at，导致 toggleProductStatus 单条推送后云端时间戳不刷新，
+  // 他端仍按旧戳判本地更新 → 下架状态被"在售"旧值覆盖（实测 11-22 NoanPro 下架复活）。
+  // 仅在本地有明确值时传，避免 undefined 洗掉云端时间戳。
+  const _ua = p.updatedAt || p.updated_at;
+  if(_ua) row.updated_at = _ua;
+  // v2026112301：状态戳推云（列已加才传）——供他端 _applyProductStatusAuthority 判断状态新旧
+  if(window._prodHasStatusAtCol === true){
+    const _sa = p.statusAt || p.status_at || _ua;
+    if(_sa) row.status_at = _sa;
+  }
   return row;
 }
-// 返回是否成功（v20260917：调用方据此给用户「已同步 / 同步失败」的明确反馈）
+// 返回是否成功
 async function pushSingleProductToCloud(product){
   if(!product || !window._sbpbClient) return false;
   const sbp = window._sbpbClient;
@@ -17028,7 +17169,11 @@ async function applyStockChange(opts){
     });
   }catch(e){ console.warn('写库存流水失败', e); }
   // 推商品库存上云（列存在才推，_productRowToSnake 已内部保护）
-  if(window._prodHasStockCol === true && window._sbpbClient){
+  // v2026112301：推云门槛与实际改动列解耦——本仓改动看 _prodHasStockCol，他仓(warehouse_stock)
+  // 改动看 _prodHasWhStockCol。此前只看前者：只建了 warehouse_stock 列（未建 stock_qty）时，
+  // 他仓出入库/盘点只落本机、刷新即丢。任一相关列存在即可推送（函数内部按实际存在的列传值）。
+  const _needStockCol = isDefault ? window._prodHasStockCol === true : window._prodHasWhStockCol === true;
+  if((_needStockCol || window._prodHasStockCol === true || window._prodHasWhStockCol === true) && window._sbpbClient){
     try{ await pushSingleProductToCloud(products[idx]); }catch(e){ console.warn('库存上推失败', e); }
   }
   return { ok:true, before: before, after: after };
@@ -18462,7 +18607,16 @@ async function confirmInbound(id){
     const pr = productsNow.find(function(x){ return x.id === it.productId; });
     if(pr){
       pr.cost = weightedAvgCost(_oldQty, _oldCost, realAdd, it.unitCost);
+      pr.updatedAt = window.nowStr(); // v2026112301：成本回写刷新时间戳，确保后台脏行推送带上新 cost
       DB.set('products', productsNow);
+      // v2026112301：入库先用旧 cost 推了云(applyStockChange 内)，这里算出的新 cost 必须主动再推一次。
+      // 此前纯靠后台 _pushDirtyRows 补推，失败即云端 cost 停在旧值/0（采购过却 cost=0 的个例）。
+      if(typeof pushSingleProductToCloud === 'function'){
+        try{
+          const _ok = await pushSingleProductToCloud(pr);
+          if(_ok !== true && !(_ok && _ok.conflictResolved)) console.warn('[入库] 成本回写云端未成功，后台将重试:', it.productId);
+        }catch(e){ console.warn('[入库] 成本回写推送失败，后台将重试:', e.message); }
+      }
     }
   }
   const newStatus = allDone ? 'inbound' : 'partial';
@@ -18525,7 +18679,7 @@ function _invGuardDropRows(rows, cloudRows){
 // 旧版只判 res.ok 就当软删成功并清掉本机 tombstone → 云端其实没删、本机依据也没了，
 // 下一轮全量拉取把云端活跃行合并回来 →「昨天删了今天又出现」。
 function _invTombKeyDone(table){
-  return table === 'purchases' ? '_deletedPurchaseIdsDone' : (table === 'suppliers' ? '_deletedSupplierIdsDone' : null);
+  return table === 'purchases' ? '_deletedPurchaseIdsDone' : (table === 'suppliers' ? '_deletedSupplierIdsDone' : (table === 'products' ? '_deletedProductIdsDone' : null));
 }
 function _invMarkDeletedDone(table, id){
   const k = _invTombKeyDone(table);
@@ -19313,7 +19467,7 @@ async function saveProduct(){
       if(!p || !p.name) return;
       const n = normalizeProductName(p.name);
       if(!n || n === _key) return;
-      if(n.indexOf(_key) >= 0 || _key.indexOf(n) >= 0) _similar.push(p);
+      if(n.indexOf(_key) >= 0 || _key.indexOf(n) >= 0 || _isNearDuplicateName(p.name, name, 1)) _similar.push(p);
     });
     if(_similar.length){
       const _txt = _similar.slice(0,5).map(function(p){
@@ -19443,13 +19597,37 @@ async function saveProduct(){
 function toggleProductStatus(productId){
   const products = DB.get('products');
   const idx = products.findIndex(p => p.id === productId);
-  if(idx >= 0){
-    products[idx].status = products[idx].status === 'on' ? 'off' : 'on';
-    products[idx].updatedAt = window.nowStr(); // 2026-0817 修复：上下架必须刷新时间戳，否则 _mergeById 按 createdAt 比较时云端旧值(on)会以「时间戳相等+sig竞争」覆盖本地(off)，导致下架无效、状态停在“在售”
-    DB.set('products', products);
-    showToast(products[idx].status==='on'?'商品已上架':'商品已下架','success');
-    pushSingleProductToCloud(products[idx]); // 单条上推云端，保证上下架状态跨设备同步
-    renderProducts();
+  if(idx < 0) return;
+  const _oldStatus = products[idx].status;
+  const _newStatus = _oldStatus === 'on' ? 'off' : 'on';
+  products[idx].status = _newStatus;
+  products[idx].updatedAt = window.nowStr(); // 2026-0817 修复：上下架必须刷新时间戳，否则 _mergeById 按 createdAt 比较时云端旧值(on)会以「时间戳相等+sig竞争」覆盖本地(off)，导致下架无效、状态停在“在售”
+  // v2026112301：状态戳——列已加时写入，供 _applyProductStatusAuthority 跨端比较（列未加时写本地也无害）
+  products[idx].statusAt = products[idx].updatedAt;
+  DB.set('products', products);
+  renderProducts();
+  // v2026112301：await 单条推送结果，失败要告诉用户并回滚本地状态——
+  // 此前 fire-and-forget，推送失败用户以为下架成功，云端却仍是「在售」，别端还能下单（NoanPro 事故）。
+  if(typeof pushSingleProductToCloud === 'function'){
+    Promise.resolve(pushSingleProductToCloud(products[idx])).then(function(r){
+      const ok = (r === true) || (r && r.conflictResolved);
+      if(ok){ showToast(_newStatus==='on'?'商品已上架（已同步）':'商品已下架（已同步）','success',3000); }
+      else{
+        // 推送失败：回滚本地状态到原值，避免本机显示已下架、云端仍在售的不一致
+        const cur = DB.get('products');
+        const j = cur.findIndex(p => p.id === productId);
+        if(j >= 0 && cur[j].status === _newStatus){
+          cur[j].status = _oldStatus; DB.set('products', cur); renderProducts();
+        }
+        showToast('上下架未同步到云端，已撤销本次操作，请稍后重试','error',5000);
+      }
+    }).catch(function(){
+      const cur = DB.get('products'); const j = cur.findIndex(p => p.id === productId);
+      if(j >= 0 && cur[j].status === _newStatus){ cur[j].status = _oldStatus; DB.set('products', cur); renderProducts(); }
+      showToast('上下架同步失败，已撤销，请稍后重试','error',5000);
+    });
+  }else{
+    showToast(_newStatus==='on'?'商品已上架':'商品已下架','success');
   }
 }
 
