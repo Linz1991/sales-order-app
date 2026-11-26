@@ -1801,7 +1801,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026112502</div>
+          <div class="brand-sub">v2026112601</div>
         </div>
       </div>
     </div>
@@ -24649,11 +24649,14 @@ function checkDueDateReminders(){
     var isDoor = (o.type === 'door');
     var label = isDoor ? '备货日期' : '发货日期';
     var title = isDoor ? '上门订单备货提醒' : '留仓订单发货提醒';
+    // v2026112601：弹窗里加「复制订单号」按钮，复用全局 copyToClipboard（点复制不关弹窗，复制完还能点确定）
+    var _oidJs = ('' + o.id).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    var _copyBtn = ' <button type="button" title="复制订单号" onclick="event.stopPropagation();copyToClipboard(\'' + _oidJs + '\',\'订单号\')" style="font-size:12px;padding:2px 8px;border-radius:4px;border:1px solid var(--border);background:#fff;color:var(--primary);cursor:pointer;vertical-align:middle;line-height:1.6;white-space:nowrap">📋 复制订单号</button>';
     var html = ''
       + '<div class="modal-mask" style="z-index:9999" onclick="if(event.target===this)closeModal()">'
       +   '<div class="modal" style="max-width:420px">'
       +     '<div class="modal-header"><h3>⏰ ' + title + '</h3><button class="modal-close" onclick="closeModal()">×</button></div>'
-      +     '<div class="modal-body"><p style="margin:0;line-height:1.6">订单 <b>' + escapeHtml(o.id) + '</b>（' + escapeHtml(o.customerName || o.contact || '-') + '）的' + label + ' <b>' + formatOrderDate(o.orderDate) + '</b> 已到期，请及时处理相关事宜。</p></div>'
+      +     '<div class="modal-body"><p style="margin:0;line-height:1.6">订单 <b>' + escapeHtml(o.id) + '</b>' + _copyBtn + '（' + escapeHtml(o.customerName || o.contact || '-') + '）的' + label + ' <b>' + formatOrderDate(o.orderDate) + '</b> 已到期，请及时处理相关事宜。</p></div>'
       +     '<div class="modal-footer"><button class="btn btn-primary" onclick="__ackDueDate(\'' + o.id + '\')">确定</button></div>'
       +   '</div>'
       + '</div>';
