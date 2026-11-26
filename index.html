@@ -404,9 +404,11 @@ async function autoReconcileOrders(){
 function startAutoReconcile(){
   if(window._autoReconcileTimer) return;   // 防重：仅启动一次
   try{
-    window._autoReconcileTimer = setInterval(function(){ try{ autoReconcileOrders(); }catch(e){} }, 5 * 60 * 1000);
+    // v2026112604 降流量：5min→15min。对账是安全网（主同步 10s~2min 已覆盖），
+    // 5min 常驻拉全表 id+updated_at≈80KB/次≈23MB/台/天，与 9/4 事故同量级；15min 降到 7.7MB 且延迟可接受。
+    window._autoReconcileTimer = setInterval(function(){ try{ autoReconcileOrders(); }catch(e){} }, 15 * 60 * 1000);
     setTimeout(function(){ try{ autoReconcileOrders(); }catch(e){} }, 8000);   // 启动后错峰跑一次，登录后尽快收敛
-    console.debug('[autoReconcile] 已启动 5 分钟差量对账定时器');
+    console.debug('[autoReconcile] 已启动 15 分钟差量对账定时器（降流量 v2026112604）');
   }catch(e){}
 }
 async function orderGapSyncNow(){
@@ -1801,7 +1803,7 @@ html{scroll-behavior:smooth}
         <div class="brand-icon">销</div>
         <div>
           <div class="brand-name">销售管理系统</div>
-          <div class="brand-sub">v2026112601</div>
+          <div class="brand-sub">v2026112602</div>
         </div>
       </div>
     </div>
@@ -2539,8 +2541,11 @@ const DB = {
   async _loadTable(key){
     try{
       const table = key; // key 即表名
-      const { data, error } = await withTimeout(window._sbpbClient.from(table).select('*').order('created_at', { ascending: true }), 20000, '_loadTable(' + key + ')');
-      if(error) throw error;
+      // v2026112604 降流量+修漏数据：统一走分页拉全。stock_logs 已 1287 行破千，
+      // 单次查询只拿前 1000 条会漏掉最新流水；_fetchPaged 不足一页时只请求一次，
+      // 小表零额外开销，破千表自动拉全（顺带防止将来其它小表破千后静默漏数据）。
+      const query = window._sbpbClient.from(table).select('*').order('created_at', { ascending: true });
+      const data = await this._fetchPaged(query, '_loadTable(' + key + ')');
       // snake_case -> camelCase
       let cloud = this._toCamel(data || []);
       if(key === 'users'){
@@ -9156,8 +9161,18 @@ function searchProducts(keyword){
     window._productsSyncKicked = true;
     try{ DB.syncIncremental(); }catch(e){}
   }
-  const products = DB.get('products').filter(p => p.status === 'on');
+  // v2026112602：按墓碑名单 + 状态戳 + 本地 status 实时过滤已删/已下架商品（本地判定、零网络）
+  const products = (DB.get('products') || []).filter(function(p){ return p && !isProductSalesBlocked(p); });
   const matched = products.filter(p => productMatchesKeyword(p, keyword)); // 统一大小写不敏感匹配
+  // 后台节流刷新墓碑/状态戳（v2026112603：120 秒一次、只拉 7KB 轻量键）；刷新成功后重渲染一次以反映最新删除/下架
+  if(typeof loadProductTombMetaThrottled === 'function'){
+    loadProductTombMetaThrottled().then(function(changed){
+      if(changed){
+        const _kwEl = document.getElementById('productSearch');
+        if(_kwEl && _kwEl.value.trim()) searchProducts(_kwEl.value);
+      }
+    }).catch(function(){});
+  }
   let html = `<div style="padding:8px 14px;border-bottom:1px solid var(--border)"><button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();showManualAddProduct()" style="width:100%">+ 手动添加新商品</button></div>`;
   if(matched.length === 0){
     html += `<div class="ps-empty" style="padding:10px 14px">未找到匹配商品</div>`;
@@ -9434,6 +9449,78 @@ async function loadProductTombMeta(){
     return true;
   }catch(e){ return false; }
 }
+// v2026112602：销售端即时过滤——判断商品是否已被删除/下架（权威口径：墓碑名单 + 状态戳 + 本地 status）。
+// 根治「管理员删/下架后，销售端本地缓存未同步、页面仍可选到该商品」的问题。
+// 只做本地判定、零网络；墓碑/状态戳的时效由 loadProductTombMetaThrottled 保证。
+function isProductSalesBlocked(p){
+  if(!p || p.id == null) return true;
+  // ① 删除墓碑（物理删的商品 id）
+  if((window._prodTombIds || []).indexOf(p.id) >= 0) return true;
+  // ② 状态戳：权威 status 且戳不早于本行更新时间才生效（与 _applyProductStatusAuthority 同口径）
+  const m = (window._prodStatusAt || {})[p.id];
+  if(m && m.status && m.at){
+    const rowTs = Date.parse(p.updatedAt || p.updated_at || 0) || 0;
+    const metaTs = Date.parse(m.at) || 0;
+    if(metaTs >= rowTs) return m.status === 'off'; // 戳较新：按戳的权威状态判定
+  }
+  // ③ 本地 status（常规下架）
+  return p.status === 'off';
+}
+
+// v2026112602：购物车里已被删除/下架的商品名列表（submitOrder 兜底调用，抽成纯函数便于测试）。
+// 商品本地找不到时按 productId 查墓碑名单，避免购物车项无 id 字段被误判。
+function blockedCartProductNames(cart, products){
+  const pl = products || DB.get('products') || [];
+  return (cart || []).map(function(c){
+    if(!c) return null;
+    const p = pl.find(function(x){ return x && x.id === c.productId; });
+    const blocked = p ? isProductSalesBlocked(p) : ((window._prodTombIds || []).indexOf(c.productId) >= 0);
+    return blocked ? (c.name || c.productId) : null;
+  }).filter(Boolean);
+}
+
+// v2026112603：轻量拉取——只取墓碑+状态戳两个键（约 7KB），**不拉 80KB 的名字戳**。
+// 销售端即时过滤只用墓碑/状态戳，名字戳只在合并保护时用（启动时全量加载一次即可）。
+// 🔴 流量纪律：此函数会被搜索高频触发，绝不在这里拉 product_names_at，否则重演 9/4 流量爆炸。
+async function loadProductBlockMeta(){
+  try{
+    if(!window._sbpbClient) return false;
+    const res = await fetch(SUPABASE_URL + '/rest/v1/app_settings?select=key,value&key=in.(product_tombstones,product_status_at)', {
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'x-app-secret': APP_SECRET, 'Accept': 'application/json' }
+    });
+    if(!res.ok) return false;
+    const rows = await res.json();
+    (rows || []).forEach(function(r){
+      if(!r || !r.key) return;
+      try{
+        const v = JSON.parse(r.value);
+        if(r.key === 'product_tombstones' && Array.isArray(v)) window._prodTombIds = v.filter(Boolean);
+        if(r.key === 'product_status_at' && v && typeof v === 'object' && !Array.isArray(v)) window._prodStatusAt = v;
+      }catch(e){}
+    });
+    try{
+      if(!window._prodTombIds.length) window._prodTombIds = JSON.parse(localStorage.getItem('soms__prodTombIds') || '[]').filter(Boolean);
+      if(!Object.keys(window._prodStatusAt).length) window._prodStatusAt = JSON.parse(localStorage.getItem('soms__prodStatusAt') || '{}');
+    }catch(e){}
+    return true;
+  }catch(e){ return false; }
+}
+
+// v2026112602：节流刷新墓碑/状态戳。销售搜索商品时会调用。
+// v2026112603 降流量：①改走轻量函数（7KB 而非 87KB）②节流 30 秒→120 秒。
+// 管理员删除/下架后最多 2 分钟生效；下单时另有 force 强制刷新兜底，不影响准确性。
+let _tombMetaRefreshAt = 0;
+let _tombMetaRefreshing = false;
+async function loadProductTombMetaThrottled(force){
+  const now = Date.now();
+  if(!force && (now - _tombMetaRefreshAt < 120000)) return false;
+  if(_tombMetaRefreshing) return false;
+  _tombMetaRefreshing = true;
+  _tombMetaRefreshAt = now;
+  try{ return await loadProductBlockMeta(); }
+  finally{ _tombMetaRefreshing = false; }
+}
+
 // 写回墓碑/状态戳到 app_settings（merge-duplicates 幂等 upsert）
 async function saveProductTombMeta(){
   try{
@@ -10222,6 +10309,17 @@ function submitOrder(skipDupCheck){
   if(!contact){ showToast('请填写收件人','error'); return; }
   if(!phone){ showToast('请填写手机号码','error'); return; }
   if(cart.length === 0){ showToast('请至少添加一个商品','error'); return; }
+
+  // v2026112602：下单兜底校验——购物车里的商品若刚被管理员删除/下架（本地墓碑/状态戳已知），
+  // 拦截下单并提示，避免选到已失效商品。同时强制刷新一次墓碑/状态戳（异步不阻塞本次判定）。
+  const _blockedNames = blockedCartProductNames(cart, DB.get('products'));
+  if(_blockedNames.length){
+    showToast('以下商品已下架或删除，请从购物车移除后再下单：' + _blockedNames.join('、'), 'error', 6000);
+    return;
+  }
+  if(typeof loadProductTombMetaThrottled === 'function'){
+    try{ loadProductTombMetaThrottled(true).catch(function(){}); }catch(e){}
+  }
 
   // 重复下单提醒（v2026111901）：购物车与该客户近 30 天订单重叠 → 弹确认，确认后带 skip 标记放行
   if(!skipDupCheck){
@@ -12247,7 +12345,16 @@ var _editSearchSelected = new Set();
 function searchEditProducts(keyword){
   const results = document.getElementById('editSearchResults');
   if(!keyword.trim()){ _editSearchSelected.clear(); results.style.display='none'; return; }
-  const products = DB.get('products').filter(p => p.status === 'on');
+  // v2026112602：与新建订单一致，按墓碑/状态戳/本地status过滤已删/下架商品
+  const products = (DB.get('products') || []).filter(function(p){ return p && !isProductSalesBlocked(p); });
+  if(typeof loadProductTombMetaThrottled === 'function'){
+    loadProductTombMetaThrottled().then(function(ok){
+      if(ok){
+        const _kwEl = document.getElementById('editProductSearch');
+        if(_kwEl && _kwEl.value.trim()) searchEditProducts(_kwEl.value);
+      }
+    }).catch(function(){});
+  }
   const kw = keyword.toLowerCase();
   // 排除已在订单中的商品
   const orderId = window._currentOrderId;
@@ -21348,7 +21455,7 @@ function searchWalkinProducts(keyword){
     window._productsSyncKicked = true;
     try{ DB.syncIncremental(); }catch(e){}
   }
-  const products = DB.get('products').filter(p => p.status === 'on');
+  const products = (DB.get('products') || []).filter(function(p){ return p && !isProductSalesBlocked(p); }); // v2026112602 过滤已删/下架
   const matched = products.filter(p => productMatchesKeyword(p, keyword));
   if(matched.length === 0){
     box.innerHTML = '<div class="ps-empty">未找到匹配商品，可在右侧「或手动输入商品名」直接添加</div>';
